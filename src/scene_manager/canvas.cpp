@@ -1,0 +1,703 @@
+#include "scene_manager/canvas.h"
+#include "common/log.h"
+#include "video_engine/video_engine.h"
+#include "scene_manager/source_factory.h"
+#include <QTimer>
+#include <QBrush>
+#include <QPen>
+#include <QCursor>
+
+namespace live_assistant {
+
+// CanvasRenderer实现
+CanvasRenderer::CanvasRenderer() {
+    LOG_INFO("CanvasRenderer initialized");
+}
+
+void CanvasRenderer::render(QPainter& painter, const std::shared_ptr<Scene>& scene, const QRect& target_rect, const std::shared_ptr<SceneItem>& hovered_item) {
+    if (!scene) {
+        // 绘制空白背景
+        painter.fillRect(target_rect, QBrush(QColor(40, 40, 40)));
+        return;
+    }
+    
+    // 绘制背景
+    painter.fillRect(target_rect, QBrush(QColor(40, 40, 40)));
+    
+    // 获取所有场景项
+    auto scene_items = scene->get_all_scene_items();
+    
+    // 按顺序(z-index)对场景项排序
+    std::sort(scene_items.begin(), scene_items.end(), 
+        [](const std::shared_ptr<SceneItem>& a, const std::shared_ptr<SceneItem>& b) {
+            return a->get_order() < b->get_order();
+        });
+    
+    // 渲染每个场景项
+    for (const auto& item : scene_items) {
+        render_scene_item(painter, item, target_rect, hovered_item);
+    }
+}
+
+void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<SceneItem>& item, const QRect& target_rect, const std::shared_ptr<SceneItem>& hovered_item) {
+    if (!item || !item->is_visible()) {
+        return;
+    }
+    
+    // 获取变换和源
+    auto transform = item->get_transform();
+    auto source = item->get_source();
+    
+    // 计算项的位置和大小
+    int x = transform.x;
+    int y = transform.y;
+    int width = transform.width;
+    int height = transform.height;
+    
+    // 如果宽度或高度为0，设置默认值
+    if (width == 0 || height == 0) {
+        width = 640;
+        height = 360;
+    }
+    
+    // 绘制项
+    QRect item_rect(x, y, width, height);
+    
+    // 设置绘制器不透明度
+    painter.setOpacity(transform.opacity);
+    
+    // 对于视频捕获源，优先使用源自身提供的帧（如 ScreenSource），否则回退到 VideoEngine
+    if (source->get_type() == Source::Type::VIDEO_CAPTURE) {
+        // 如果源是 ScreenSource，尝试获取它的最新帧
+        auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(source);
+        if (screenSrc) {
+            QImage latest = screenSrc->get_latest_frame();
+            if (!latest.isNull()) {
+                painter.drawImage(item_rect, latest.scaled(item_rect.width(), item_rect.height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                // 跳到绘制标签（后续统一处理）
+                goto RENDER_LABELS;
+            }
+        }
+
+        // 如果没有来源帧，继续原有 VideoEngine 回退逻辑
+        {
+            CanvasWidget* widget = dynamic_cast<CanvasWidget*>(painter.device());
+            if (widget) {
+                auto video_engine = widget->get_video_engine();
+                if (video_engine) {
+                    // 获取最新的视频帧
+                    auto frame = video_engine->get_latest_frame();
+                    if (frame && frame->data) {
+                        // 将VideoFrame转换为QImage
+                        QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
+                        if (!image.isNull()) {
+                            // 绘制视频帧，使用变换进行缩放和定位
+                            painter.drawImage(item_rect, image.scaled(item_rect.width(), item_rect.height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                        } else {
+                            painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
+                        }
+                    } else {
+                        painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
+                    }
+                } else {
+                    painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
+                }
+            } else {
+                painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
+            }
+        }
+    } else {
+        // 对于其他类型的源，绘制占位符
+        QColor rect_color;
+        switch (source->get_type()) {
+            case Source::Type::AUDIO_CAPTURE:
+                rect_color = QColor(200, 50, 50);
+                break;
+            case Source::Type::FILE_SOURCE:
+                rect_color = QColor(200, 150, 50);
+                break;
+            case Source::Type::NETWORK_SOURCE:
+                rect_color = QColor(150, 50, 200);
+                break;
+            default:
+                rect_color = QColor(150, 150, 150);
+                break;
+        }
+        
+        // 绘制矩形
+        painter.fillRect(item_rect, QBrush(rect_color));
+    }
+    
+        // 绘制源名称
+    painter.setOpacity(1.0);
+    painter.setPen(QColor(255, 255, 255));
+    painter.drawText(x + 5, y + 15, QString::fromStdString(source->get_id()));
+
+    return;
+    
+    // 标签绘制落点
+RENDER_LABELS:;
+    
+    // 仅当hovered_item是当前项时，显示边界框和调整大小句柄
+    if (item == hovered_item) {
+        // 如果启用，绘制边界框
+        if (show_bounding_boxes_) {
+            draw_bounding_box(painter, transform, true);
+        }
+        
+        // 如果启用，绘制调整大小句柄
+        if (show_resize_handles_) {
+            draw_resize_handles(painter, transform);
+        }
+    }
+    
+    // 重置不透明度
+    painter.setOpacity(1.0);
+}
+
+void CanvasRenderer::draw_bounding_box(QPainter& painter, const Transform& transform, bool selected) {
+    // 计算矩形
+    QRect rect(transform.x, transform.y, transform.width, transform.height);
+    
+    // 根据选择状态设置画笔颜色
+    QPen pen(selected ? QColor(0, 255, 255) : QColor(255, 255, 255));
+    pen.setWidth(2);
+    pen.setStyle(Qt::DashLine);
+    
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(rect);
+}
+
+void CanvasRenderer::draw_resize_handles(QPainter& painter, const Transform& transform) {
+    // 绘制8个调整大小句柄（角落和边缘）
+    const int handle_size = 8;
+    
+    // 计算句柄位置
+    std::vector<QPoint> handles = {
+        // 左上
+        QPoint(transform.x - handle_size / 2, transform.y - handle_size / 2),
+        // 上中
+        QPoint(transform.x + transform.width / 2 - handle_size / 2, transform.y - handle_size / 2),
+        // 右上
+        QPoint(transform.x + transform.width - handle_size / 2, transform.y - handle_size / 2),
+        // 右中
+        QPoint(transform.x + transform.width - handle_size / 2, transform.y + transform.height / 2 - handle_size / 2),
+        // 右下
+        QPoint(transform.x + transform.width - handle_size / 2, transform.y + transform.height - handle_size / 2),
+        // 下中
+        QPoint(transform.x + transform.width / 2 - handle_size / 2, transform.y + transform.height - handle_size / 2),
+        // 左下
+        QPoint(transform.x - handle_size / 2, transform.y + transform.height - handle_size / 2),
+        // 左中
+        QPoint(transform.x - handle_size / 2, transform.y + transform.height / 2 - handle_size / 2)
+    };
+    
+    // 绘制句柄
+    QBrush handle_brush(QColor(0, 255, 255));
+    QPen handle_pen(QColor(0, 150, 255), 1);
+    
+    painter.setBrush(handle_brush);
+    painter.setPen(handle_pen);
+    
+    for (const auto& handle : handles) {
+        painter.drawRect(handle.x(), handle.y(), handle_size, handle_size);
+    }
+}
+
+// CanvasWidget实现
+CanvasWidget::CanvasWidget(QWidget *parent) : QWidget(parent) {
+    // 初始化渲染器
+    renderer_ = std::make_unique<CanvasRenderer>();
+    
+    // 设置组件属性
+    setMinimumSize(800, 600);
+    setMouseTracking(true);
+    setCursor(Qt::ArrowCursor);
+    
+    // 创建刷新定时器 (30fps)
+    auto* timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this]() {
+        refresh();
+    });
+    timer->start(33);
+    
+    LOG_INFO("CanvasWidget created");
+}
+
+CanvasWidget::~CanvasWidget() {
+    LOG_INFO("CanvasWidget destroyed");
+}
+
+void CanvasWidget::set_scene_manager(std::shared_ptr<SceneManager> scene_manager) {
+    scene_manager_ = scene_manager;
+    
+    // 如果有场景，将当前场景设置为第一个
+    if (scene_manager_) {
+        auto scene_names = scene_manager_->get_scene_names();
+        if (!scene_names.empty()) {
+            set_current_scene(scene_names[0]);
+        }
+    }
+}
+
+void CanvasWidget::set_current_scene(const std::string& scene_name) {
+    if (!scene_manager_) {
+        return;
+    }
+    
+    // 查找场景
+    auto scenes = scene_manager_->get_scene_names();
+    bool scene_found = false;
+    for (const auto& name : scenes) {
+        if (name == scene_name) {
+            scene_found = true;
+            break;
+        }
+    }
+    
+    if (scene_found) {
+        current_scene_ = scene_manager_->get_current_scene();
+        LOG_INFO("Set current scene to: " + scene_name);
+    } else {
+        LOG_WARNING("Scene not found: " + scene_name);
+    }
+    
+    // 刷新画布
+    refresh();
+}
+
+void CanvasWidget::refresh() {
+    update();
+}
+
+std::shared_ptr<Scene> CanvasWidget::get_current_scene() const {
+    return current_scene_;
+}
+
+void CanvasWidget::set_interaction_enabled(bool enabled) {
+    interaction_enabled_ = enabled;
+}
+
+bool CanvasWidget::is_interaction_enabled() const {
+    return interaction_enabled_;
+}
+
+void CanvasWidget::set_video_engine(std::shared_ptr<VideoEngine> video_engine) {
+    video_engine_ = video_engine;
+    LOG_INFO("Set video engine for CanvasWidget");
+}
+
+void CanvasWidget::set_compositor(std::shared_ptr<Compositor> compositor) {
+    compositor_ = compositor;
+    if (compositor_) {
+        compositor_->set_canvas_size(canvas_width_, canvas_height_);
+        LOG_INFO("Set compositor for CanvasWidget");
+    }
+}
+
+std::shared_ptr<Compositor> CanvasWidget::get_compositor() const {
+    return compositor_;
+}
+
+void CanvasWidget::set_canvas_resolution(int width, int height) {
+    canvas_width_ = width;
+    canvas_height_ = height;
+    LOG_INFO("Set canvas resolution: " + std::to_string(width) + "x" + std::to_string(height));
+    refresh();
+}
+
+void CanvasWidget::paintEvent(QPaintEvent *event) {
+    QPainter painter(this);
+
+    // 获取组件尺寸
+    QRect widget_rect = this->rect();
+
+    // 绘制背景
+    painter.fillRect(widget_rect, QBrush(QColor(40, 40, 40)));
+
+    static int paint_count = 0;
+    paint_count++;
+    if (paint_count % 60 == 0) {  // 每60次打印一次
+        LOG_INFO("paintEvent called, count: " + std::to_string(paint_count) +
+                  ", renderer_: " + (renderer_ ? "valid" : "null") +
+                  ", current_scene_: " + (current_scene_ ? "valid" : "null") +
+                  ", video_engine_: " + (video_engine_ ? "valid" : "null") +
+                  ", compositor_: " + (compositor_ ? "valid" : "null"));
+    }
+    // 防止溢出，重置计数
+    if (paint_count >= 1000000) {
+        paint_count = 0;
+    }
+
+    // 首先渲染合成器内容（捕获的屏幕/窗口）
+    if (compositor_) {
+        // Compositor 直接绘制到我们的 painter 上
+        compositor_->render(&painter, widget_rect);
+    }
+
+    // 然后绘制场景项（摄像头、图片等）
+    if (renderer_ && current_scene_) {
+        // 保存当前render状态
+        painter.save();
+
+        // 渲染整个场景，传递hovered_item
+        renderer_->render(painter, current_scene_, widget_rect, hovered_item_);
+
+        // 恢复render状态
+        painter.restore();
+    }
+    
+    // 如果没有场景项，显示视频引擎的直接输出（保持向后兼容）
+    if (video_engine_) {
+        auto scene = current_scene_;
+        if (!scene || scene->get_all_scene_items().empty()) {
+            // 调用render_frame方法获取渲染后的帧
+            auto frame = video_engine_->render_frame();
+            if (frame && frame->data) {
+                // 将VideoFrame转换为QImage
+                QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
+                if (!image.isNull()) {
+                    // 居中显示
+                    int x = (widget_rect.width() - frame->width) / 2;
+                    int y = (widget_rect.height() - frame->height) / 2;
+                    QRect display_rect(x, y, frame->width, frame->height);
+                    painter.drawImage(display_rect, image);
+                }
+            }
+        }
+    }
+}
+
+std::shared_ptr<SceneItem> CanvasWidget::hit_test(int x, int y) const {
+    if (!current_scene_) {
+        return nullptr;
+    }
+    
+    // 首先检查场景项（从上到下检查，z-index）
+    auto scene_items = current_scene_->get_all_scene_items();
+    
+    // 反转列表，从上到下检查
+    std::reverse(scene_items.begin(), scene_items.end());
+    
+    for (const auto& item : scene_items) {
+        auto transform = item->get_transform();
+        
+        // 计算边界框
+        QRect rect(transform.x, transform.y, transform.width, transform.height);
+        
+        // 检查点是否在矩形内
+        if (rect.contains(x, y)) {
+            return item;
+        }
+        
+        // 检查调整大小句柄
+        if (is_in_resize_handle(x, y, transform)) {
+            return item;
+        }
+    }
+    
+    return nullptr;
+}
+
+bool CanvasWidget::is_in_resize_handle(int x, int y, const Transform& transform) const {
+    const int handle_size = 8;
+    const int half_handle = handle_size / 2;
+    
+    // 检查所有8个调整大小句柄
+    std::vector<QRect> handles = {
+        // 左上
+        QRect(transform.x - half_handle, transform.y - half_handle, handle_size, handle_size),
+        // 上中
+        QRect(transform.x + transform.width / 2 - half_handle, transform.y - half_handle, handle_size, handle_size),
+        // 右上
+        QRect(transform.x + transform.width - half_handle, transform.y - half_handle, handle_size, handle_size),
+        // 右中
+        QRect(transform.x + transform.width - half_handle, transform.y + transform.height / 2 - half_handle, handle_size, handle_size),
+        // 右下
+        QRect(transform.x + transform.width - half_handle, transform.y + transform.height - half_handle, handle_size, handle_size),
+        // 下中
+        QRect(transform.x + transform.width / 2 - half_handle, transform.y + transform.height - half_handle, handle_size, handle_size),
+        // 左下
+        QRect(transform.x - half_handle, transform.y + transform.height - half_handle, handle_size, handle_size),
+        // 左中
+        QRect(transform.x - half_handle, transform.y + transform.height / 2 - half_handle, handle_size, handle_size)
+    };
+    
+    // 检查鼠标是否在任何句柄中
+    for (const auto& handle : handles) {
+        if (handle.contains(x, y)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+bool CanvasWidget::is_in_camera_resize_handle(int x, int y, int& handle_index) const {
+    const int handle_size = 8;
+    const int half_handle = handle_size / 2;
+    
+    // 只检查4个角落的调整大小句柄
+    std::vector<QRect> handles = {
+        // 0: 左上
+        QRect(camera_transform_.x - half_handle, camera_transform_.y - half_handle, handle_size, handle_size),
+        // 1: 右上
+        QRect(camera_transform_.x + camera_transform_.width - half_handle, camera_transform_.y - half_handle, handle_size, handle_size),
+        // 2: 右下
+        QRect(camera_transform_.x + camera_transform_.width - half_handle, camera_transform_.y + camera_transform_.height - half_handle, handle_size, handle_size),
+        // 3: 左下
+        QRect(camera_transform_.x - half_handle, camera_transform_.y + camera_transform_.height - half_handle, handle_size, handle_size)
+    };
+    
+    // 检查鼠标是否在任何句柄中
+    for (int i = 0; i < handles.size(); ++i) {
+        if (handles[i].contains(x, y)) {
+            handle_index = i;
+            return true;
+        }
+    }
+    
+    handle_index = -1;
+    return false;
+}
+
+bool CanvasWidget::is_in_camera_resize_handle(int x, int y) const {
+    int handle_index;
+    return is_in_camera_resize_handle(x, y, handle_index);
+}
+
+void CanvasWidget::update_mouse_cursor(QMouseEvent *event) {
+    if (!interaction_enabled_) {
+        setCursor(Qt::ArrowCursor);
+        return;
+    }
+    
+    int x = event->pos().x();
+    int y = event->pos().y();
+    
+    // 检查是否在场景项上
+    auto item = hit_test(x, y);
+    if (item) {
+        if (is_in_resize_handle(x, y, item->get_transform())) {
+            setCursor(Qt::SizeAllCursor);
+            return;
+        } else {
+            setCursor(Qt::SizeAllCursor);
+            return;
+        }
+    }
+    
+    // 检查是否在摄像头视频帧上
+    QRect camera_rect(camera_transform_.x, camera_transform_.y, camera_transform_.width, camera_transform_.height);
+    if (camera_rect.contains(x, y)) {
+        // 检查是否在摄像头调整大小句柄上
+        int handle_index;
+        if (is_in_camera_resize_handle(x, y, handle_index)) {
+            // 根据不同角落显示不同的调整大小光标
+            switch (handle_index) {
+                case 0: // 左上
+                case 2: // 右下
+                    setCursor(Qt::SizeFDiagCursor);
+                    break;
+                case 1: // 右上
+                case 3: // 左下
+                    setCursor(Qt::SizeBDiagCursor);
+                    break;
+                default:
+                    setCursor(Qt::SizeAllCursor);
+                    break;
+            }
+            return;
+        } else {
+            // 鼠标在摄像头视频帧内部，显示十字星光标
+            setCursor(Qt::CrossCursor);
+            return;
+        }
+    }
+    
+    // 默认光标
+    setCursor(Qt::ArrowCursor);
+}
+
+void CanvasWidget::mousePressEvent(QMouseEvent *event) {
+    if (!interaction_enabled_) {
+        return;
+    }
+    
+    int x = event->pos().x();
+    int y = event->pos().y();
+    
+    // 检查是否点击到场景项
+    auto item = hit_test(x, y);
+    
+    if (item) {
+        // 选择项
+        selected_item_ = item;
+        is_dragging_ = true;
+        
+        // 检查是否拖动调整大小句柄
+        is_resizing_ = is_in_resize_handle(x, y, item->get_transform());
+        
+        // 存储原始变换和鼠标位置
+        original_transform_ = item->get_transform();
+        last_mouse_pos_ = event->pos();
+        
+        // 发送选择信号
+        emit scene_item_selected(item);
+        
+        // 更新画布
+        refresh();
+    } else {
+        // 检查是否在摄像头视频帧上
+        QRect camera_rect(camera_transform_.x, camera_transform_.y, camera_transform_.width, camera_transform_.height);
+        if (camera_rect.contains(x, y)) {
+            // 选择摄像头视频帧
+            selected_item_ = nullptr; // 摄像头不是SceneItem，所以设为nullptr
+            is_dragging_ = true;
+            
+            // 检查是否在调整大小句柄上
+            int handle_index;
+            is_resizing_ = is_in_camera_resize_handle(x, y, handle_index);
+            camera_resize_handle_ = is_resizing_ ? handle_index : -1;
+            
+            // 存储原始变换和鼠标位置
+            original_transform_ = camera_transform_;
+            last_mouse_pos_ = event->pos();
+            
+            // 更新画布
+            refresh();
+        } else {
+            // 点击空白处清除选择
+            selected_item_ = nullptr;
+            is_dragging_ = false;
+            is_resizing_ = false;
+            camera_resize_handle_ = -1;
+            refresh();
+        }
+    }
+}
+
+void CanvasWidget::mouseMoveEvent(QMouseEvent *event) {
+    // 更新鼠标悬停项
+    std::shared_ptr<SceneItem> new_hovered_item = hit_test(event->pos().x(), event->pos().y());
+    if (new_hovered_item != hovered_item_) {
+        hovered_item_ = new_hovered_item;
+        refresh();
+    }
+    
+    if (!interaction_enabled_ || !is_dragging_) {
+        update_mouse_cursor(event);
+        return;
+    }
+    
+    // 计算鼠标移动增量
+    int delta_x = event->pos().x() - last_mouse_pos_.x();
+    int delta_y = event->pos().y() - last_mouse_pos_.y();
+    
+    if (selected_item_) {
+        // 处理SceneItem的拖动
+        if (!current_scene_) {
+            return;
+        }
+        
+        // 获取当前变换
+        auto transform = selected_item_->get_transform();
+        Transform new_transform = transform;
+        
+        if (is_resizing_) {
+            // 处理调整大小
+            new_transform.width += delta_x;
+            new_transform.height += delta_y;
+            
+            // 确保最小尺寸
+            new_transform.width = (std::max)(50, new_transform.width);
+            new_transform.height = (std::max)(50, new_transform.height);
+        } else {
+            // 处理移动
+            new_transform.x += delta_x;
+            new_transform.y += delta_y;
+        }
+        
+        // 更新变换
+        selected_item_->set_transform(new_transform);
+        
+        // 更新最后鼠标位置
+        last_mouse_pos_ = event->pos();
+        
+        // 发送移动信号
+        emit scene_item_moved(selected_item_, transform, new_transform);
+        
+        // 更新画布
+        refresh();
+    } else {
+        // 处理摄像头视频帧的拖动或缩放
+        Transform new_transform = camera_transform_;
+        
+        if (is_resizing_ && camera_resize_handle_ != -1) {
+            // 处理缩放，根据不同的句柄索引实现不同的拉伸逻辑
+            switch (camera_resize_handle_) {
+                case 0: // 左上
+                    // 调整x、y坐标和宽高
+                    new_transform.x += delta_x;
+                    new_transform.y += delta_y;
+                    new_transform.width -= delta_x;
+                    new_transform.height -= delta_y;
+                    break;
+                case 1: // 右上
+                    // 调整y坐标、宽度，保持x坐标不变
+                    new_transform.y += delta_y;
+                    new_transform.width += delta_x;
+                    new_transform.height -= delta_y;
+                    break;
+                case 2: // 右下
+                    // 只调整宽高，保持x、y坐标不变
+                    new_transform.width += delta_x;
+                    new_transform.height += delta_y;
+                    break;
+                case 3: // 左下
+                    // 调整x坐标、高度，保持y坐标不变
+                    new_transform.x += delta_x;
+                    new_transform.width -= delta_x;
+                    new_transform.height += delta_y;
+                    break;
+                default:
+                    // 未知句柄，使用默认缩放逻辑
+                    new_transform.width += delta_x;
+                    new_transform.height += delta_y;
+                    break;
+            }
+            
+            // 确保最小尺寸
+            new_transform.width = (std::max)(100, new_transform.width);
+            new_transform.height = (std::max)(100, new_transform.height);
+            
+            // 确保x、y坐标不会为负数
+            new_transform.x = (std::max)(0, new_transform.x);
+            new_transform.y = (std::max)(0, new_transform.y);
+        } else {
+            // 处理移动
+            new_transform.x += delta_x;
+            new_transform.y += delta_y;
+        }
+        
+        // 更新摄像头变换
+        camera_transform_ = new_transform;
+        
+        // 更新最后鼠标位置
+        last_mouse_pos_ = event->pos();
+        
+        // 更新画布
+        refresh();
+    }
+}
+
+void CanvasWidget::mouseReleaseEvent(QMouseEvent *event) {
+    is_dragging_ = false;
+    is_resizing_ = false;
+    resize_handle_ = 0;
+    camera_resize_handle_ = -1;
+    update_mouse_cursor(event);
+}
+
+} // namespace live_assistant

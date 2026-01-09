@@ -1,0 +1,698 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CameraSettingsDialog</class>
+ <widget class="QDialog" name="CameraSettingsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>600</width>
+    <height>400</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>摄像头设置</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QDialog { background-color: #1a1a1a; color: #ffffff; }
+QWidget { background-color: #1a1a1a; color: #ffffff; }
+QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 8px 16px; }
+QPushButton:hover { background-color: #444444; }
+QPushButton:pressed { background-color: #555555; }
+QPushButton:checked { background-color: #222222; border-color: #007acc; }
+QLabel { color: #ffffff; }
+QCheckBox { color: #ffffff; }
+QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; }
+QStackedWidget { background-color: #222222; border: 1px solid #333333; }
+/* 左侧标签按钮样式 */
+#leftPanel QPushButton { background-color: #333333; color: #ffffff; border: none; border-right: 2px solid transparent; padding: 12px; text-align: left; }
+#leftPanel QPushButton:hover { background-color: #444444; }
+#leftPanel QPushButton:checked { background-color: #222222; border-right: 2px solid #007acc; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_main">
+     <!-- 左侧标签按钮 -->
+     <item>
+      <widget class="QWidget" name="leftPanel" native="true">
+       <property name="minimumSize">
+        <size>
+         <width>100</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>120</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">background-color: #222222;</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_left">
+        <property name="spacing">
+         <number>0</number>
+        </property>
+        <property name="leftMargin">
+         <number>0</number>
+        </property>
+        <property name="topMargin">
+         <number>10</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>10</number>
+        </property>
+        <!-- 基础设置按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_basic">
+          <property name="text">
+           <string>基础设置</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 摄像头按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_camera">
+          <property name="text">
+           <string>摄像头</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 美颜设置按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_beauty">
+          <property name="text">
+           <string>美颜设置</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 美体设置按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_body">
+          <property name="text">
+           <string>美体设置</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 美妆设置按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_makeup">
+          <property name="text">
+           <string>美妆设置</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 滤镜设置按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_filter">
+          <property name="text">
+           <string>滤镜设置</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 特效道具按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_effects">
+          <property name="text">
+           <string>特效道具</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <!-- 镜头特效按钮 -->
+        <item>
+         <widget class="QPushButton" name="pushButton_lens">
+          <property name="text">
+           <string>镜头特效</string>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <!-- 右侧内容区域 -->
+     <item>
+      <widget class="QStackedWidget" name="stackedWidget">
+       <widget class="QWidget" name="page_basic">
+        <layout class="QVBoxLayout" name="verticalLayout_basic">
+         <property name="leftMargin">
+          <number>20</number>
+         </property>
+         <property name="topMargin">
+          <number>20</number>
+         </property>
+         <property name="rightMargin">
+          <number>20</number>
+         </property>
+         <property name="bottomMargin">
+          <number>20</number>
+         </property>
+         <!-- 摄像头选择 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_camera">
+           <item>
+            <widget class="QLabel" name="label_camera">
+             <property name="text">
+              <string>摄像头</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="comboBox_camera">
+             <property name="minimumSize">
+              <size>
+               <width>200</width>
+               <height>0</height>
+              </size>
+             </property>
+             <item>
+              <property name="text">
+               <string>HP HD Camera</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <!-- 分辨率 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_resolution">
+           <item>
+            <widget class="QLabel" name="label_resolution">
+             <property name="text">
+              <string>分辨率</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="comboBox_resolution">
+             <property name="minimumSize">
+              <size>
+               <width>200</width>
+               <height>0</height>
+              </size>
+             </property>
+             <item>
+              <property name="text">
+               <string>640x360</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>1280x720</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>1920x1080</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_2">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <!-- 帧率 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_fps">
+           <item>
+            <widget class="QLabel" name="label_fps">
+             <property name="text">
+              <string>帧率</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="comboBox_fps">
+             <property name="minimumSize">
+              <size>
+               <width>200</width>
+               <height>0</height>
+              </size>
+             </property>
+             <item>
+              <property name="text">
+               <string>15</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>25</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>30</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>60</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_3">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <!-- 格式 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_format">
+           <item>
+            <widget class="QLabel" name="label_format">
+             <property name="text">
+              <string>格式</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="comboBox_format">
+             <property name="minimumSize">
+              <size>
+               <width>200</width>
+               <height>0</height>
+              </size>
+             </property>
+             <item>
+              <property name="text">
+               <string>PIXEL_FORMAT_YUY2</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>PIXEL_FORMAT_NV12</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>PIXEL_FORMAT_RGBA</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_4">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <!-- 画面镜像 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_mirror">
+           <item>
+            <widget class="QLabel" name="label_mirror">
+             <property name="text">
+              <string>画面镜像</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkBox_mirror">
+             <property name="text">
+              <string/>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_5">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <!-- 摄像头开关 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_toggle">
+           <item>
+            <widget class="QLabel" name="label_toggle">
+             <property name="text">
+              <string>摄像头开关</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkBox_toggle">
+             <property name="text">
+              <string/>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_6">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <!-- 圆角 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_corner">
+           <item>
+            <widget class="QLabel" name="label_corner">
+             <property name="text">
+              <string>圆角</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkBox_corner">
+             <property name="text">
+              <string/>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_7">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <spacer name="verticalSpacer_basic">
+           <property name="orientation">
+            <enum>Qt::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <!-- 底部按钮 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+           <item>
+            <spacer name="horizontalSpacer_8">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QPushButton" name="pushButton_ok">
+             <property name="text">
+              <string>确定</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="pushButton_cancel">
+             <property name="text">
+              <string>取消</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_camera">
+        <layout class="QVBoxLayout" name="verticalLayout_camera">
+         <item>
+          <widget class="QLabel" name="label_camera_page">
+           <property name="text">
+            <string>摄像头设置页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_beauty">
+        <layout class="QVBoxLayout" name="verticalLayout_beauty">
+         <item>
+          <widget class="QLabel" name="label_beauty_page">
+           <property name="text">
+            <string>美颜设置页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_body">
+        <layout class="QVBoxLayout" name="verticalLayout_body">
+         <item>
+          <widget class="QLabel" name="label_body_page">
+           <property name="text">
+            <string>美体设置页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_makeup">
+        <layout class="QVBoxLayout" name="verticalLayout_makeup">
+         <item>
+          <widget class="QLabel" name="label_makeup_page">
+           <property name="text">
+            <string>美妆设置页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_filter">
+        <layout class="QVBoxLayout" name="verticalLayout_filter">
+         <item>
+          <widget class="QLabel" name="label_filter_page">
+           <property name="text">
+            <string>滤镜设置页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_effects">
+        <layout class="QVBoxLayout" name="verticalLayout_effects">
+         <item>
+          <widget class="QLabel" name="label_effects_page">
+           <property name="text">
+            <string>特效道具页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="page_lens">
+        <layout class="QVBoxLayout" name="verticalLayout_lens">
+         <item>
+          <widget class="QLabel" name="label_lens_page">
+           <property name="text">
+            <string>镜头特效页面</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <resources/>
+ <connections/>
+</ui>
