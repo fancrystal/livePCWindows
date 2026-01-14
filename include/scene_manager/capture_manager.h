@@ -1,24 +1,25 @@
 #pragma once
 
-#include "scene_manager/capture_source.h"
+#include "scene_manager/icapture_source.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <mutex>
 #include <functional>
+#include <vector>
 
 namespace live_assistant {
 
 class CaptureManager {
 public:
-    using CaptureSourcePtr = std::shared_ptr<CaptureSource>;
-    using FrameCallback = CaptureSource::FrameCallback;
+    using CaptureSourcePtr = std::shared_ptr<ICaptureSource>;
+    using FrameCallback = CaptureFrameCallback;
 
     CaptureManager();
     ~CaptureManager();
 
     // Source management
-    bool add_capture_source(const std::string& source_id, const CaptureSource::CaptureConfig& config);
+    bool add_capture_source(const std::string& source_id, const CaptureConfig& config);
     bool remove_capture_source(const std::string& source_id);
     bool start_capture_source(const std::string& source_id);
     bool stop_capture_source(const std::string& source_id);
@@ -26,7 +27,7 @@ public:
 
     // Configuration
     void set_frame_callback(const std::string& source_id, FrameCallback callback);
-    const CaptureSource::CaptureConfig* get_source_config(const std::string& source_id) const;
+    const CaptureConfig* get_source_config(const std::string& source_id) const;
 
     // Status
     bool is_source_running(const std::string& source_id) const;

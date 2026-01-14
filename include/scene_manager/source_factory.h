@@ -90,7 +90,8 @@ public:
     bool is_running() const override;
     std::shared_ptr<VideoFrame> get_video_frame() override;
     std::string get_metadata() const override {
-        return "type:video,id:" + get_id() + ",name:摄像头";
+        std::string n = name_.empty() ? "摄像头" : name_;
+        return "type:video,id:" + get_id() + ",name:" + n;
     }
     
     // VideoSource接口实现
@@ -122,6 +123,10 @@ public:
     
     // VideoSource接口实现
     bool get_frame(std::vector<uint8_t>& frame_data, int& width, int& height) override;
+    std::string get_metadata() const override {
+        std::string n = name_.empty() ? "屏幕" : name_;
+        return "type:video,id:" + get_id() + ",name:" + n;
+    }
     
     // 屏幕特定方法
     bool select_screen(int screen_index);

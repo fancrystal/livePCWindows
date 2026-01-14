@@ -8,7 +8,7 @@ namespace live_assistant {
 class CaptureFactory {
 public:
     // Create a capture source for the given config. For now prefers WGC (if available), else PrintWindow.
-    static std::unique_ptr<ICaptureSource> create_capture_source(const CaptureConfig& config);
+    static std::shared_ptr<ICaptureSource> create_capture_source(const CaptureConfig& config);
 };
 
 } // namespace live_assistant

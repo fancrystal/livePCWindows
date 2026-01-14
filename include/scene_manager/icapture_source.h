@@ -20,6 +20,8 @@ struct CaptureConfig {
 };
 
 struct CaptureFrame {
+    // Note: BGRA pixel data owned by QImage; safe across threads if deep-copied
+
     QImage image; // captured image (BGRA)
     MediaTimestamp timestamp;
     int width = 0;
@@ -41,6 +43,9 @@ public:
     // Configuration
     virtual void set_frame_callback(CaptureFrameCallback cb) = 0;
     virtual const CaptureConfig& get_config() const = 0;
+
+    // Status
+    virtual bool is_running() const = 0;
 };
 
 } // namespace live_assistant

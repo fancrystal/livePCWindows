@@ -15,7 +15,7 @@ CaptureManagerIface::~CaptureManagerIface() {
     sources_.clear();
 }
 
-bool CaptureManagerIface::add_source(const std::string& source_id, std::unique_ptr<ICaptureSource> source) {
+bool CaptureManagerIface::add_source(const std::string& source_id, std::shared_ptr<ICaptureSource> source) {
     if (!source) return false;
     std::lock_guard<std::mutex> lk(mutex_);
     if (sources_.count(source_id)) {
@@ -26,7 +26,7 @@ bool CaptureManagerIface::add_source(const std::string& source_id, std::unique_p
         LOG_ERROR("CaptureManagerIface: failed to initialize source: " + source_id);
         return false;
     }
-    sources_.emplace(source_id, std::move(source));
+    sources_.emplace(source_id, source);
     LOG_INFO("CaptureManagerIface: added source: " + source_id);
     return true;
 }

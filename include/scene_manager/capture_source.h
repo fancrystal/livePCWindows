@@ -6,10 +6,11 @@
 #include <chrono>
 #include <d3d11.h>
 #include <dxgi1_2.h>
-#include <windows.graphics.capture.interop.h>
-#include <windows.graphics.capture.h>
+#include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
+#include <windows.graphics.capture.interop.h>
+#include <windows.graphics.capture.h>
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -64,6 +65,7 @@ private:
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem capture_item_{ nullptr };
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool frame_pool_{ nullptr };
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession capture_session_{ nullptr };
+    winrt::event_token frame_arrived_token_{};
 
     // Direct3D objects
     ID3D11Device* d3d_device_ = nullptr;
@@ -75,6 +77,8 @@ private:
     bool initialized_ = false;
     bool running_ = false;
     FrameCallback frame_callback_;
+    std::mutex frame_callback_mutex_;
+    std::atomic<bool> shutting_down_{false};
     // Initialization thread (for MTA/WinRT work)
     std::thread init_thread_;
     std::atomic<bool> init_thread_stop_{false};

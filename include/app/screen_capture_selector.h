@@ -22,7 +22,8 @@ struct CaptureTarget {
     Type type;
     std::string id;           // Unique identifier (monitor device name or window handle)
     std::string name;         // Display name
-    QPixmap thumbnail;        // Thumbnail image
+    QPixmap thumbnail;        // Low-res thumbnail for list view
+    QPixmap hd_preview;       // High-res preview, generated on-demand
     QSize size;               // Original size
     std::chrono::steady_clock::time_point last_update = std::chrono::steady_clock::now();
     bool updating = false;
@@ -53,6 +54,7 @@ private:
     void create_thumbnail_for_screen(CaptureTarget& target);
     void create_thumbnail_for_window(CaptureTarget& target);
     QPixmap create_window_thumbnail(HWND hwnd, int width, int height);
+    QPixmap create_screen_thumbnail(const QString& device_name, int thumb_width, int thumb_height);
 
     QListWidget* list_widget_;
     QLabel* preview_label_;
@@ -63,7 +65,7 @@ private:
     QTimer* update_timer_;
 
     std::vector<CaptureTarget> targets_;
-    const CaptureTarget* selected_target_ = nullptr;
+    CaptureTarget* selected_target_ = nullptr;
     // No persistent watchers: async updates use detached std::thread and queued UI updates
 };
 

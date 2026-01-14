@@ -12,7 +12,7 @@ public:
     CaptureManagerIface() = default;
     ~CaptureManagerIface();
 
-    bool add_source(const std::string& source_id, std::unique_ptr<ICaptureSource> source);
+    bool add_source(const std::string& source_id, std::shared_ptr<ICaptureSource> source);
     bool remove_source(const std::string& source_id);
     bool start_source(const std::string& source_id);
     bool stop_source(const std::string& source_id);
@@ -20,7 +20,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<ICaptureSource>> sources_;
+    std::unordered_map<std::string, std::shared_ptr<ICaptureSource>> sources_;
 };
 
 } // namespace live_assistant

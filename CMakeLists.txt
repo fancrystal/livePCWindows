@@ -5,8 +5,9 @@ project(LiveAssistant VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Ensure the compiler can find standard library headers
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std:c++17")
+# Ensure MSVC is used with standard library include paths.
+# (Do not force -std:c++17 in CMAKE_CXX_FLAGS; CMAKE_CXX_STANDARD handles it.)
+
 
 # Windows specific defines for WinRT and Windows Graphics Capture
 if(WIN32)

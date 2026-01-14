@@ -388,7 +388,7 @@ void MainWindow::show_screen_share_selector() {
                     }
                 });
 
-                if (capture_manager_->add_source(source_id, std::move(src))) {
+                if (capture_manager_->add_source(source_id, src)) {
                     capture_manager_->start_source(source_id);
                     LOG_INFO("Started capture source: " + source_id);
                 } else {

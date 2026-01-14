@@ -1,4 +1,5 @@
 #include "scene_manager/capture_manager.h"
+#include "scene_manager/capture_factory.h"
 #include "common/log.h"
 #include <algorithm>
 
@@ -13,7 +14,7 @@ CaptureManager::~CaptureManager() {
     LOG_INFO("CaptureManager destroyed");
 }
 
-bool CaptureManager::add_capture_source(const std::string& source_id, const CaptureSource::CaptureConfig& config) {
+bool CaptureManager::add_capture_source(const std::string& source_id, const CaptureConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Check if source already exists
@@ -26,7 +27,7 @@ bool CaptureManager::add_capture_source(const std::string& source_id, const Capt
 
     try {
         // Create new capture source
-        auto source = std::make_shared<CaptureSource>(config);
+        auto source = CaptureFactory::create_capture_source(config);
 
         // Initialize the source
         if (!source->initialize()) {
@@ -35,7 +36,7 @@ bool CaptureManager::add_capture_source(const std::string& source_id, const Capt
         }
 
         // Add to map
-        sources_[source_id] = source;
+        sources_[source_id] = std::move(source);
 
         LOG_INFO("Capture source added successfully: " + source_id);
         return true;
@@ -141,7 +142,7 @@ void CaptureManager::set_frame_callback(const std::string& source_id, FrameCallb
     }
 }
 
-const CaptureSource::CaptureConfig* CaptureManager::get_source_config(const std::string& source_id) const {
+const CaptureConfig* CaptureManager::get_source_config(const std::string& source_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto source = get_source_locked(source_id);

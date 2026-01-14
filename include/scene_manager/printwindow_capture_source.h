@@ -19,6 +19,7 @@ public:
 
     void set_frame_callback(CaptureFrameCallback cb) override;
     const CaptureConfig& get_config() const override { return config_; }
+    bool is_running() const override;
 
 private:
     CaptureConfig config_;

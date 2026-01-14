@@ -80,10 +80,8 @@ ScreenCaptureSelector::ScreenCaptureSelector(QWidget *parent)
     , selected_target_(nullptr) {
     setup_ui();
 
-    // Set up timer for updating thumbnails
-    update_timer_ = new QTimer(this);
-    connect(update_timer_, &QTimer::timeout, this, &ScreenCaptureSelector::update_thumbnails);
-    update_timer_->start(1000); // Update every second
+    // Thumbnails are one-shot for now (no periodic refresh)
+    update_timer_ = nullptr;
 
     // Initially refresh targets
     refresh_targets();
@@ -92,7 +90,9 @@ ScreenCaptureSelector::ScreenCaptureSelector(QWidget *parent)
 }
 
 ScreenCaptureSelector::~ScreenCaptureSelector() {
-    update_timer_->stop();
+    if (update_timer_) {
+        update_timer_->stop();
+    }
     LOG_INFO("ScreenCaptureSelector destroyed");
 }
 
@@ -215,15 +215,23 @@ void ScreenCaptureSelector::refresh_targets() {
         item->setData(Qt::UserRole, i);
 
         list_widget_->addItem(item);
+
+        // Diagnostic log
+        if (item->icon().isNull()) {
+            LOG_WARNING("Item icon is null for target: " + target.name);
+            if (target.thumbnail.isNull()) {
+                LOG_WARNING(" -> Reason: The source QPixmap thumbnail was null.");
+            }
+        }
     }
 
     LOG_INFO("Found " + std::to_string(targets_.size()) + " capture targets");
 
-    // Schedule async thumbnail updates for non-selected items (throttled)
-    for (int i = 0; i < static_cast<int>(targets_.size()); ++i) {
-        // small delay to avoid bursting work on refresh
-        start_async_thumbnail_update(i);
-    }
+    // Force an immediate repaint of the list widget
+    list_widget_->update();
+    QCoreApplication::processEvents();
+
+    // One-shot thumbnails: no async refresh is needed.
 }
 
 void ScreenCaptureSelector::enumerate_screens() {
@@ -250,66 +258,152 @@ void ScreenCaptureSelector::enumerate_screens() {
 void ScreenCaptureSelector::enumerate_windows() {
     LOG_INFO("Enumerating windows");
 
-    // Enumerate top-level windows
+    struct Candidate {
+        HWND hwnd = nullptr;
+        std::string title;
+        QSize size;
+    };
+
+    std::vector<Candidate> candidates;
+
+    // Phase 1: EnumWindows and filter by window attributes only (no thumbnail capture)
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        auto* selector = reinterpret_cast<ScreenCaptureSelector*>(lParam);
+        auto* ctx = reinterpret_cast<std::vector<Candidate>*>(lParam);
 
-        // Skip invisible windows
-        if (!IsWindowVisible(hwnd)) {
+        if (!IsWindowVisible(hwnd)) return TRUE;
+        if (IsIconic(hwnd)) return TRUE;
+
+        BOOL cloaked = FALSE;
+        if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) {
             return TRUE;
         }
 
-        // Skip windows without title
+        LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        if (exStyle & WS_EX_TOOLWINDOW) return TRUE;
+
+        if (GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;
+
         wchar_t titleW[512];
-        if (GetWindowTextW(hwnd, titleW, ARRAYSIZE(titleW)) == 0) {
-            return TRUE;
-        }
+        if (GetWindowTextW(hwnd, titleW, ARRAYSIZE(titleW)) == 0) return TRUE;
 
-        // Skip system windows and our own window
-        if (hwnd == reinterpret_cast<HWND>(selector->winId())) {
-            return TRUE;
-        }
-
-        // Get window rect
         RECT rect;
-        if (!GetWindowRect(hwnd, &rect)) {
-            return TRUE;
-        }
+        if (!GetWindowRect(hwnd, &rect)) return TRUE;
 
         int width = rect.right - rect.left;
         int height = rect.bottom - rect.top;
+        if (width < 100 || height < 100) return TRUE;
 
-        // Skip very small windows
-        if (width < 100 || height < 100) {
-            return TRUE;
+        Candidate c;
+        c.hwnd = hwnd;
+        c.title = QString::fromWCharArray(titleW).toStdString();
+        c.size = QSize(width, height);
+        ctx->push_back(std::move(c));
+
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&candidates));
+
+    // Phase 2: capture thumbnails only for filtered candidates
+    auto is_preview_unavailable = [](const QPixmap& pm) -> bool {
+        if (pm.isNull()) return true;
+        QImage img = pm.toImage();
+        if (img.isNull() || img.width() == 0 || img.height() == 0) return true;
+        const int w = img.width();
+        const int h = img.height();
+        const int stepX = std::max(1, w / 10);
+        const int stepY = std::max(1, h / 10);
+        int samples = 0;
+        int darkCount = 0;
+        for (int y = stepY / 2; y < h; y += stepY) {
+            for (int x = stepX / 2; x < w; x += stepX) {
+                QColor c(img.pixel(x, y));
+                int lum = (c.red() * 299 + c.green() * 587 + c.blue() * 114) / 1000;
+                if (lum < 16) darkCount++;
+                samples++;
+            }
+        }
+        if (samples == 0) return true;
+        return (darkCount * 100 / samples) >= 95;
+    };
+
+    for (const auto& c : candidates) {
+        // Skip our own window
+        if (c.hwnd == reinterpret_cast<HWND>(this->winId())) {
+            continue;
         }
 
         CaptureTarget target;
         target.type = CaptureTarget::Type::WINDOW;
-        target.id = std::to_string(reinterpret_cast<uintptr_t>(hwnd)); // Use hwnd as ID
-        target.name = QString::fromWCharArray(titleW).toStdString();
-        target.size = QSize(width, height);
+        target.id = std::to_string(reinterpret_cast<uintptr_t>(c.hwnd));
+        target.name = c.title;
+        target.size = c.size;
 
-        // Create thumbnail for window (assign into target)
-        selector->create_thumbnail_for_window(target);
+        create_thumbnail_for_window(target);
+        if (is_preview_unavailable(target.thumbnail)) {
+            continue;
+        }
 
-        selector->targets_.push_back(std::move(target));
-        LOG_INFO("Found window: " + selector->targets_.back().name + " (" + std::to_string(selector->targets_.back().size.width()) + "x" + std::to_string(selector->targets_.back().size.height()) + ")");
+        targets_.push_back(std::move(target));
+        LOG_INFO("Found window: " + targets_.back().name + " (" + std::to_string(targets_.back().size.width()) + "x" + std::to_string(targets_.back().size.height()) + ")");
+    }
+}
 
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(this));
+QPixmap ScreenCaptureSelector::create_screen_thumbnail(const QString& device_name, int thumb_width, int thumb_height) {
+    // Prefer Qt native grab (more robust for DPI/multi-monitor)
+    const auto screens = QApplication::screens();
+    QScreen* target_screen = nullptr;
+
+    for (QScreen* screen : screens) {
+        if (screen && screen->name() == device_name) {
+            target_screen = screen;
+            break;
+        }
+    }
+
+    if (!target_screen) {
+        LOG_WARNING("create_screen_thumbnail: screen not found for device_name=" + device_name.toStdString() + ", fallback to primary");
+        target_screen = QApplication::primaryScreen();
+    }
+
+    if (!target_screen) {
+        LOG_ERROR("create_screen_thumbnail: primaryScreen is null");
+        QPixmap placeholder(thumb_width, thumb_height);
+        placeholder.fill(QColor(64, 64, 128));
+        return placeholder;
+    }
+
+    // Grab the screen content
+    QPixmap grabbed = target_screen->grabWindow(0);
+    if (grabbed.isNull()) {
+        LOG_WARNING("create_screen_thumbnail: grabWindow returned null for device_name=" + device_name.toStdString());
+        QPixmap placeholder(thumb_width, thumb_height);
+        placeholder.fill(QColor(64, 64, 128));
+        return placeholder;
+    }
+
+    // Scale to thumbnail size
+    QPixmap thumb = grabbed.scaled(thumb_width, thumb_height, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (thumb.isNull()) {
+        LOG_WARNING("create_screen_thumbnail: scaled thumbnail is null for device_name=" + device_name.toStdString());
+    }
+    return thumb;
 }
 
 void ScreenCaptureSelector::create_thumbnail_for_screen(CaptureTarget& target) {
-    // For screen, we'll create a simple colored rectangle with screen info
-    QPixmap thumbnail(120, 80);
-    thumbnail.fill(QColor(64, 64, 128)); // Dark blue for screens
-
-    QPainter painter(&thumbnail);
-    painter.setPen(Qt::white);
-    painter.setFont(QFont("Arial", 8));
-    painter.drawText(thumbnail.rect(), Qt::AlignCenter, QString("屏幕\n%1x%2").arg(target.size.width()).arg(target.size.height()));
-
+    // Create actual screen thumbnail
+    QPixmap thumbnail = create_screen_thumbnail(QString::fromStdString(target.id), list_widget_->iconSize().width(), list_widget_->iconSize().height());
+    
+    // If thumbnail is null or invalid, create a placeholder
+    if (thumbnail.isNull()) {
+        thumbnail = QPixmap(120, 80);
+        thumbnail.fill(QColor(64, 64, 128)); // Dark blue for screens
+        
+        QPainter painter(&thumbnail);
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("Arial", 8));
+        painter.drawText(thumbnail.rect(), Qt::AlignCenter, 
+                        QString("屏幕\n%1x%2").arg(target.size.width()).arg(target.size.height()));
+    }
+    
     // Assign thumbnail into provided target
     target.thumbnail = thumbnail;
 }
@@ -317,7 +411,7 @@ void ScreenCaptureSelector::create_thumbnail_for_screen(CaptureTarget& target) {
 void ScreenCaptureSelector::create_thumbnail_for_window(CaptureTarget& target) {
     // Try to create a real thumbnail using PrintWindow or DWM
     HWND hwnd = reinterpret_cast<HWND>(std::stoull(target.id));
-    QPixmap thumbnail = create_window_thumbnail(hwnd, 120, 80);
+    QPixmap thumbnail = create_window_thumbnail(hwnd, list_widget_->iconSize().width(), list_widget_->iconSize().height());
 
     // If PrintWindow failed, create a placeholder
     if (thumbnail.isNull()) {
@@ -335,58 +429,99 @@ void ScreenCaptureSelector::create_thumbnail_for_window(CaptureTarget& target) {
 }
 
 QPixmap ScreenCaptureSelector::create_window_thumbnail(HWND hwnd, int width, int height) {
-    // Try to use DWM thumbnail first
+    // Skip invalid HWND
+    if (!hwnd || !IsWindow(hwnd)) {
+        LOG_WARNING("create_window_thumbnail: invalid HWND");
+        return QPixmap();
+    }
+
+    // If window is not visible, best effort: still try capture (some windows may be cloaked)
+    if (!IsWindowVisible(hwnd)) {
+        LOG_WARNING("create_window_thumbnail: window is not visible");
+        return QPixmap();
+    }
+
+    // One-shot, stable approach: grab window directly from the screen.
+    // This avoids creating a temporary DWM host window (which can flicker) and avoids Qt widget grab issues.
+    if (auto* screen = QGuiApplication::primaryScreen()) {
+        QPixmap grabbed = screen->grabWindow((WId)hwnd);
+        if (!grabbed.isNull()) {
+            return grabbed.scaled(width, height, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        }
+        LOG_WARNING("create_window_thumbnail: QScreen::grabWindow(hwnd) returned null, fallback to PrintWindow");
+    }
+
+    // Fallback to PrintWindow
     HTHUMBNAIL thumbnail;
-    HRESULT hr = DwmRegisterThumbnail(hwnd, (HWND)this->winId(), &thumbnail);
-    if (SUCCEEDED(hr)) {
+    HRESULT hr = DwmRegisterThumbnail((HWND)this->winId(), hwnd, &thumbnail);
+    if (FAILED(hr)) {
+        LOG_WARNING("DwmRegisterThumbnail failed with HRESULT: 0x" + QString::number(hr, 16).toStdString() + ", fallback to PrintWindow");
+    } else {
         // Get thumbnail properties
         DWM_THUMBNAIL_PROPERTIES props = {};
         SIZE sourceSize = {};
+        
+        // Query source size
         hr = DwmQueryThumbnailSourceSize(thumbnail, &sourceSize);
-        if (SUCCEEDED(hr)) {
-            props.rcSource = {0, 0, sourceSize.cx, sourceSize.cy};
-        }
-        if (SUCCEEDED(hr)) {
-            // Set thumbnail properties
-            props.dwFlags = DWM_TNP_RECTSOURCE | DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE;
-            props.fSourceClientAreaOnly = FALSE;
+        if (FAILED(hr)) {
+            LOG_WARNING("DwmQueryThumbnailSourceSize failed with HRESULT: 0x" + QString::number(hr, 16).toStdString());
+            DwmUnregisterThumbnail(thumbnail);
+        } else {
+            // Set up thumbnail properties
+            props.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_SOURCECLIENTAREAONLY;
+            props.fSourceClientAreaOnly = TRUE;
             props.fVisible = TRUE;
             props.opacity = 255;
-            props.rcSource = {0, 0, props.rcSource.right, props.rcSource.bottom};
-            props.rcDestination = {0, 0, width, height};
+            
+            // Calculate destination rect
+            QSize destSize(width, height);
+            QRectF destRect = QRectF(0, 0, destSize.width(), destSize.height());
+            
+            // Adjust to maintain aspect ratio
+            qreal aspectRatio = static_cast<qreal>(sourceSize.cx) / sourceSize.cy;
+            if (destRect.width() / destRect.height() > aspectRatio) {
+                destRect.setWidth(destRect.height() * aspectRatio);
+            } else {
+                destRect.setHeight(destRect.width() / aspectRatio);
+            }
+            destRect.moveCenter(QRectF(0, 0, width, height).center());
 
+            // Update thumbnail properties
+            props.rcDestination = {
+                static_cast<LONG>(destRect.left()),
+                static_cast<LONG>(destRect.top()),
+                static_cast<LONG>(destRect.right()),
+                static_cast<LONG>(destRect.bottom())
+            };
+            
             hr = DwmUpdateThumbnailProperties(thumbnail, &props);
-            if (SUCCEEDED(hr)) {
-                // Create a temporary native widget to host the thumbnail (offscreen)
-                QWidget* temp = new QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint);
-                temp->setAttribute(Qt::WA_NativeWindow);
-                temp->resize(width, height);
-                // Move off-screen to avoid flicker
-                temp->move(-10000, -10000);
-                temp->show();
-
-                // Give DWM a moment to render into the temp window
+            if (FAILED(hr)) {
+                LOG_WARNING("DwmUpdateThumbnailProperties failed with HRESULT: 0x" + QString::number(hr, 16).toStdString());
+                DwmUnregisterThumbnail(thumbnail);
+            } else {
+                // Create a temporary widget to host the thumbnail
+                QWidget* tempWidget = new QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint);
+                tempWidget->setAttribute(Qt::WA_TranslucentBackground);
+                tempWidget->setAttribute(Qt::WA_NoSystemBackground);
+                tempWidget->setWindowOpacity(0.0);
+                tempWidget->setFixedSize(width, height);
+                tempWidget->move(-width - 100, -height - 100);
+                tempWidget->show();
                 QCoreApplication::processEvents();
-                Sleep(60);
-
-                // Grab the temp window contents
-                QPixmap pixmap = QGuiApplication::primaryScreen()->grabWindow((WId)temp->winId(), 0, 0, width, height);
-
-                temp->hide();
-                delete temp;
-
+                QThread::msleep(50);
+                QPixmap pixmap = tempWidget->grab(QRect(0, 0, width, height));
+                tempWidget->hide();
+                delete tempWidget;
                 DwmUnregisterThumbnail(thumbnail);
 
                 if (!pixmap.isNull()) {
                     return pixmap;
                 }
-            } else {
-                DwmUnregisterThumbnail(thumbnail);
+                LOG_WARNING("DWM thumbnail grab returned null, fallback to PrintWindow");
             }
-        } else {
-            DwmUnregisterThumbnail(thumbnail);
         }
     }
+
 
     // Fall back to PrintWindow with improved capture into DIBSection (avoids extra BitBlt copy)
     HDC hdcWindow = GetDC(hwnd);
@@ -511,151 +646,50 @@ void ScreenCaptureSelector::on_item_selection_changed() {
     ok_button_->setEnabled(true);
 
     if (selected_target_) {
-        // Try DWM thumbnail rendering into the preview label for higher-quality preview (windows only)
-        bool shown = false;
-        if (selected_target_->type == CaptureTarget::Type::WINDOW) {
-            HWND srcHwnd = reinterpret_cast<HWND>(std::stoull(selected_target_->id));
-            HTHUMBNAIL thumb = nullptr;
-            HRESULT hr = DwmRegisterThumbnail(srcHwnd, (HWND)preview_label_->winId(), &thumb);
-            if (SUCCEEDED(hr) && thumb) {
-                // Set thumbnail properties to render into preview_label_ area
-                DWM_THUMBNAIL_PROPERTIES props = {};
-                props.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY;
-                props.fVisible = TRUE;
-                props.opacity = 255;
-                int pw = preview_label_->width();
-                int ph = preview_label_->height();
-                props.rcDestination = {0, 0, pw, ph};
-                hr = DwmUpdateThumbnailProperties(thumb, &props);
-                if (SUCCEEDED(hr)) {
-                    // Let Qt event loop update the thumbnail rendering
-                    QCoreApplication::processEvents();
-                    Sleep(60); // small delay for DWM to render
-                    QPixmap grab = QGuiApplication::primaryScreen()->grabWindow((WId)preview_label_->winId(), 0, 0, pw, ph);
-                    if (!grab.isNull()) {
-                        preview_label_->setPixmap(grab);
-                        shown = true;
-                    }
-                }
-                DwmUnregisterThumbnail(thumb);
+        // HD preview: capture on-demand at (or above) preview label resolution, cache it, then scale once.
+        QSize dstSize = preview_label_->size();
+        int capW = std::max(1, dstSize.width());
+        int capH = std::max(1, dstSize.height());
+
+        // Capture at 2x for better sharpness when downscaling
+        int captureW = capW * 2;
+        int captureH = capH * 2;
+
+        if (selected_target_->hd_preview.isNull()) {
+            if (selected_target_->type == CaptureTarget::Type::WINDOW) {
+                HWND hwnd = reinterpret_cast<HWND>(std::stoull(selected_target_->id));
+                selected_target_->hd_preview = create_window_thumbnail(hwnd, captureW, captureH);
+            } else {
+                selected_target_->hd_preview = create_screen_thumbnail(QString::fromStdString(selected_target_->id), captureW, captureH);
             }
         }
 
-        if (!shown) {
-            // Fallback: use existing thumbnail and scale
-            QPixmap scaled_preview = selected_target_->thumbnail.scaled(
-                320, 240, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            preview_label_->setPixmap(scaled_preview);
+        const QPixmap& src = selected_target_->hd_preview.isNull() ? selected_target_->thumbnail : selected_target_->hd_preview;
+        if (!src.isNull()) {
+            QPixmap scaled = src.scaled(dstSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            preview_label_->setPixmap(scaled);
+            preview_label_->setText("");
+        } else {
+            preview_label_->setPixmap(QPixmap());
+            preview_label_->setText("无法预览");
         }
 
         QString preview_text = QString("预览 - %1\n尺寸: %2x%3")
             .arg(selected_target_->type == CaptureTarget::Type::SCREEN ? "屏幕" : "窗口")
             .arg(selected_target_->size.width())
             .arg(selected_target_->size.height());
-        preview_label_->setText(""); // Clear text when showing pixmap
         preview_label_->setToolTip(preview_text);
     }
 }
 
 void ScreenCaptureSelector::update_thumbnails() {
-    // Periodically update thumbnails for selected item
-    if (selected_target_ && selected_target_->type == CaptureTarget::Type::WINDOW) {
-        // Recreate thumbnail for selected window (guard parsing of id)
-        HWND selHwnd = nullptr;
-        try {
-            if (!selected_target_->id.empty()) {
-                selHwnd = reinterpret_cast<HWND>(std::stoull(selected_target_->id));
-            }
-        } catch (const std::exception& ex) {
-            LOG_WARNING(std::string("Invalid window id for thumbnail: ") + selected_target_->id + " - " + ex.what());
-            selHwnd = nullptr;
-        }
-        QPixmap new_thumbnail;
-        if (selHwnd) {
-            new_thumbnail = create_window_thumbnail(selHwnd, 120, 80);
-        } else {
-            new_thumbnail = QPixmap(120, 80);
-            new_thumbnail.fill(QColor(80, 80, 80));
-        }
-
-        if (!new_thumbnail.isNull()) {
-            // Update thumbnail in targets list
-            // Update thumbnail in targets list and list widget item
-            for (int i = 0; i < static_cast<int>(targets_.size()); ++i) {
-                auto& target = targets_[i];
-                if (target.id == selected_target_->id && target.type == selected_target_->type) {
-                    target.thumbnail = new_thumbnail;
-                    auto* item = list_widget_->item(i);
-                    if (item) {
-                        item->setIcon(QIcon(new_thumbnail));
-                    }
-                    break;
-                }
-            }
-
-            // Update preview if it's the selected item
-            QPixmap scaled_preview = new_thumbnail.scaled(
-                320, 240, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            preview_label_->setPixmap(scaled_preview);
-        }
-    }
+    // This function is now disabled to ensure one-shot thumbnail capture.
 }
 
 // Start an async thumbnail update for index if not updating and cooldown passed
 void ScreenCaptureSelector::start_async_thumbnail_update(int index) {
-    if (index < 0 || index >= static_cast<int>(targets_.size())) return;
-
-    auto& target = targets_[index];
-    using namespace std::chrono;
-    auto now = steady_clock::now();
-    const auto cooldown = seconds(1); // 1 second cooldown per target
-    if (target.updating) return;
-    if (now - target.last_update < cooldown) return;
-
-    target.updating = true;
-    // Launch a detached thread to capture into QImage, then post the result back to UI thread
-    HWND hwnd = nullptr;
-    try {
-        if (!target.id.empty()) {
-            hwnd = reinterpret_cast<HWND>(std::stoull(target.id));
-        }
-    } catch (const std::exception& ex) {
-        LOG_WARNING(std::string("start_async_thumbnail_update: invalid target id: ") + target.id + " - " + ex.what());
-        // mark not updating and return early
-        target.updating = false;
-        return;
-    }
-    int capW = std::min(target.size.width(), 1600);
-    int capH = std::min(target.size.height(), 1600);
-
-    // Capture in background
-    std::thread([this, index, hwnd, capW, capH]() {
-        QImage img = capture_window_dib_image(hwnd, capW, capH);
-        // Post result back to UI thread
-        QMetaObject::invokeMethod(this, [this, index, img]() {
-            // convert to pixmap and update UI
-            QPixmap pix;
-            if (!img.isNull()) {
-                pix = QPixmap::fromImage(img).scaled(120, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            } else {
-                pix = QPixmap(120, 80);
-                pix.fill(QColor(80, 80, 80));
-            }
-
-            if (index >= 0 && index < static_cast<int>(targets_.size())) {
-                targets_[index].thumbnail = pix;
-                targets_[index].last_update = std::chrono::steady_clock::now();
-                targets_[index].updating = false;
-                auto* item = list_widget_->item(index);
-                if (item) {
-                    item->setIcon(QIcon(pix));
-                }
-                if (selected_target_ && selected_target_ == &targets_[index]) {
-                    preview_label_->setPixmap(pix.scaled(320, 240, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                }
-            }
-        }, Qt::QueuedConnection);
-    }).detach();
+    // This function is now disabled to ensure one-shot thumbnail capture.
+    (void)index;
 }
 
 // Note: async thumbnail completion is handled inline via QMetaObject::invokeMethod in the worker thread.

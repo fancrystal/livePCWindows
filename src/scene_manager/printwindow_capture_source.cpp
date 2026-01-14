@@ -1,8 +1,11 @@
 #include "scene_manager/printwindow_capture_source.h"
 #include "common/log.h"
+#include "common/media_clock.h"
 #include <windows.h>
 #include <wingdi.h>
 #include <QImage>
+#include <thread>
+#include <chrono>
 
 #pragma comment(lib, "gdi32.lib")
 
@@ -44,6 +47,10 @@ bool PrintWindowCaptureSource::shutdown() {
 void PrintWindowCaptureSource::set_frame_callback(CaptureFrameCallback cb) {
     std::lock_guard<std::mutex> lk(cb_mutex_);
     frame_cb_ = cb;
+}
+
+bool PrintWindowCaptureSource::is_running() const {
+    return running_.load();
 }
 
 void PrintWindowCaptureSource::worker_loop() {
@@ -109,7 +116,7 @@ void PrintWindowCaptureSource::worker_loop() {
             QImage img((uchar*)pBits, w, h, QImage::Format_ARGB32);
             CaptureFrame frame;
             frame.image = img.copy();
-            frame.timestamp = std::chrono::steady_clock::now();
+            frame.timestamp = MediaClock().now();
             frame.width = w;
             frame.height = h;
 
