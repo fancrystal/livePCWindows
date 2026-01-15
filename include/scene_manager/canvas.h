@@ -3,8 +3,10 @@
 #include <QWidget>
 #include <QPainter>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <memory>
 #include <vector>
+#include <unordered_map>
 
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/compositor.h"
@@ -72,8 +74,17 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
     
 private:
+    void maximize_item_in_canvas(const std::shared_ptr<SceneItem>& item);
+    void restore_item_from_maximize();
+    bool is_maximized_ = false;
+    std::string maximized_source_id_;
+    QRectF saved_item_rect_;
+
+
     // 辅助方法
     std::shared_ptr<SceneItem> hit_test(int x, int y) const;
     bool is_in_resize_handle(int x, int y, const Transform& transform) const;

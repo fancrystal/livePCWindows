@@ -53,7 +53,7 @@ set(HTTP_HEADERS "include/http/network_manager.h")
 
 # UI files - let Qt handle them automatically
 set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui")
-
+    
 set(ALL_SOURCES
     ${APP_SOURCES}
     ${COMMON_SOURCES}

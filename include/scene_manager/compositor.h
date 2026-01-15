@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
@@ -19,6 +20,7 @@ struct CompositorLayer {
     QRectF dest_rect;  // Destination rectangle in canvas coordinates
     float opacity = 1.0f;
     bool visible = true;
+    int z_order = 0;
 };
 
 class Compositor : public QWidget {
@@ -36,6 +38,12 @@ public:
     void update_layer_transform(const std::string& source_id, const QRectF& dest_rect, float opacity = 1.0f);
     void set_layer_visible(const std::string& source_id, bool visible);
     bool has_layer(const std::string& source_id) const;
+
+    // Layer ordering and state access
+    std::vector<std::string> get_layer_ids() const;
+    std::optional<CompositorLayer> get_layer_state(const std::string& source_id) const;
+    void move_layer_up(const std::string& source_id);
+    void move_layer_down(const std::string& source_id);
 
     // Canvas properties
     void set_canvas_size(int width, int height);

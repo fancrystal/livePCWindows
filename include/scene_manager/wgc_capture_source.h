@@ -6,8 +6,6 @@
 #include <QImage>
 #include <atomic>
 
-struct ID3D11Texture2D;
-enum DXGI_FORMAT;
 
 namespace live_assistant {
 

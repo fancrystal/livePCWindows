@@ -28,7 +28,7 @@ bool WGCaptureSourceAdapter::stop() {
     if (!running_) return true;
     if (loop_) loop_->stop();
     running_ = false;
-    return true;
+        return true;
 }
 
 bool WGCaptureSourceAdapter::shutdown() {

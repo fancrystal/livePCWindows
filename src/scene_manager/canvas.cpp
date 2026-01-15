@@ -73,7 +73,13 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
         if (screenSrc) {
             QImage latest = screenSrc->get_latest_frame();
             if (!latest.isNull()) {
-                painter.drawImage(item_rect, latest.scaled(item_rect.width(), item_rect.height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                // Scale to fill, cropping if necessary, then draw the center part.
+                QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
+                                   (scaled.height() - item_rect.height()) / 2.0,
+                                   item_rect.width(),
+                                   item_rect.height());
+                painter.drawImage(item_rect, scaled, source_rect);
                 // 跳到绘制标签（后续统一处理）
                 goto RENDER_LABELS;
             }
@@ -92,7 +98,13 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
                         QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
                         if (!image.isNull()) {
                             // 绘制视频帧，使用变换进行缩放和定位
-                            painter.drawImage(item_rect, image.scaled(item_rect.width(), item_rect.height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                            // Scale to fill, cropping if necessary, then draw the center part.
+                            QImage scaled = image.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                            QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
+                                               (scaled.height() - item_rect.height()) / 2.0,
+                                               item_rect.width(),
+                                               item_rect.height());
+                            painter.drawImage(item_rect, scaled, source_rect);
                         } else {
                             painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
                         }
@@ -698,6 +710,105 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent *event) {
     resize_handle_ = 0;
     camera_resize_handle_ = -1;
     update_mouse_cursor(event);
+}
+
+void CanvasWidget::mouseDoubleClickEvent(QMouseEvent *event) {
+    if (!interaction_enabled_) return;
+
+    // If already maximized, any double click restores.
+    if (is_maximized_) {
+        restore_item_from_maximize();
+        return;
+    }
+
+    // Hit-test scene items first
+    auto item = hit_test(event->pos().x(), event->pos().y());
+    if (item) {
+        maximize_item_in_canvas(item);
+        return;
+    }
+
+    // Camera special-case: if double-click inside the camera rect, fullscreen the camera source if present.
+    QRect camera_rect(camera_transform_.x, camera_transform_.y, camera_transform_.width, camera_transform_.height);
+    if (camera_rect.contains(event->pos())) {
+        // Try to locate a VIDEO_CAPTURE item (camera) in the scene and fullscreen it
+        if (current_scene_) {
+            for (auto &si : current_scene_->get_all_scene_items()) {
+                auto src = si ? si->get_source() : nullptr;
+                if (src && src->get_type() == Source::Type::VIDEO_CAPTURE) {
+                    maximize_item_in_canvas(si);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+void CanvasWidget::keyPressEvent(QKeyEvent *event) {
+    if (is_maximized_ && event->key() == Qt::Key_Escape) {
+        restore_item_from_maximize();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void CanvasWidget::maximize_item_in_canvas(const std::shared_ptr<SceneItem>& item) {
+    if (!item) return;
+    auto src = item->get_source();
+    if (!src) return;
+
+    maximized_source_id_ = src->get_id();
+
+    // Save item rect so we can restore
+    auto old_t = item->get_transform();
+    saved_item_rect_ = QRectF(old_t.x, old_t.y, old_t.width, old_t.height);
+
+    // Maximize inside canvas (not OS fullscreen)
+    Transform nt = old_t;
+    nt.x = 0;
+    nt.y = 0;
+    nt.width = canvas_width_ > 0 ? canvas_width_ : width();
+    nt.height = canvas_height_ > 0 ? canvas_height_ : height();
+    item->set_transform(nt);
+
+    // If this source is also a compositor layer (screen/window share), stretch that layer too.
+    if (compositor_) {
+        compositor_->set_layer_visible(maximized_source_id_, true);
+        compositor_->update_layer_transform(maximized_source_id_, QRectF(0, 0, width(), height()));
+    }
+
+    is_maximized_ = true;
+    refresh();
+}
+
+void CanvasWidget::restore_item_from_maximize() {
+    if (!is_maximized_) return;
+
+    // Restore previous transform
+    if (current_scene_) {
+        for (auto &si : current_scene_->get_all_scene_items()) {
+            auto src = si ? si->get_source() : nullptr;
+            if (!src) continue;
+            if (src->get_id() == maximized_source_id_) {
+                Transform t = si->get_transform();
+                t.x = static_cast<int>(saved_item_rect_.x());
+                t.y = static_cast<int>(saved_item_rect_.y());
+                t.width = static_cast<int>(saved_item_rect_.width());
+                t.height = static_cast<int>(saved_item_rect_.height());
+                si->set_transform(t);
+                break;
+            }
+        }
+    }
+
+    // Restore compositor layer transform best-effort (we don't have getters)
+    if (compositor_ && !maximized_source_id_.empty()) {
+        compositor_->update_layer_transform(maximized_source_id_, QRectF(saved_item_rect_.x(), saved_item_rect_.y(), saved_item_rect_.width(), saved_item_rect_.height()));
+    }
+
+    maximized_source_id_.clear();
+    is_maximized_ = false;
+    refresh();
 }
 
 } // namespace live_assistant

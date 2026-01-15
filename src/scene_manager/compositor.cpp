@@ -27,6 +27,15 @@ void Compositor::add_layer(const std::string& source_id) {
     layer.opacity = 1.0f;
     layer.dest_rect = QRectF(0, 0, canvas_size_.width(), canvas_size_.height());
 
+    // Assign a z-order that places it on top
+    int max_z = -1;
+    for (const auto& pair : layers_) {
+        if (pair.second.z_order > max_z) {
+            max_z = pair.second.z_order;
+        }
+    }
+    layer.z_order = max_z + 1;
+
     layers_[source_id] = layer;
     LOG_INFO("Added layer: " + source_id);
 }
@@ -116,8 +125,16 @@ void Compositor::paintEvent(QPaintEvent* event) {
 
     // Draw layers
     std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    std::vector<CompositorLayer> sorted_layers;
     for (const auto& pair : layers_) {
-        const auto& layer = pair.second;
+        sorted_layers.push_back(pair.second);
+    }
+    std::sort(sorted_layers.begin(), sorted_layers.end(), [](const auto& a, const auto& b) {
+        return a.z_order < b.z_order;
+    });
+
+    for (const auto& layer : sorted_layers) {
         if (layer.visible) {
             painter.setOpacity(layer.opacity);
 
@@ -161,14 +178,32 @@ void Compositor::render(QPainter* painter, const QRect& target_rect) {
 
     // Draw layers
     std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    // Create a sorted list of layers based on z_order before rendering
+    std::vector<CompositorLayer> sorted_layers;
+    sorted_layers.reserve(layers_.size());
     for (const auto& pair : layers_) {
-        const auto& layer = pair.second;
+        sorted_layers.push_back(pair.second);
+    }
+    std::sort(sorted_layers.begin(), sorted_layers.end(), [](const auto& a, const auto& b) {
+        return a.z_order < b.z_order;
+    });
+
+    for (const auto& layer : sorted_layers) {
         if (layer.visible) {
             painter->setOpacity(layer.opacity);
 
             // Draw QImage if available, otherwise draw placeholder
             if (!layer.qimage.isNull()) {
-                painter->drawImage(layer.dest_rect.toRect(), layer.qimage);
+                // Scale the image to fill the destination rectangle, cropping if necessary.
+                QImage scaled = layer.qimage.scaled(layer.dest_rect.size().toSize(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                // Calculate the source rectangle to crop from the center of the scaled image.
+                QRectF source_rect((scaled.width() - layer.dest_rect.width()) / 2.0,
+                                   (scaled.height() - layer.dest_rect.height()) / 2.0,
+                                   layer.dest_rect.width(),
+                                   layer.dest_rect.height());
+                // Draw the cropped part of the scaled image onto the destination rectangle.
+                painter->drawImage(layer.dest_rect, scaled, source_rect);
             } else {
                 // Placeholder rectangle
                 painter->fillRect(layer.dest_rect.toRect(), QColor(64, 128, 255));

@@ -1,6 +1,7 @@
 #include "scene_manager/scene_manager.h"
 #include "common/log.h"
 #include "common/error.h"
+#include <algorithm>
 
 namespace live_assistant {
 
@@ -49,6 +50,15 @@ int SceneItem::get_order() const {
     return order_;
 }
 
+// Forward declaration helper
+namespace {
+    void sort_items_by_order(std::vector<std::shared_ptr<SceneItem>>& items) {
+        std::sort(items.begin(), items.end(), [](const auto& a, const auto& b){
+            return a->get_order() < b->get_order();
+        });
+    }
+}
+
 // Scene实现
 Scene::Scene(const std::string& name) : name_(name) {
     LOG_INFO("Created scene: " + name);
@@ -72,10 +82,10 @@ std::shared_ptr<SceneItem> Scene::add_source(std::shared_ptr<Source> source) {
     
     auto item = std::make_shared<SceneItem>(source, default_transform);
     
-    // 根据当前计数设置顺序
+    // 根据当前计数设置顺序（越大越靠上）
     item->set_order(next_order_++);
-    
-    // 添加到场景项列表
+
+    // 追加到末尾
     scene_items_.push_back(item);
     
     LOG_INFO("Added source " + source->get_id() + " to scene " + name_);
@@ -125,7 +135,10 @@ ErrorCode Scene::remove_source(const std::string& source_id) {
 }
 
 std::vector<std::shared_ptr<SceneItem>> Scene::get_all_scene_items() const {
-    return scene_items_;
+    // 按order升序返回，保证绘制顺序
+    auto items = scene_items_;
+    std::sort(items.begin(), items.end(), [](const auto& a, const auto& b){ return a->get_order() < b->get_order();});
+    return items;
 }
 
 std::shared_ptr<SceneItem> Scene::get_scene_item_by_source_id(const std::string& source_id) const {
@@ -280,6 +293,83 @@ std::vector<std::shared_ptr<SceneItem>> SceneManager::get_scene_items(const std:
     }
     LOG_WARNING("Scene not found: " + scene_name);
     return {};
+}
+
+// ------------ Layer helpers implementation --------------
+
+ErrorCode Scene::move_scene_item_up(std::shared_ptr<SceneItem> item) {
+    auto it = std::find(scene_items_.begin(), scene_items_.end(), item);
+    if (it == scene_items_.end()) {
+        LOG_WARNING("Scene item not found when moving up");
+        return ErrorCode::FAILURE;
+    }
+    if (item->get_order() == 0) {
+        return ErrorCode::SUCCESS; // Already at top (front-most)
+    }
+    const int target_order = item->get_order() - 1;
+    for (auto& other : scene_items_) {
+        if (other->get_order() == target_order) {
+            other->set_order(other->get_order() + 1);
+            break;
+        }
+    }
+    item->set_order(target_order);
+    normalize_orders();
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode Scene::move_scene_item_down(std::shared_ptr<SceneItem> item) {
+    auto it = std::find(scene_items_.begin(), scene_items_.end(), item);
+    if (it == scene_items_.end()) {
+        LOG_WARNING("Scene item not found when moving down");
+        return ErrorCode::FAILURE;
+    }
+    const int max_order = static_cast<int>(scene_items_.size()) - 1;
+    if (item->get_order() == max_order) {
+        return ErrorCode::SUCCESS; // Already bottom (back-most)
+    }
+    const int target_order = item->get_order() + 1;
+    for (auto& other : scene_items_) {
+        if (other->get_order() == target_order) {
+            other->set_order(other->get_order() - 1);
+            break;
+        }
+    }
+    item->set_order(target_order);
+    normalize_orders();
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode Scene::set_scene_item_order(std::shared_ptr<SceneItem> item, int new_order) {
+    auto it = std::find(scene_items_.begin(), scene_items_.end(), item);
+    if (it == scene_items_.end()) {
+        LOG_WARNING("Scene item not found when setting order");
+        return ErrorCode::FAILURE;
+    }
+    if (new_order < 0) new_order = 0;
+    if (new_order >= static_cast<int>(scene_items_.size())) {
+        new_order = static_cast<int>(scene_items_.size()) - 1;
+    }
+    for (auto& other : scene_items_) {
+        if (other.get() == item.get()) continue;
+        int order = other->get_order();
+        if (order >= new_order) {
+            other->set_order(order + 1);
+        }
+    }
+    item->set_order(new_order);
+    normalize_orders();
+    return ErrorCode::SUCCESS;
+}
+
+void Scene::normalize_orders() {
+    // sort by order then reassign contiguous
+    std::sort(scene_items_.begin(), scene_items_.end(), [](const auto& a, const auto& b){ return a->get_order() < b->get_order();});
+    int idx = 0;
+    for (auto& it : scene_items_) {
+        it->set_order(idx++);
+    }
+    next_order_ = idx;
 }
 
 } // namespace live_assistant

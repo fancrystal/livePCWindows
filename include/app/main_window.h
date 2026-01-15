@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QPushButton>
+#include <QStyle>
 #include <memory>
 
 namespace Ui {
@@ -96,6 +97,7 @@ private:
     QString extract_source_name(std::shared_ptr<Source> source);
     QPushButton* create_scene_item_button(const QString& text, const QString& style = "");
     QPushButton* create_icon_button(const QString& icon_text, const QString& tooltip = "");
+    QPushButton* create_icon_button(QStyle::StandardPixmap icon, const QString& tooltip = "");
 };
 
 } // namespace live_assistant

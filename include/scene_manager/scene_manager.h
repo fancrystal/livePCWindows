@@ -79,6 +79,15 @@ public:
     // 源管理（便捷的直接方法）
     ErrorCode remove_source(const std::string& source_id);
     
+public:
+    // Layer (z-order) helpers
+    ErrorCode move_scene_item_up(std::shared_ptr<SceneItem> item);
+    ErrorCode move_scene_item_down(std::shared_ptr<SceneItem> item);
+    ErrorCode set_scene_item_order(std::shared_ptr<SceneItem> item, int new_order);
+
+private:
+    void normalize_orders();
+
 private:
     std::string name_;
     std::vector<std::shared_ptr<SceneItem>> scene_items_;

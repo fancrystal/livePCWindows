@@ -25,6 +25,7 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include "app/add_material_dialog.h"
+#include <QStyle>
 
 namespace live_assistant {
 
@@ -755,9 +756,11 @@ void MainWindow::update_scene_items() {
     auto scene = scene_manager_->get_current_scene();
     auto scene_items = scene->get_all_scene_items();
     
-    // 为每个场景项创建UI组件
-    for (int i = 0; i < scene_items.size(); ++i) {
-        auto item = scene_items[i];
+    const int total = static_cast<int>(scene_items.size());
+    // 按 order 降序展示（新添加的在列表顶部）
+    for (int displayIdx = 0; displayIdx < total; ++displayIdx) {
+        int realIdx = total - 1 - displayIdx; // real index in ascending array
+        auto item = scene_items[realIdx];
         auto source = item->get_source();
 
         // 创建水平布局
@@ -770,27 +773,43 @@ void MainWindow::update_scene_items() {
         QPushButton* name_button = create_scene_item_button("■ " + source_name,
             "text-align: left; border: none; background: transparent;");
 
-        // 创建设置、删除和可见性按钮
-        QPushButton* settings_button = create_icon_button("⚙", "Settings");
-        QPushButton* delete_button = create_icon_button("🗑", "Delete");
-        QPushButton* eye_button = create_icon_button(item->is_visible() ? "👁" : "👁‍🗨",
-            item->is_visible() ? "Hide" : "Show");
+        // 创建按钮（使用标准图标）
+        QPushButton* move_up_button = create_icon_button(QStyle::SP_ArrowUp, "Move Up");
+        move_up_button->setEnabled(displayIdx > 0); // 顶部置灰
+
+        QPushButton* eye_button = create_icon_button(item->is_visible() ? QStyle::SP_DialogYesButton
+                                                                      : QStyle::SP_DialogNoButton,
+                                                     item->is_visible() ? "Hide" : "Show");
+        QPushButton* settings_button = create_icon_button(QStyle::SP_FileDialogDetailedView, "Settings");
+        QPushButton* delete_button = create_icon_button(QStyle::SP_TrashIcon, "Delete");
 
         // 连接信号
-        connect(eye_button, &QPushButton::clicked, this, [this, i]() {
-            toggle_scene_item_visibility(i);
+        connect(eye_button, &QPushButton::clicked, this, [this, realIdx]() {
+            toggle_scene_item_visibility(realIdx);
         });
 
-        connect(settings_button, &QPushButton::clicked, this, [this, i]() {
-            show_scene_item_settings(i);
+        connect(settings_button, &QPushButton::clicked, this, [this, realIdx]() {
+            show_scene_item_settings(realIdx);
         });
 
-        connect(delete_button, &QPushButton::clicked, this, [this, i]() {
-            delete_scene_item(i);
+        connect(delete_button, &QPushButton::clicked, this, [this, realIdx]() {
+            delete_scene_item(realIdx);
+        });
+
+        // 连接上移层级
+        connect(move_up_button, &QPushButton::clicked, this, [this, item]() {
+            if (!scene_manager_ || !scene_manager_->get_current_scene()) return;
+            auto scene = scene_manager_->get_current_scene();
+            scene->move_scene_item_down(item);
+            update_scene_items();
+            if (canvas_widget_) {
+                canvas_widget_->refresh();
+            }
         });
 
         // 添加控件到布局
         layout->addWidget(name_button, 1); // 名称按钮占据大部分空间
+        layout->addWidget(move_up_button);
         layout->addWidget(eye_button);
         layout->addWidget(settings_button);
         layout->addWidget(delete_button);
@@ -812,7 +831,32 @@ QString MainWindow::extract_source_name(std::shared_ptr<Source> source) {
 
     // 这里可以根据不同的source类型返回不同的名称
     // 暂时返回一个通用名称
-    return "Source";
+    // Prefer metadata name if available
+    const std::string metadata = source->get_metadata();
+    if (!metadata.empty()) {
+        const std::string key = "name:";
+        size_t pos = metadata.find(key);
+        if (pos != std::string::npos) {
+            pos += key.size();
+            size_t end = metadata.find(',', pos);
+            std::string n = (end == std::string::npos) ? metadata.substr(pos) : metadata.substr(pos, end - pos);
+            if (!n.empty()) {
+                return QString::fromStdString(n);
+            }
+        }
+    }
+
+    // Fallback: infer by type and id
+    switch (source->get_type()) {
+        case Source::Type::VIDEO_CAPTURE:
+            return QString::fromStdString(source->get_id());
+        case Source::Type::SCREEN_CAPTURE:
+            return QString::fromStdString(source->get_id());
+        default:
+            break;
+    }
+
+    return QString::fromStdString(source->get_id());
 }
 
 QPushButton* MainWindow::create_scene_item_button(const QString& text, const QString& style) {
@@ -830,9 +874,20 @@ QPushButton* MainWindow::create_icon_button(const QString& icon_text, const QStr
     if (!tooltip.isEmpty()) {
         button->setToolTip(tooltip);
     }
-    button->setMaximumWidth(30);
-    button->setMaximumHeight(30);
+    button->setMaximumSize(30, 30);
     button->setStyleSheet("QPushButton { border: none; background: transparent; font-size: 14px; }");
+    return button;
+}
+
+QPushButton* MainWindow::create_icon_button(QStyle::StandardPixmap icon, const QString& tooltip) {
+    QPushButton* button = new QPushButton();
+    button->setIcon(style()->standardIcon(icon));
+    button->setIconSize(QSize(16, 16));
+    if (!tooltip.isEmpty()) {
+        button->setToolTip(tooltip);
+    }
+    button->setMaximumSize(30, 30);
+    button->setStyleSheet("QPushButton { border: none; background: transparent; }");
     return button;
 }
 
