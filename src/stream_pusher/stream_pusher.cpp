@@ -21,38 +21,47 @@ StreamPusher::~StreamPusher() {
 ErrorCode StreamPusher::set_config(const StreamConfig& config) {
     Log::info("Setting stream pusher config");
     
-    // Check if stream is running
     if (state_ == StreamState::PUSHING || state_ == StreamState::CONNECTING) {
         Log::error("Cannot set config while stream is running");
         return ErrorCode::INVALID_STATE;
     }
     
-    // Store configuration
     config_ = config;
-    
-    // Update queue max size
     push_queue_.set_max_size(config.max_queue_size);
     
     Log::info("Stream pusher config updated successfully");
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode StreamPusher::register_audio_stream(AVCodecParameters* codecpar, AVRational time_base) {
+    if (state_ != StreamState::IDLE) {
+        Log::error("Cannot register stream while not in IDLE state");
+        return ErrorCode::INVALID_STATE;
+    }
+    return rtmp_pusher_.register_audio_stream(codecpar, time_base);
+}
+
+ErrorCode StreamPusher::register_video_stream(AVCodecParameters* codecpar, AVRational time_base) {
+    if (state_ != StreamState::IDLE) {
+        Log::error("Cannot register stream while not in IDLE state");
+        return ErrorCode::INVALID_STATE;
+    }
+    return rtmp_pusher_.register_video_stream(codecpar, time_base);
+}
+
 ErrorCode StreamPusher::start() {
     Log::info("Starting stream pusher");
     
-    // Check if already pushing
     if (state_ == StreamState::PUSHING || state_ == StreamState::CONNECTING) {
         Log::error("Stream is already pushing");
         return ErrorCode::ALREADY_RUNNING;
     }
     
-    // Check if config is set
     if (config_.server_url.empty() || config_.stream_key.empty()) {
         Log::error("Stream config not set");
         return ErrorCode::INVALID_PARAM;
     }
     
-    // Initialize RTMP pusher
     ErrorCode result = rtmp_pusher_.initialize(config_);
     if (result != ErrorCode::SUCCESS) {
         Log::error("Failed to initialize RTMP pusher");
@@ -60,22 +69,18 @@ ErrorCode StreamPusher::start() {
         return result;
     }
     
-    // Set state to connecting
     set_state(StreamState::CONNECTING);
     
-    // Connect to server
-    result = rtmp_pusher_.connect();
+    result = rtmp_pusher_.connect_and_write_header();
     if (result != ErrorCode::SUCCESS) {
-        Log::error("Failed to connect to RTMP server");
+        Log::error("Failed to connect to RTMP server and write header");
         set_state(StreamState::ERR);
         return result;
     }
     
-    // Start push thread
     stop_thread_ = false;
     push_thread_ = std::thread(&StreamPusher::push_thread_func, this);
     
-    // Set state to pushing
     set_state(StreamState::PUSHING);
     
     Log::info("Stream pusher started successfully");
@@ -85,45 +90,34 @@ ErrorCode StreamPusher::start() {
 ErrorCode StreamPusher::stop() {
     Log::info("Stopping stream pusher");
     
-    // Check if already stopped
     if (state_ == StreamState::IDLE || state_ == StreamState::ERR) {
         return ErrorCode::SUCCESS;
     }
     
-    // Set state to stopping
     set_state(StreamState::STOPPING);
     
-    // Stop push thread
     stop_thread_ = true;
     if (push_thread_.joinable()) {
         push_thread_.join();
     }
     
-    // Disconnect from server
     rtmp_pusher_.disconnect();
     
-    // Clear queue
     push_queue_.clear();
     
-    // Reset state
     set_state(StreamState::IDLE);
     
     Log::info("Stream pusher stopped successfully");
     return ErrorCode::SUCCESS;
 }
 
-ErrorCode StreamPusher::push_packet(const MediaPacket& packet) {
-    // Check if stream is pushing
+ErrorCode StreamPusher::push_packet(EncodedPacketPtr packet) {
     if (state_ != StreamState::PUSHING) {
-        // Allow config packets even when not pushing
-        if (!packet.is_config) {
-            return ErrorCode::INVALID_STATE;
-        }
+        return ErrorCode::INVALID_STATE;
     }
     
-    // Push packet to queue
-    if (!push_queue_.push(packet)) {
-        Log::warn("Failed to push packet to queue");
+    if (!push_queue_.push(std::move(packet))) {
+        Log::warn("Failed to push packet to queue, queue is full");
         return ErrorCode::QUEUE_FULL;
     }
     
@@ -133,20 +127,16 @@ ErrorCode StreamPusher::push_packet(const MediaPacket& packet) {
 void StreamPusher::push_thread_func() {
     Log::info("Push thread started");
     
-    MediaPacket packet;
+    EncodedPacketPtr packet;
     
     while (!stop_thread_) {
-        // Get next packet from queue
         if (push_queue_.pop(packet, 100)) {
-            // Send packet
             ErrorCode result = rtmp_pusher_.send_packet(packet);
             
             if (result != ErrorCode::SUCCESS) {
                 Log::error("Failed to send packet: " + std::to_string(static_cast<int>(result)));
                 
-                // Handle connection errors
                 if (result == ErrorCode::NOT_CONNECTED) {
-                    // Try to reconnect if enabled
                     if (config_.auto_reconnect) {
                         ErrorCode reconnect_result = try_reconnect();
                         if (reconnect_result != ErrorCode::SUCCESS) {
@@ -160,15 +150,9 @@ void StreamPusher::push_thread_func() {
                         break;
                     }
                 } else if (result == ErrorCode::SEND_FAILED) {
-                    // Continue sending other packets
                     Log::warn("Failed to send one packet, continuing...");
                 }
             }
-        }
-        
-        // Check if we need to stop
-        if (stop_thread_) {
-            break;
         }
     }
     
@@ -187,11 +171,9 @@ ErrorCode StreamPusher::try_reconnect() {
         
         Log::info("Reconnect attempt " + std::to_string(attempt) + "/" + std::to_string(max_attempts));
         
-        // Wait before reconnect
         std::this_thread::sleep_for(std::chrono::seconds(config_.reconnect_interval_sec));
         
-        // Try to connect
-        ErrorCode result = rtmp_pusher_.connect();
+        ErrorCode result = rtmp_pusher_.connect_and_write_header();
         if (result == ErrorCode::SUCCESS) {
             Log::info("Reconnected to RTMP server successfully");
             set_state(StreamState::PUSHING);
@@ -199,8 +181,6 @@ ErrorCode StreamPusher::try_reconnect() {
         }
         
         Log::error("Reconnect attempt failed");
-        
-        // Exponential backoff
         std::this_thread::sleep_for(std::chrono::seconds(config_.reconnect_interval_sec * attempt));
     }
     
@@ -224,13 +204,11 @@ StreamPusher::Stats StreamPusher::get_stats() const {
     Stats stats;
     stats.state = state_.load();
     
-    // Get RTMP pusher stats
     auto rtmp_stats = rtmp_pusher_.get_stats();
     stats.connected = rtmp_stats.connected;
     stats.audio_packets_sent = rtmp_stats.audio_packets_sent;
     stats.video_packets_sent = rtmp_stats.video_packets_sent;
     
-    // Get queue stats
     auto queue_stats = push_queue_.get_stats();
     stats.discarded_packets = queue_stats.discarded_packets;
     

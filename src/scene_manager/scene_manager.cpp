@@ -84,7 +84,7 @@ std::shared_ptr<SceneItem> Scene::add_source(std::shared_ptr<Source> source) {
     
     // 根据当前计数设置顺序（越大越靠上）
     item->set_order(next_order_++);
-
+    
     // 追加到末尾
     scene_items_.push_back(item);
     

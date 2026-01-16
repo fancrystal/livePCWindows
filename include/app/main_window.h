@@ -2,7 +2,9 @@
 
 #include <QMainWindow>
 #include <QPushButton>
+#include <QListWidget>
 #include <QStyle>
+#include <QTimer>
 #include <memory>
 
 namespace Ui {
@@ -22,6 +24,7 @@ class Compositor;
 class CompositorEncoderBridge;
 class CaptureManagerIface;
 class Source;
+class SceneItem;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -29,7 +32,7 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
-    
+
     void set_live_id(const QString& live_id);
 
 private slots:
@@ -40,10 +43,16 @@ private slots:
     void on_camera_frame_ready();
     void on_screen_share_button_clicked();
     void on_select_screen_share(const QString& target_name, bool is_screen_mode, int fps, const QString& resolution, bool capture_cursor, bool capture_border);
+    void on_scene_item_reordered();
 
 private:
+    void setup_scene_list();
+    void build_scene_list();
+
+    QListWidget* listWidget_sceneItems_{nullptr};
+
     Ui::MainWindow *ui;
-    
+
     // Modules
     std::shared_ptr<SceneManager> scene_manager_;
     std::shared_ptr<VideoEngine> video_engine_;
@@ -51,7 +60,7 @@ private:
     std::shared_ptr<Encoder> encoder_;
     std::shared_ptr<StreamPusher> stream_pusher_;
     std::shared_ptr<CaptureManagerIface> capture_manager_;
-    
+
     // Canvas widget
     CanvasWidget* canvas_widget_;
 
@@ -61,35 +70,38 @@ private:
 
     // Preview timer
     QTimer* preview_timer_;
-    
+
     // Encoding timer for pushing stream
     QTimer* encoding_timer_;
-    
+
     // Live ID
     QString live_id_;
-    
+
     // Camera related
     bool is_camera_preview_ = false;
-    
+
+    // Stream registration state
+    bool streams_registered_ = false;
+
     // Initialization
     void initialize_modules();
     void setup_ui_connections();
     void update_status(const QString& message);
     void setup_canvas_widget();
-    
+
     // Camera methods
     void start_camera_preview();
     void stop_camera_preview();
     void show_camera_selector();
-    
+
     // Screen share methods
     void show_screen_share_selector();
-    
+
     // Scene item management methods
     void toggle_scene_item_visibility(int index);
     void show_scene_item_settings(int index);
     void delete_scene_item(int index);
-    
+
     // Scene items UI management
     void update_scene_items();
 

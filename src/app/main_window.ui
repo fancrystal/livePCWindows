@@ -341,7 +341,10 @@ QLabel { color: #ffffff; }</string>
                </widget>
               </item>
               <item>
-               <widget class="QComboBox" name="comboBox_scenes">
+               <widget class="QComboBox" name="comboBox_scenes" native="true">
+                <property name="visible">
+                 <bool>false</bool>
+                </property>
                 <property name="currentText">
                  <string>场景1</string>
                 </property>
@@ -359,6 +362,9 @@ QLabel { color: #ffffff; }</string>
               </item>
               <item>
                <widget class="QPushButton" name="pushButton_addScene">
+                <property name="visible">
+                 <bool>false</bool>
+                </property>
                 <property name="text">
                  <string>+</string>
                 </property>
@@ -373,10 +379,22 @@ QLabel { color: #ffffff; }</string>
             <item>
              <widget class="QWidget" name="sceneItemsWidget" native="true">
               <property name="styleSheet">
-               <string notr="true">background-color: #333333; border-radius: 4px;</string>
+               <string notr="true">background-color: #2a2a2a; border-radius: 6px; border: 1px solid #444444;</string>
               </property>
               <layout class="QVBoxLayout" name="verticalLayout_sceneItems">
                <property name="spacing">
+                <number>3</number>
+               </property>
+               <property name="leftMargin">
+                <number>5</number>
+               </property>
+               <property name="topMargin">
+                <number>5</number>
+               </property>
+               <property name="rightMargin">
+                <number>5</number>
+               </property>
+               <property name="bottomMargin">
                 <number>5</number>
                </property>
               </layout>

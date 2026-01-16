@@ -85,7 +85,7 @@ public:
     ErrorCode move_scene_item_down(std::shared_ptr<SceneItem> item);
     ErrorCode set_scene_item_order(std::shared_ptr<SceneItem> item, int new_order);
 
-private:
+public:
     void normalize_orders();
 
 private:

@@ -37,7 +37,7 @@ include_directories(${LIBCURL_DIR}/include)  # libcurl include directory
 # Source files
 file(GLOB_RECURSE APP_SOURCES "src/app/*.cpp")
 file(GLOB_RECURSE APP_HEADERS "include/app/*.h")
-list(APPEND APP_SOURCES src/app/add_material_dialog.cpp)
+list(APPEND APP_SOURCES src/app/add_material_dialog.cpp src/app/scene_item_row.cpp)
 file(GLOB_RECURSE COMMON_SOURCES "src/common/*.cpp")
 file(GLOB_RECURSE COMMON_HEADERS "include/common/*.h")
 file(GLOB_RECURSE SCENE_MANAGER_SOURCES "src/scene_manager/*.cpp")

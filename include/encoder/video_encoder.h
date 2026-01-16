@@ -6,78 +6,83 @@
 
 #include "common/error.h"
 #include "encoder/encoder_config.h"
+#include "stream_pusher/encoded_packet.h"
 
-// 前向声明
+struct AVCodecParameters;
+struct AVRational;
+struct AVCodec;
+struct AVCodecContext;
+struct AVFrame;
+struct SwsContext;
+
 namespace live_assistant {
 struct VideoFrame;
 }
 
 namespace live_assistant {
 
-// 视频编码器抽象类
 class VideoEncoder {
 public:
     virtual ~VideoEncoder() = default;
-    
-    // 使用配置初始化编码器
+
     virtual ErrorCode initialize(const VideoEncoderConfig& config) = 0;
-    
-    // 关闭编码器
     virtual ErrorCode shutdown() = 0;
-    
-    // 编码视频帧
-    virtual ErrorCode encode(const std::shared_ptr<VideoFrame>& frame, std::vector<uint8_t>& encoded_data, bool& is_keyframe) = 0;
-    
-    // 获取编码器配置
+
+    virtual ErrorCode encode(const std::shared_ptr<VideoFrame>& frame, std::vector<EncodedPacketPtr>& packets) = 0;
+
     virtual const VideoEncoderConfig& get_config() const = 0;
-    
-    // 动态设置编码器比特率 (如果支持)
+
+    // Returns a newly allocated AVCodecParameters snapshot. Caller must free via avcodec_parameters_free().
+    virtual AVCodecParameters* get_codec_parameters() const = 0;
+    virtual AVRational get_time_base() const = 0;
+
     virtual ErrorCode set_bitrate(int bitrate) = 0;
-    
-    // 获取当前比特率
     virtual int get_bitrate() const = 0;
-    
-    // 强制生成关键帧
+
     virtual ErrorCode force_keyframe() = 0;
 };
 
-// H.264视频编码器实现
 class H264Encoder : public VideoEncoder {
 public:
     H264Encoder();
     ~H264Encoder() override;
-    
+
     ErrorCode initialize(const VideoEncoderConfig& config) override;
     ErrorCode shutdown() override;
-    ErrorCode encode(const std::shared_ptr<VideoFrame>& frame, std::vector<uint8_t>& encoded_data, bool& is_keyframe) override;
-    
+    ErrorCode encode(const std::shared_ptr<VideoFrame>& frame, std::vector<EncodedPacketPtr>& packets) override;
+
     const VideoEncoderConfig& get_config() const override {
         return config_;
     }
-    
+
+    AVCodecParameters* get_codec_parameters() const override;
+    AVRational get_time_base() const override;
+
     ErrorCode set_bitrate(int bitrate) override;
     int get_bitrate() const override {
         return config_.bitrate;
     }
-    
+
     ErrorCode force_keyframe() override;
-    
+
+    // Flush internal encoder buffers and return remaining packets.
+    ErrorCode flush(std::vector<EncodedPacketPtr>& packets);
+
 private:
-    // 配置
+    std::string preset_to_string(VideoEncodingPreset preset) const;
+    ErrorCode send_frame_internal(const std::shared_ptr<VideoFrame>& frame);
+    ErrorCode send_flush();
+    ErrorCode receive_packets(std::vector<EncodedPacketPtr>& packets);
+
     VideoEncoderConfig config_;
-    
-    // 编码器状态
     bool initialized_ = false;
     bool force_keyframe_ = false;
-    
-    // FFmpeg编码器组件
-    void* codec_ = nullptr;
-    void* codec_ctx_ = nullptr;
-    void* frame_ = nullptr;
-    void* pkt_ = nullptr;
-    
-    // 辅助方法
-    std::string preset_to_string(VideoEncodingPreset preset) const;
+    int64_t next_pts_ = 0;
+
+    const AVCodec* codec_ = nullptr;
+    AVCodecContext* codec_ctx_ = nullptr;
+    AVFrame* frame_ = nullptr;
+    SwsContext* sws_ctx_ = nullptr;
 };
 
 } // namespace live_assistant
