@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SettingsDialog</class>
+ <widget class="QDialog" name="SettingsDialog">
+  <property name="windowTitle">
+   <string>设置</string>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>520</width>
+    <height>360</height>
+   </size>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <widget class="QWidget" name="tabVideo">
+      <attribute name="title">
+       <string>视频</string>
+      </attribute>
+      <layout class="QFormLayout" name="formLayoutVideo">
+       <item row="0" column="0">
+        <widget class="QLabel" name="label_resolution">
+         <property name="text">
+          <string>分辨率</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QComboBox" name="comboBox_resolution"/>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="label_fps">
+         <property name="text">
+          <string>帧率</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QComboBox" name="comboBox_fps"/>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="label_videoBitrate">
+         <property name="text">
+          <string>视频码率(kbps)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QSpinBox" name="spinBox_videoBitrate">
+         <property name="minimum">
+          <number>200</number>
+         </property>
+         <property name="maximum">
+          <number>50000</number>
+         </property>
+         <property name="value">
+          <number>3000</number>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="label_gop">
+         <property name="text">
+          <string>GOP</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <widget class="QSpinBox" name="spinBox_gop">
+         <property name="minimum">
+          <number>1</number>
+         </property>
+         <property name="maximum">
+          <number>600</number>
+         </property>
+         <property name="value">
+          <number>30</number>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabAudio">
+      <attribute name="title">
+       <string>音频</string>
+      </attribute>
+      <layout class="QFormLayout" name="formLayoutAudio">
+       <item row="0" column="0">
+        <widget class="QLabel" name="label_microphone">
+         <property name="text">
+          <string>麦克风设备</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QComboBox" name="comboBox_microphone"/>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="label_sampleRate">
+         <property name="text">
+          <string>采样率</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QComboBox" name="comboBox_sampleRate"/>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="label_channels">
+         <property name="text">
+          <string>声道</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QComboBox" name="comboBox_channels"/>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="label_audioBitrate">
+         <property name="text">
+          <string>音频码率(kbps)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <widget class="QComboBox" name="comboBox_audioBitrate"/>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>SettingsDialog</receiver>
+   <slot>accept()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>396</x>
+     <y>333</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>258</x>
+     <y>351</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>SettingsDialog</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>452</x>
+     <y>333</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>258</x>
+     <y>351</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
