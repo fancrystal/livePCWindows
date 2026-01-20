@@ -35,11 +35,14 @@ public:
 
     void set_live_id(const QString& live_id);
 
+    // 推流目标（后续与直播间列表联通时由外部设置）
+    void set_rtmp_target(const QString& server_url, const QString& stream_key);
+
 private slots:
     void update_preview();
     void encode_and_push();
     void on_camera_button_clicked();
-    void on_select_camera(const QString& camera_name);
+    void on_select_camera(const QString& camera_name, const std::string& camera_device_id);
     void on_camera_frame_ready();
     void on_screen_share_button_clicked();
     void on_select_screen_share(const QString& target_name, bool is_screen_mode, int fps, const QString& resolution, bool capture_cursor, bool capture_border);
@@ -71,7 +74,7 @@ private:
     // Preview timer
     QTimer* preview_timer_;
 
-    // Encoding timer for pushing stream
+    // Encoding timer for pushing stream（这里主要用于音频推送；视频由 CompositorEncoderBridge 推送）
     QTimer* encoding_timer_;
 
     // Live ID
@@ -83,11 +86,18 @@ private:
     // Stream registration state
     bool streams_registered_ = false;
 
+    // RTMP target
+    QString rtmp_server_url_;
+    QString rtmp_stream_key_;
+
     // Initialization
     void initialize_modules();
     void setup_ui_connections();
     void update_status(const QString& message);
     void setup_canvas_widget();
+
+    // A-mode: Scene is authoritative; keep Compositor layers in sync with SceneItems.
+    void sync_scene_to_compositor();
 
     // Camera methods
     void start_camera_preview();

@@ -190,6 +190,7 @@ void WGCCaptureLoop::on_frame_arrived(
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
     winrt::Windows::Foundation::IInspectable const&)
 {
+    LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 帧到达，stopping_: " + std::string(stopping_ ? "true" : "false"));
     if (stopping_) return;
 
     bool resized = false;
@@ -219,15 +220,29 @@ void WGCCaptureLoop::on_frame_arrived(
 
     // Read back into QImage (additional step for Qt pipeline)
     if (surfaceTexture) {
+        LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 开始复制纹理到QImage");
         QImage img = copy_texture_to_qimage(surfaceTexture.get());
+        LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - QImage创建完成，isNull: " + std::string(img.isNull() ? "true" : "false") +
+                 ", 尺寸: " + std::to_string(img.width()) + "x" + std::to_string(img.height()));
+
         if (!img.isNull()) {
             ImageCallback cb;
             {
                 std::lock_guard<std::mutex> lk(cb_mutex_);
                 cb = cb_;
             }
-            if (cb) cb(img);
+            LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调函数存在: " + std::string(cb ? "true" : "false"));
+            if (cb) {
+                LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 调用回调函数");
+                cb(img);
+            } else {
+                LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调函数为空");
+            }
+        } else {
+            LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - QImage为空，跳过回调");
         }
+    } else {
+        LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - surfaceTexture为空");
     }
 }
 

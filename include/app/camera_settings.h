@@ -2,6 +2,10 @@
 
 #include <QDialog>
 #include <memory>
+#include <vector>
+#include <string>
+
+#include "video_engine/video_engine.h"
 
 namespace Ui {
 class CameraSettingsDialog;
@@ -16,8 +20,11 @@ public:
     explicit CameraSettingsDialog(QWidget *parent = nullptr);
     ~CameraSettingsDialog();
 
-    // 设置可用摄像头列表
+    // 设置可用摄像头列表（仅显示名；兼容接口）
     void set_available_cameras(const std::vector<std::string>& cameras);
+
+    // 设置可用摄像头列表（显示名 + dshow device_name）
+    void set_available_camera_choices(const std::vector<VideoEngine::CameraChoice>& cameras);
     
     // 设置摄像头名称
     void set_camera_name(const std::string& name);
@@ -40,8 +47,11 @@ public:
     // 设置圆角
     void set_corner_rounding(bool enabled);
     
-    // 获取摄像头名称
+    // 获取摄像头名称（用于显示）
     std::string get_camera_name() const;
+
+    // 获取摄像头设备标识（dshow device_name 或 OpenCV fallback index）
+    std::string get_camera_device_id() const;
     
     // 获取分辨率
     std::string get_resolution() const;

@@ -23,32 +23,32 @@ class StreamPusher {
 public:
     StreamPusher();
     ~StreamPusher();
-
+    
     // 设置推流配置
     ErrorCode set_config(const StreamConfig& config);
-
+    
     // 开始推流
     ErrorCode start();
-
+    
     // 停止推流
     ErrorCode stop();
-
+    
     // 注册编码流（必须在 start 前调用）
     ErrorCode register_audio_stream(AVCodecParameters* codecpar, AVRational time_base);
     ErrorCode register_video_stream(AVCodecParameters* codecpar, AVRational time_base);
 
     // 发送编码包到推流（线程安全入队）
     ErrorCode push_packet(EncodedPacketPtr packet);
-
+    
     // 获取当前推流状态
     StreamState get_state() const;
-
+    
     // 推流是否正在进行
     bool is_pushing() const;
-
+    
     // 推流是否处于错误状态
     bool is_in_error() const;
-
+    
     // 获取当前统计信息
     struct Stats {
         StreamState state;
@@ -59,38 +59,38 @@ public:
         int reconnect_attempts;
     };
     Stats get_stats() const;
-
+    
     // 重置统计信息
     void reset_stats();
-
+    
 private:
     // 推流线程函数
     void push_thread_func();
-
+    
     // 尝试重新连接
     ErrorCode try_reconnect();
-
+    
     // 设置推流状态
     void set_state(StreamState state);
-
+    
     // 推流配置
     StreamConfig config_;
-
+    
     // 推流状态
     std::atomic<StreamState> state_;
-
+    
     // 推流队列
     PushQueue push_queue_;
-
+    
     // RTMP推流器
     RTMPPusher rtmp_pusher_;
-
+    
     // 推流线程
     std::thread push_thread_;
-
+    
     // 推流线程停止标志
     std::atomic<bool> stop_thread_;
-
+    
     // 重新连接尝试次数
     std::atomic<int> reconnect_attempts_;
 };

@@ -5,7 +5,6 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
-#include <functional>
 #include <vector>
 
 namespace live_assistant {
@@ -13,7 +12,6 @@ namespace live_assistant {
 class CaptureManager {
 public:
     using CaptureSourcePtr = std::shared_ptr<ICaptureSource>;
-    using FrameCallback = CaptureFrameCallback;
 
     CaptureManager();
     ~CaptureManager();
@@ -26,7 +24,6 @@ public:
     bool has_capture_source(const std::string& source_id) const;
 
     // Configuration
-    void set_frame_callback(const std::string& source_id, FrameCallback callback);
     const CaptureConfig* get_source_config(const std::string& source_id) const;
 
     // Status
@@ -41,6 +38,9 @@ public:
     // Statistics
     size_t get_source_count() const;
     size_t get_running_source_count() const;
+
+    // Get source pointer (for signal-slot connections)
+    CaptureSourcePtr get_source(const std::string& source_id) const;
 
 private:
     mutable std::mutex mutex_;

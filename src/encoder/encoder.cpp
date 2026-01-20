@@ -22,73 +22,73 @@ Encoder::~Encoder() {
 
 ErrorCode Encoder::initialize_video_encoder(const VideoEncoderConfig& config) {
     LOG_INFO("Initializing video encoder with configuration");
-
+    
     video_encoder_ = EncoderFactory::create_video_encoder(config);
     if (!video_encoder_) {
         LOG_ERROR("Failed to create video encoder");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     video_config_ = config;
     video_encoder_initialized_ = true;
-
+    
     LOG_INFO("Video encoder initialized successfully");
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode Encoder::initialize_audio_encoder(const AudioEncoderConfig& config) {
     LOG_INFO("Initializing audio encoder with configuration");
-
+    
     audio_encoder_ = EncoderFactory::create_audio_encoder(config);
     if (!audio_encoder_) {
         LOG_ERROR("Failed to create audio encoder");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     audio_config_ = config;
     audio_encoder_initialized_ = true;
-
+    
     LOG_INFO("Audio encoder initialized successfully");
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode Encoder::reinitialize_video_encoder(const VideoEncoderConfig& config) {
     LOG_INFO("Reinitializing video encoder with new configuration");
-
+    
     if (video_encoder_initialized_ && video_encoder_) {
         video_encoder_->shutdown();
         video_encoder_.reset();
     }
-
+    
     return initialize_video_encoder(config);
 }
 
 ErrorCode Encoder::reinitialize_audio_encoder(const AudioEncoderConfig& config) {
     LOG_INFO("Reinitializing audio encoder with new configuration");
-
+    
     if (audio_encoder_initialized_ && audio_encoder_) {
         audio_encoder_->shutdown();
         audio_encoder_.reset();
     }
-
+    
     return initialize_audio_encoder(config);
 }
 
 ErrorCode Encoder::shutdown() {
     LOG_INFO("Shutting down encoder");
-
+    
     if (audio_encoder_initialized_ && audio_encoder_) {
         audio_encoder_->shutdown();
         audio_encoder_.reset();
         audio_encoder_initialized_ = false;
     }
-
+    
     if (video_encoder_initialized_ && video_encoder_) {
         video_encoder_->shutdown();
         video_encoder_.reset();
         video_encoder_initialized_ = false;
     }
-
+    
     LOG_INFO("Encoder shutdown successfully");
     return ErrorCode::SUCCESS;
 }
@@ -98,19 +98,19 @@ ErrorCode Encoder::encode_video_frame(const std::shared_ptr<VideoFrame>& frame, 
         LOG_ERROR("Video encoder not initialized");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     if (!frame) {
         LOG_ERROR("Invalid video frame");
         return ErrorCode::INVALID_PARAM;
     }
-
+    
     packets.clear();
     ErrorCode result = video_encoder_->encode(frame, packets);
     if (result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to encode video frame");
         return result;
     }
-
+    
     return ErrorCode::SUCCESS;
 }
 
@@ -119,19 +119,19 @@ ErrorCode Encoder::encode_audio_frame(const std::shared_ptr<AudioFrame>& frame, 
         LOG_ERROR("Audio encoder not initialized");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     if (!frame) {
         LOG_ERROR("Invalid audio frame");
         return ErrorCode::INVALID_PARAM;
     }
-
+    
     packets.clear();
     ErrorCode result = audio_encoder_->encode(frame, packets);
     if (result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to encode audio frame");
         return result;
     }
-
+    
     return ErrorCode::SUCCESS;
 }
 
@@ -190,7 +190,7 @@ ErrorCode Encoder::set_video_bitrate(int bitrate) {
         LOG_ERROR("Video encoder not initialized");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     video_config_.bitrate = bitrate;
     return video_encoder_->set_bitrate(bitrate);
 }
@@ -200,7 +200,7 @@ ErrorCode Encoder::set_audio_bitrate(int bitrate) {
         LOG_ERROR("Audio encoder not initialized");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     audio_config_.bitrate = bitrate;
     return audio_encoder_->set_bitrate(bitrate);
 }

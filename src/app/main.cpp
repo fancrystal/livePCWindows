@@ -3,10 +3,15 @@
 #include "app/main_window.h"
 #include "app/live_list_window.h"
 #include "common/log.h"
+#include "scene_manager/icapture_source.h"
+#include <qmetatype.h>
 
 int main(int argc, char *argv[]) {
     QApplication a(argc, argv);
     
+    // Register custom types for cross-thread signal/slot connections
+    qRegisterMetaType<live_assistant::CaptureFrame>("CaptureFrame");
+
     // Initialize logging (enable DEBUG to collect detailed logs for capture debugging)
     live_assistant::Log::set_level(live_assistant::LogLevel::DEBUG);
     LOG_INFO("Starting LiveAssistant (DEBUG logs enabled)...");

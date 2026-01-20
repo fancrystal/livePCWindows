@@ -39,15 +39,9 @@ bool PrintWindowCaptureSource::stop() {
 
 bool PrintWindowCaptureSource::shutdown() {
     stop();
-    std::lock_guard<std::mutex> lk(cb_mutex_);
-    frame_cb_ = nullptr;
     return true;
 }
 
-void PrintWindowCaptureSource::set_frame_callback(CaptureFrameCallback cb) {
-    std::lock_guard<std::mutex> lk(cb_mutex_);
-    frame_cb_ = cb;
-}
 
 bool PrintWindowCaptureSource::is_running() const {
     return running_.load();
@@ -113,19 +107,26 @@ void PrintWindowCaptureSource::worker_loop() {
 
         BOOL ok = PrintWindow(hwnd, hdcMem, 0);
         if (ok && pBits) {
-            QImage img((uchar*)pBits, w, h, QImage::Format_ARGB32);
+            // PrintWindow returns BGRA data, so we use Format_RGBA8888 which expects RGBA
+            // We'll need to convert BGRA to RGBA
+            QImage img((uchar*)pBits, w, h, QImage::Format_RGBA8888);
+            // Convert BGRA to RGBA by swapping B and R channels
+            for (int y = 0; y < h; ++y) {
+                QRgb* line = (QRgb*)img.scanLine(y);
+                for (int x = 0; x < w; ++x) {
+                    QRgb pixel = line[x];
+                    // BGRA to RGBA: swap B and R
+                    line[x] = qRgba(qBlue(pixel), qGreen(pixel), qRed(pixel), qAlpha(pixel));
+                }
+            }
+
             CaptureFrame frame;
             frame.image = img.copy();
             frame.timestamp = MediaClock().now();
             frame.width = w;
             frame.height = h;
 
-            CaptureFrameCallback cbcopy;
-            {
-                std::lock_guard<std::mutex> lk(cb_mutex_);
-                cbcopy = frame_cb_;
-            }
-            if (cbcopy) cbcopy(frame);
+            emit frameReady(frame);
         }
 
         SelectObject(hdcMem, hOld);

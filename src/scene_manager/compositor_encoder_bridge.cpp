@@ -4,6 +4,14 @@
 #include "video_engine/video_engine.h"
 #include <chrono>
 
+#include <QImage>
+#include <QPainter>
+
+extern "C" {
+#include <libswscale/swscale.h>
+#include <libavutil/pixfmt.h>
+}
+
 namespace live_assistant {
 
 CompositorEncoderBridge::CompositorEncoderBridge(QObject* parent)
@@ -177,20 +185,45 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
         return nullptr;
     }
 
-    auto frame = std::make_shared<VideoFrame>(width_, height_);
-
-    uint8_t* data = frame->data.get();
-    for (int y = 0; y < height_; ++y) {
-        for (int x = 0; x < width_; ++x) {
-            int index = (y * width_ + x) * 4;
-            data[index + 0] = (x * 255) / width_;
-            data[index + 1] = (y * 255) / height_;
-            data[index + 2] = 128;
-            data[index + 3] = 255;
-        }
+    const QImage img = compositor_->render_to_image(width_, height_).convertToFormat(QImage::Format_RGBA8888);
+    if (img.isNull()) {
+        return nullptr;
     }
 
-    frame->stride = width_ * 4;
+    // Convert composed RGBA image to NV12 for (future) HW-friendly pipeline.
+    auto frame = std::make_shared<VideoFrame>();
+    frame->format = VideoFrame::PixelFormat::NV12;
+    frame->width = width_;
+    frame->height = height_;
+    frame->stride = width_;
+    frame->stride_uv = width_;
+
+    const int y_size = frame->stride * frame->height;
+    const int uv_size = frame->stride_uv * (frame->height / 2);
+    frame->data = std::make_unique<uint8_t[]>(y_size);
+    frame->data_uv = std::make_unique<uint8_t[]>(uv_size);
+    if (!frame->data || !frame->data_uv) {
+        return nullptr;
+    }
+
+    SwsContext* sws = sws_getContext(
+        width_, height_, AV_PIX_FMT_RGBA,
+        width_, height_, AV_PIX_FMT_NV12,
+        SWS_BILINEAR,
+        nullptr, nullptr, nullptr);
+
+    if (!sws) {
+        return nullptr;
+    }
+
+    const uint8_t* src_slices[1] = { img.constBits() };
+    int src_strides[1] = { img.bytesPerLine() };
+
+    uint8_t* dst_slices[2] = { frame->data.get(), frame->data_uv.get() };
+    int dst_strides[2] = { frame->stride, frame->stride_uv };
+
+    sws_scale(sws, src_slices, src_strides, 0, height_, dst_slices, dst_strides);
+    sws_freeContext(sws);
 
     return frame;
 }

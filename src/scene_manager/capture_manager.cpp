@@ -132,16 +132,6 @@ bool CaptureManager::has_capture_source(const std::string& source_id) const {
     return sources_.find(source_id) != sources_.end();
 }
 
-void CaptureManager::set_frame_callback(const std::string& source_id, FrameCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    auto source = get_source_locked(source_id);
-    if (source) {
-        source->set_frame_callback(callback);
-        LOG_INFO("Frame callback set for source: " + source_id);
-    }
-}
-
 const CaptureConfig* CaptureManager::get_source_config(const std::string& source_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -251,6 +241,11 @@ size_t CaptureManager::get_running_source_count() const {
     }
 
     return running_count;
+}
+
+CaptureManager::CaptureSourcePtr CaptureManager::get_source(const std::string& source_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return get_source_locked(source_id);
 }
 
 CaptureManager::CaptureSourcePtr CaptureManager::get_source_locked(const std::string& source_id) const {

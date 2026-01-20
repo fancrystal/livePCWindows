@@ -228,127 +228,63 @@ std::shared_ptr<VideoFrame> VideoEngine::get_latest_frame() {
 }
 
 std::vector<std::string> VideoEngine::get_available_cameras() {
-    std::vector<std::string> cameras;
-    camera_devices_.clear(); // 清空之前的设备列表
-    
-    // 方法1: 优先使用FFmpeg获取摄像头名称（更可靠的设备信息）
+    auto choices = get_available_camera_choices();
+    std::vector<std::string> names;
+    names.reserve(choices.size());
+    for (const auto& choice : choices) {
+        names.push_back(choice.display_name);
+    }
+    return names;
+}
+
+std::vector<VideoEngine::CameraChoice> VideoEngine::get_available_camera_choices() {
+    std::vector<CameraChoice> choices;
+
     if (ffmpeg_initialized_) {
-        LOG_INFO("Using FFmpeg to enumerate cameras");
-        
         AVDeviceInfoList* device_list = nullptr;
         const AVInputFormat* input_format = av_find_input_format("dshow");
-        
-        if (input_format) {
-            // Enumerate dshow video devices
-            if (avdevice_list_input_sources(const_cast<AVInputFormat*>(input_format), "video", nullptr, &device_list) >= 0) {
+        if (input_format && avdevice_list_input_sources(const_cast<AVInputFormat*>(input_format), "video", nullptr, &device_list) >= 0) {
                 LOG_INFO("Found " + std::to_string(device_list->nb_devices) + " video devices via FFmpeg");
-                
-                // Add device names to the list
                 for (int i = 0; i < device_list->nb_devices; i++) {
-                    AVDeviceInfo* device = static_cast<AVDeviceInfo*>(device_list->devices[i]);
-                    if (device) {
-                        CameraDevice camera_device;
-                        
-                        // 设备名称处理
-                        if (device->device_name) {
-                            camera_device.name = device->device_name;
-                        } else {
-                            camera_device.name = "Unknown Device " + std::to_string(i);
+                if (auto* device = static_cast<AVDeviceInfo*>(device_list->devices[i])) {
+                    // Filter out non-video devices that dshow sometimes lists
+                    if (strstr(device->device_description, "麦克风") != nullptr || strstr(device->device_description, "Microphone") != nullptr) {
+                        continue;
                         }
                         
-                        // 设备描述处理
-                        if (device->device_description) {
-                            camera_device.description = device->device_description;
-                        } else {
-                            camera_device.description = camera_device.name;
-                        }
-                        
-                        camera_devices_.push_back(camera_device);
-                        cameras.push_back(camera_device.description); // 返回友好名称
-                        LOG_INFO("  - " + camera_device.description + " (" + camera_device.name + ")");
+                    CameraChoice choice;
+                    choice.display_name = device->device_description ? device->device_description : "Unknown Device";
+                    choice.dshow_name = device->device_name ? device->device_name : "";
+
+                    if (!choice.dshow_name.empty()) {
+                        choices.push_back(choice);
+                        LOG_INFO("Found camera: '" + choice.display_name + "' with dshow name: " + choice.dshow_name);
                     }
                 }
-                
-                // Free device list
+            }
                 avdevice_free_list_devices(&device_list);
-            } else {
-                LOG_WARNING("Failed to enumerate video devices via FFmpeg");
-            }
-            
-            if (!cameras.empty()) {
-                LOG_INFO("Successfully enumerated " + std::to_string(cameras.size()) + " video devices using FFmpeg");
-                return cameras;
-            }
-        } else {
-            LOG_WARNING("Failed to find dshow input format in FFmpeg");
         }
     }
-    
-    // 方法2: 如果FFmpeg失败，使用OpenCV获取摄像头名称
-    if (opencv_initialized_) {
-        LOG_INFO("Using OpenCV to enumerate cameras");
-        
-        // 尝试0-9的摄像头索引
+
+    // Fallback if FFmpeg fails
+    if (choices.empty() && opencv_initialized_) {
+        LOG_WARNING("FFmpeg enumeration failed or found no cameras, falling back to OpenCV index probing.");
         for (int i = 0; i < 10; ++i) {
             cv::VideoCapture cap;
-            bool opened = false;
-            
-            try {
-                // 使用DirectShow后端打开摄像头
-                LOG_INFO("  Attempting to open camera index " + std::to_string(i));
-                opened = cap.open(i, cv::CAP_DSHOW);
-                
-                if (opened) {
-                    // 构建设备信息
-                    CameraDevice camera_device;
-                    camera_device.name = std::to_string(i);
-                    camera_device.description = "Camera " + std::to_string(i);
-                    
-                    // 尝试获取设备的真实FPS（验证设备有效性）
-                    double fps = cap.get(cv::CAP_PROP_FPS);
-                    int width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-                    int height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-                    
-                    if (fps > 0 || width > 0 || height > 0) {
-                        // 设备有效，添加到列表
-                        camera_devices_.push_back(camera_device);
-                        cameras.push_back(camera_device.description);
-                        LOG_INFO("  - Found " + camera_device.description + " (FPS: " + std::to_string(fps) + ", Resolution: " + std::to_string(width) + "x" + std::to_string(height) + ")");
-                    } else {
-                        LOG_WARNING("  - Camera " + std::to_string(i) + " appears to be invalid");
+            if (cap.open(i, cv::CAP_DSHOW)) {
+                cv::Mat test_frame;
+                if (cap.read(test_frame) && !test_frame.empty()) {
+                    CameraChoice choice;
+                    choice.display_name = "Camera " + std::to_string(i);
+                    choice.dshow_name = std::to_string(i); // Use index as dshow_name for OpenCV fallback
+                    choices.push_back(choice);
                     }
-                    
                     cap.release();
-                } else {
-                    LOG_INFO("  - Failed to open camera index " + std::to_string(i));
-                }
-            } catch (const std::exception& e) {
-                LOG_WARNING("  - Exception when opening camera " + std::to_string(i) + ": " + e.what());
-                if (cap.isOpened()) {
-                    cap.release();
-                }
             }
         }
-        
-        if (!cameras.empty()) {
-            LOG_INFO("Found " + std::to_string(cameras.size()) + " video devices using OpenCV");
-            return cameras;
-        }
     }
-    
-    // 方法3: 如果FFmpeg和OpenCV都失败，使用简单的数字索引（兼容方案）
-    LOG_INFO("Using simple index enumeration for cameras");
-    for (int i = 0; i < 3; ++i) {
-        CameraDevice camera_device;
-        camera_device.name = std::to_string(i);
-        camera_device.description = "Camera " + std::to_string(i);
-        camera_devices_.push_back(camera_device);
-        cameras.push_back(camera_device.description);
-        LOG_INFO("  - Added fallback camera: " + camera_device.description);
-    }
-    
-    LOG_INFO("Found " + std::to_string(cameras.size()) + " video devices using simple index");
-    return cameras;
+
+    return choices;
 }
 
 bool VideoEngine::select_camera(const std::string& camera_description) {
@@ -921,7 +857,13 @@ void VideoEngine::release_opencv() {
     }
 }
 
-VideoFrame::VideoFrame(int w, int h) : width(w), height(h), stride(w * 4), timestamp_ms(0) {
+VideoFrame::VideoFrame(int w, int h)
+    : format(PixelFormat::RGBA),
+      width(w),
+      height(h),
+      stride(w * 4),
+      stride_uv(0),
+      timestamp_ms(0) {
     data = std::make_unique<uint8_t[]>(stride * height);
     if (data) {
         memset(data.get(), 0, stride * height);

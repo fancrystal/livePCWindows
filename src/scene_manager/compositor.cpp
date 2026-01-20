@@ -1,6 +1,8 @@
 #include "scene_manager/compositor.h"
 #include "common/log.h"
 
+#include <QImage>
+
 namespace live_assistant {
 
 Compositor::Compositor(QWidget* parent)
@@ -66,7 +68,12 @@ void Compositor::update_layer_texture(const std::string& source_id, ID3D11Textur
     update();  // Trigger repaint
 }
 
+void Compositor::updateLayerImage(QString source_id, QImage image) {
+    update_layer_image(source_id.toStdString(), image);
+}
+
 void Compositor::update_layer_image(const std::string& source_id, const QImage& image) {
+    LOG_INFO("[DIAG] Compositor::update_layer_image for '" + source_id + "'. Image isNull: " + (image.isNull() ? "yes" : "no") + ", size: " + std::to_string(image.width()) + "x" + std::to_string(image.height()));
     std::lock_guard<std::mutex> lock(layers_mutex_);
 
     auto it = layers_.find(source_id);
@@ -75,7 +82,7 @@ void Compositor::update_layer_image(const std::string& source_id, const QImage& 
         return;
     }
 
-    it->second.qimage = image;
+    it->second.qimage = image.copy(); // Use deep copy for cross-thread safety
     update();  // Trigger repaint
 }
 
@@ -106,9 +113,55 @@ void Compositor::set_layer_visible(const std::string& source_id, bool visible) {
     update();  // Trigger repaint
 }
 
+std::vector<std::string> Compositor::get_layer_ids() const {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+    std::vector<std::string> ids;
+    ids.reserve(layers_.size());
+    for (const auto& kv : layers_) {
+        ids.push_back(kv.first);
+    }
+    return ids;
+}
+
 bool Compositor::has_layer(const std::string& source_id) const {
     std::lock_guard<std::mutex> lock(layers_mutex_);
     return layers_.find(source_id) != layers_.end();
+}
+
+void Compositor::set_layer_order(const std::string& source_id, int order) {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    auto it = layers_.find(source_id);
+    if (it == layers_.end()) {
+        LOG_WARNING("Layer not found for order update: " + source_id);
+        return;
+    }
+
+    it->second.z_order = order;
+    update();
+}
+
+QImage Compositor::render_to_image(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return {};
+    }
+
+    QImage img(width, height, QImage::Format_ARGB32);
+    img.fill(Qt::black);
+
+    QPainter painter(&img);
+
+    // Keep consistent coordinate system with canvas
+    const QSize canvas = canvas_size_;
+    if (canvas.width() > 0 && canvas.height() > 0 && (canvas.width() != width || canvas.height() != height)) {
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.scale(static_cast<double>(width) / canvas.width(), static_cast<double>(height) / canvas.height());
+    }
+
+    render(&painter, QRect(0, 0, width, height));
+    painter.end();
+
+    return img;
 }
 
 void Compositor::set_canvas_size(int width, int height) {
@@ -118,13 +171,16 @@ void Compositor::set_canvas_size(int width, int height) {
 }
 
 void Compositor::paintEvent(QPaintEvent* event) {
+    LOG_INFO("[DIAG] 进入paintEvent方法");
     QPainter painter(this);
 
     // Fill background
     painter.fillRect(rect(), Qt::black);
+    LOG_INFO("[DIAG] 绘制背景完成");
 
     // Draw layers
     std::lock_guard<std::mutex> lock(layers_mutex_);
+    LOG_INFO("[DIAG] 开始绘制图层，当前图层数量: " + std::to_string(layers_.size()));
 
     std::vector<CompositorLayer> sorted_layers;
     for (const auto& pair : layers_) {
@@ -133,23 +189,32 @@ void Compositor::paintEvent(QPaintEvent* event) {
     std::sort(sorted_layers.begin(), sorted_layers.end(), [](const auto& a, const auto& b) {
         return a.z_order < b.z_order;
     });
+    LOG_INFO("[DIAG] 图层排序完成");
 
     for (const auto& layer : sorted_layers) {
         if (layer.visible) {
+            LOG_INFO("[DIAG] 绘制图层: ID=" + layer.source_id + ", z_order=" + std::to_string(layer.z_order) + ", 可见性=true");
             painter.setOpacity(layer.opacity);
 
             // Draw QImage if available, otherwise draw placeholder
             if (!layer.qimage.isNull()) {
+                LOG_INFO("[DIAG] 图层 " + layer.source_id + " 有图像数据, 尺寸: " + std::to_string(layer.qimage.width()) + "x" + std::to_string(layer.qimage.height()));
                 painter.drawImage(layer.dest_rect.toRect(), layer.qimage);
+                LOG_INFO("[DIAG] 图层 " + layer.source_id + " 绘制完成");
             } else {
+                LOG_INFO("[DIAG] 图层 " + layer.source_id + " 没有图像数据, 绘制占位符");
                 // Placeholder rectangle
                 painter.fillRect(layer.dest_rect.toRect(), QColor(64, 128, 255));
                 painter.setPen(Qt::white);
                 painter.drawText(layer.dest_rect.toRect(), Qt::AlignCenter,
                                QString("Layer: %1").arg(QString::fromStdString(layer.source_id)));
+                LOG_INFO("[DIAG] 图层 " + layer.source_id + " 占位符绘制完成");
             }
+        } else {
+            LOG_INFO("[DIAG] 图层: ID=" + layer.source_id + ", z_order=" + std::to_string(layer.z_order) + ", 可见性=false, 跳过绘制");
         }
     }
+    LOG_INFO("[DIAG] 所有图层绘制完成");
 
     // Update performance stats
     perf_stats_.frame_count++;
@@ -161,10 +226,13 @@ void Compositor::paintEvent(QPaintEvent* event) {
         perf_stats_.avg_fps = static_cast<double>(perf_stats_.frame_count) / time_since_last_update.count();
         perf_stats_.frame_count = 0;
         perf_stats_.last_update = current_time;
+        LOG_INFO("[DIAG] 性能统计更新: 平均帧率=" + std::to_string(perf_stats_.avg_fps) + " fps");
     }
 
     // Emit frame ready signal
+    LOG_INFO("[DIAG] 发出frame_ready信号");
     emit frame_ready();
+    LOG_INFO("[DIAG] paintEvent方法结束");
 }
 
 void Compositor::get_performance_stats(double& avg_fps, double& avg_render_time_ms, size_t& frame_count) const {
@@ -195,20 +263,37 @@ void Compositor::render(QPainter* painter, const QRect& target_rect) {
 
             // Draw QImage if available, otherwise draw placeholder
             if (!layer.qimage.isNull()) {
-                // Scale the image to fill the destination rectangle, cropping if necessary.
-                QImage scaled = layer.qimage.scaled(layer.dest_rect.size().toSize(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-                // Calculate the source rectangle to crop from the center of the scaled image.
-                QRectF source_rect((scaled.width() - layer.dest_rect.width()) / 2.0,
-                                   (scaled.height() - layer.dest_rect.height()) / 2.0,
-                                   layer.dest_rect.width(),
-                                   layer.dest_rect.height());
-                // Draw the cropped part of the scaled image onto the destination rectangle.
-                painter->drawImage(layer.dest_rect, scaled, source_rect);
+                LOG_INFO("[DIAG] Compositor::render - 绘制图层 " + layer.source_id + ", 图像尺寸: " + std::to_string(layer.qimage.width()) + "x" + std::to_string(layer.qimage.height()) + ", 目标矩形: " + std::to_string(target_rect.width()) + "x" + std::to_string(target_rect.height()));
+
+                // Calculate the scaled size to fit the target rectangle while maintaining aspect ratio
+                QSize image_size = layer.qimage.size();
+                QSize target_size = target_rect.size();
+
+                // Calculate scaling factor to fit within target rectangle
+                double scale_x = static_cast<double>(target_size.width()) / image_size.width();
+                double scale_y = static_cast<double>(target_size.height()) / image_size.height();
+                double scale = (std::min)(scale_x, scale_y);
+
+                // Calculate scaled image size
+                int scaled_width = static_cast<int>(image_size.width() * scale);
+                int scaled_height = static_cast<int>(image_size.height() * scale);
+
+                // Calculate position to center the image
+                int x = target_rect.x() + (target_size.width() - scaled_width) / 2;
+                int y = target_rect.y() + (target_size.height() - scaled_height) / 2;
+
+                QRect dest_rect(x, y, scaled_width, scaled_height);
+
+                // Scale and draw the image
+                QImage scaled = layer.qimage.scaled(scaled_width, scaled_height, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                painter->drawImage(dest_rect, scaled);
+
+                LOG_INFO("[DIAG] Compositor::render - 图层 " + layer.source_id + " 绘制完成, 缩放后尺寸: " + std::to_string(scaled_width) + "x" + std::to_string(scaled_height) + ", 位置: (" + std::to_string(x) + "," + std::to_string(y) + ")");
             } else {
                 // Placeholder rectangle
-                painter->fillRect(layer.dest_rect.toRect(), QColor(64, 128, 255));
+                painter->fillRect(target_rect, QColor(64, 128, 255));
                 painter->setPen(Qt::white);
-                painter->drawText(layer.dest_rect.toRect(), Qt::AlignCenter,
+                painter->drawText(target_rect, Qt::AlignCenter,
                                QString("Layer: %1").arg(QString::fromStdString(layer.source_id)));
             }
         }

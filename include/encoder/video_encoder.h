@@ -83,6 +83,9 @@ private:
     AVCodecContext* codec_ctx_ = nullptr;
     AVFrame* frame_ = nullptr;
     SwsContext* sws_ctx_ = nullptr;
+    AVPixelFormat sws_src_fmt_ = AV_PIX_FMT_NONE;
+    int sws_src_w_ = 0;
+    int sws_src_h_ = 0;
 };
 
 } // namespace live_assistant

@@ -37,19 +37,22 @@ bool WGCaptureSourceAdapter::shutdown() {
     return true;
 }
 
-void WGCaptureSourceAdapter::set_frame_callback(CaptureFrameCallback cb) { frame_cb_ = std::move(cb); }
-
 bool WGCaptureSourceAdapter::is_running() const { return running_; }
 
 void WGCaptureSourceAdapter::on_image(const QImage& img) {
+    LOG_INFO("[DIAG] WGCaptureSourceAdapter::on_image - 收到图像，isNull: " + std::string(img.isNull() ? "true" : "false") +
+             ", 尺寸: " + std::to_string(img.width()) + "x" + std::to_string(img.height()));
+
     if (img.isNull()) return;
+
     CaptureFrame frame;
     frame.image = img;
     frame.width = img.width();
     frame.height = img.height();
     frame.timestamp = MediaClock().now();
-    CaptureFrameCallback cb = frame_cb_;
-    if (cb) cb(frame);
+
+    LOG_INFO("[DIAG] WGCaptureSourceAdapter::on_image - 发送frameReady信号，源ID: " + cfg_.target_id);
+    emit frameReady(frame);
 }
 
 } // namespace live_assistant

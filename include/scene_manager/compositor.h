@@ -26,6 +26,10 @@ struct CompositorLayer {
 class Compositor : public QWidget {
     Q_OBJECT
 
+public slots:
+    // Thread-safe slot to update a layer's image.
+    void updateLayerImage(QString source_id, QImage image);
+
 public:
     explicit Compositor(QWidget* parent = nullptr);
     ~Compositor() override;
@@ -37,10 +41,11 @@ public:
     void update_layer_image(const std::string& source_id, const QImage& image);
     void update_layer_transform(const std::string& source_id, const QRectF& dest_rect, float opacity = 1.0f);
     void set_layer_visible(const std::string& source_id, bool visible);
+    void set_layer_order(const std::string& source_id, int order);
     bool has_layer(const std::string& source_id) const;
+    std::vector<std::string> get_layer_ids() const;
 
     // Layer ordering and state access
-    std::vector<std::string> get_layer_ids() const;
     std::optional<CompositorLayer> get_layer_state(const std::string& source_id) const;
     void move_layer_up(const std::string& source_id);
     void move_layer_down(const std::string& source_id);
@@ -54,6 +59,9 @@ public:
 
     // Render to a QPainter (for CPU-based rendering)
     void render(QPainter* painter, const QRect& target_rect);
+
+    // Render current layers into an offscreen image (CPU). Thread-safe.
+    QImage render_to_image(int width, int height);
 
     // Performance monitoring
     void get_performance_stats(double& avg_fps, double& avg_render_time_ms, size_t& frame_count) const;

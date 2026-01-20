@@ -113,7 +113,7 @@ ErrorCode StreamPusher::stop() {
 
 ErrorCode StreamPusher::push_packet(EncodedPacketPtr packet) {
     if (state_ != StreamState::PUSHING) {
-        return ErrorCode::INVALID_STATE;
+            return ErrorCode::INVALID_STATE;
     }
     
     if (!push_queue_.push(std::move(packet))) {

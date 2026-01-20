@@ -128,6 +128,7 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         return ErrorCode::INIT_FAILED;
     }
 
+    // Input pixel format may vary (RGBA/NV12). Initialize with RGBA; will be recreated on demand.
     sws_ctx_ = sws_getContext(
         config_.width,
         config_.height,
@@ -179,7 +180,7 @@ ErrorCode H264Encoder::shutdown() {
 }
 
 ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in) {
-    if (!in || !frame_ || !codec_ctx_ || !sws_ctx_) {
+    if (!in || !frame_ || !codec_ctx_) {
         return ErrorCode::INVALID_PARAM;
     }
 
@@ -187,6 +188,51 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
         return ErrorCode::ENCODING_ERROR;
     }
 
+    AVPixelFormat src_fmt = AV_PIX_FMT_RGBA;
+    if (in->format == VideoFrame::PixelFormat::NV12) {
+        src_fmt = AV_PIX_FMT_NV12;
+    }
+
+    if (!sws_ctx_ || sws_src_fmt_ != src_fmt || sws_src_w_ != in->width || sws_src_h_ != in->height) {
+        if (sws_ctx_) {
+            sws_freeContext(sws_ctx_);
+            sws_ctx_ = nullptr;
+        }
+
+        sws_ctx_ = sws_getContext(
+            config_.width,
+            config_.height,
+            src_fmt,
+            config_.width,
+            config_.height,
+            codec_ctx_->pix_fmt,
+            SWS_BILINEAR,
+            nullptr,
+            nullptr,
+            nullptr);
+        if (!sws_ctx_) {
+            LOG_ERROR("Failed to create sws context (dynamic)");
+            return ErrorCode::ENCODING_ERROR;
+        }
+
+        sws_src_fmt_ = src_fmt;
+        sws_src_w_ = in->width;
+        sws_src_h_ = in->height;
+    }
+
+    if (in->format == VideoFrame::PixelFormat::NV12) {
+        const uint8_t* src_slices[2] = {in->data.get(), in->data_uv.get()};
+        int src_stride[2] = {in->stride, in->stride_uv};
+
+        sws_scale(
+            sws_ctx_,
+            src_slices,
+            src_stride,
+            0,
+            in->height,
+            frame_->data,
+            frame_->linesize);
+    } else {
     const uint8_t* src_slices[1] = {reinterpret_cast<const uint8_t*>(in->data.get())};
     int src_stride[1] = {in->stride > 0 ? in->stride : in->width * 4};
 
@@ -198,6 +244,7 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
         in->height,
         frame_->data,
         frame_->linesize);
+    }
 
     frame_->pts = next_pts_++;
 

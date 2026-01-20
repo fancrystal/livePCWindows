@@ -24,16 +24,16 @@ RTMPPusher::~RTMPPusher() {
 
 ErrorCode RTMPPusher::initialize(const StreamConfig& config) {
     LOG_INFO("Initializing RTMP pusher");
-
+    
     config_ = config;
     header_written_ = false;
-
+    
     ErrorCode result = init_format_context();
     if (result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to initialize format context");
         return result;
     }
-
+    
     LOG_INFO("RTMP pusher initialized successfully");
     return ErrorCode::SUCCESS;
 }
@@ -45,12 +45,12 @@ ErrorCode RTMPPusher::init_format_context() {
         LOG_ERROR("Failed to allocate output context");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     if (config_.low_latency && format_ctx_->priv_data) {
         av_opt_set(format_ctx_->priv_data, "rtmp_live", "live", 0);
         av_opt_set(format_ctx_->priv_data, "rtmp_buffer", "0", 0);
     }
-
+    
     return ErrorCode::SUCCESS;
 }
 
@@ -68,7 +68,7 @@ ErrorCode RTMPPusher::register_audio_stream(AVCodecParameters* codecpar, AVRatio
         LOG_ERROR("Failed to create audio stream");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     if (avcodec_parameters_copy(audio_stream_->codecpar, codecpar) < 0) {
         LOG_ERROR("Failed to copy audio codec parameters");
         return ErrorCode::INIT_FAILED;
@@ -92,7 +92,7 @@ ErrorCode RTMPPusher::register_video_stream(AVCodecParameters* codecpar, AVRatio
         LOG_ERROR("Failed to create video stream");
         return ErrorCode::INIT_FAILED;
     }
-
+    
     if (avcodec_parameters_copy(video_stream_->codecpar, codecpar) < 0) {
         LOG_ERROR("Failed to copy video codec parameters");
         return ErrorCode::INIT_FAILED;
@@ -108,16 +108,16 @@ ErrorCode RTMPPusher::open_output() {
     }
 
     std::string full_url = config_.server_url + "/" + config_.stream_key;
-
+    
     if (avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE) < 0) {
         LOG_ERROR("Failed to open output URL: " + full_url);
         return ErrorCode::CONNECT_FAILED;
     }
-
+    
     connected_ = true;
     stats_.connected = true;
     stats_.reconnect_attempts++;
-
+    
     return ErrorCode::SUCCESS;
 }
 
@@ -151,22 +151,22 @@ ErrorCode RTMPPusher::disconnect() {
     if (!connected_) {
         return ErrorCode::SUCCESS;
     }
-
+    
     LOG_INFO("Disconnecting from RTMP server");
-
+    
     if (format_ctx_ && header_written_) {
         av_write_trailer(format_ctx_);
     }
-
+    
     if (format_ctx_ && format_ctx_->pb) {
         avio_close(format_ctx_->pb);
         format_ctx_->pb = nullptr;
     }
-
+    
     connected_ = false;
     header_written_ = false;
     stats_.connected = false;
-
+    
     LOG_INFO("Disconnected from RTMP server");
     return ErrorCode::SUCCESS;
 }
@@ -175,11 +175,11 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     if (!packet) {
         return ErrorCode::INVALID_PARAM;
     }
-
+    
     if (!connected_ || !header_written_ || !format_ctx_ || !format_ctx_->pb) {
         return ErrorCode::NOT_CONNECTED;
     }
-
+    
     if (!packet->pkt) {
         return ErrorCode::INVALID_PARAM;
     }
@@ -191,13 +191,13 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     if (packet->type == MediaType::AUDIO) {
         if (!audio_stream_) {
             return ErrorCode::INVALID_STATE;
-        }
+    }
         st = audio_stream_;
-        stats_.audio_packets_sent++;
+    stats_.audio_packets_sent++;
     } else {
         if (!video_stream_) {
             return ErrorCode::INVALID_STATE;
-        }
+}
         st = video_stream_;
         stats_.video_packets_sent++;
 
@@ -212,7 +212,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     avpkt->pts = packet->pts;
     avpkt->dts = packet->dts;
     avpkt->duration = packet->duration;
-
+    
     if (packet->encoder_time_base.num > 0 && packet->encoder_time_base.den > 0) {
         av_packet_rescale_ts(avpkt, packet->encoder_time_base, st->time_base);
     }
@@ -222,7 +222,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         LOG_ERROR("Failed to send packet");
         return ErrorCode::SEND_FAILED;
     }
-
+    
     stats_.bytes_sent += avpkt->size;
     return ErrorCode::SUCCESS;
 }
@@ -246,7 +246,7 @@ void RTMPPusher::free_resources() {
         avformat_free_context(format_ctx_);
         format_ctx_ = nullptr;
     }
-
+    
     connected_ = false;
     header_written_ = false;
     stats_.connected = false;

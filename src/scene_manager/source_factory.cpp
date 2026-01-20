@@ -142,6 +142,16 @@ std::vector<std::string> CameraSource::get_available_cameras() const {
     return {"Camera 1", "Camera 2"};
 }
 
+void CameraSource::push_frame(const QImage& image) {
+    std::lock_guard<std::mutex> lk(latest_frame_mutex_);
+    latest_frame_ = image.copy();
+}
+
+QImage CameraSource::get_latest_frame() const {
+    std::lock_guard<std::mutex> lk(latest_frame_mutex_);
+    return latest_frame_.copy();
+}
+
 ScreenSource::ScreenSource(const std::string& id, const std::string& name) 
     : VideoSource(id, Source::Type::VIDEO_CAPTURE), name_(name) {
     LOG_INFO("ScreenSource constructor: " + id);

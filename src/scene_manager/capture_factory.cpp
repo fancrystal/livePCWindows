@@ -1,11 +1,19 @@
 #include "scene_manager/capture_factory.h"
 #include "scene_manager/printwindow_capture_source.h"
 #include "scene_manager/wgc_capture_source.h"
+#include "scene_manager/opencv_camera_capture_source.h"
+#include "scene_manager/ffmpeg_camera_capture_source.h"
 #include "common/log.h"
 
 namespace live_assistant {
 
 std::shared_ptr<ICaptureSource> CaptureFactory::create_capture_source(const CaptureConfig& config) {
+    if (config.type == CaptureConfig::TargetType::CAMERA) {
+        // Camera: prefer FFmpeg(dshow) using device_name; fallback to OpenCV if needed.
+        LOG_INFO("CaptureFactory: creating FFmpegCameraCaptureSource for camera device: " + config.target_id);
+        return std::make_shared<FFmpegCameraCaptureSource>(config);
+    }
+
     // Try WGC first, fallback to PrintWindow if WGC fails
     LOG_INFO("CaptureFactory: attempting to create WGCaptureSourceAdapter for target: " + config.target_id);
     

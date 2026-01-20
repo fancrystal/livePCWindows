@@ -40,7 +40,9 @@ file(GLOB_RECURSE APP_HEADERS "include/app/*.h")
 list(APPEND APP_SOURCES src/app/add_material_dialog.cpp src/app/scene_item_row.cpp)
 file(GLOB_RECURSE COMMON_SOURCES "src/common/*.cpp")
 file(GLOB_RECURSE COMMON_HEADERS "include/common/*.h")
-file(GLOB_RECURSE SCENE_MANAGER_SOURCES "src/scene_manager/*.cpp")
+file(GLOB_RECURSE SCENE_MANAGER_SOURCES
+    "src/scene_manager/*.cpp"
+)
 file(GLOB_RECURSE SCENE_MANAGER_HEADERS "include/scene_manager/*.h")
 file(GLOB_RECURSE VIDEO_ENGINE_SOURCES "src/video_engine/*.cpp")
 file(GLOB_RECURSE AUDIO_ENGINE_SOURCES "src/audio_engine/*.cpp")
@@ -52,7 +54,7 @@ set(HTTP_SOURCES "src/http/network_manager.cpp")
 set(HTTP_HEADERS "include/http/network_manager.h")
 
 # UI files - let Qt handle them automatically
-set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui")
+set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui")
     
 set(ALL_SOURCES
     ${APP_SOURCES}

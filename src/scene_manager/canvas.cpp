@@ -66,13 +66,16 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
     // 设置绘制器不透明度
     painter.setOpacity(transform.opacity);
     
-    // 对于视频捕获源，优先使用源自身提供的帧（如 ScreenSource），否则回退到 VideoEngine
+    // 对于视频捕获源，优先使用源自身提供的帧
     if (source->get_type() == Source::Type::VIDEO_CAPTURE) {
-        // 如果源是 ScreenSource，尝试获取它的最新帧
+        bool frame_rendered = false;
+
+        // 首先尝试 ScreenSource（屏幕共享）
         auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(source);
         if (screenSrc) {
             QImage latest = screenSrc->get_latest_frame();
             if (!latest.isNull()) {
+                LOG_INFO("[CANVAS] 渲染 ScreenSource: " + source->get_id() + ", 图像尺寸: " + std::to_string(latest.width()) + "x" + std::to_string(latest.height()));
                 // Scale to fill, cropping if necessary, then draw the center part.
                 QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
                 QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
@@ -80,9 +83,32 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
                                    item_rect.width(),
                                    item_rect.height());
                 painter.drawImage(item_rect, scaled, source_rect);
-                // 跳到绘制标签（后续统一处理）
-                goto RENDER_LABELS;
+                frame_rendered = true;
             }
+        }
+
+        // 如果不是 ScreenSource，尝试 CameraSource
+        if (!frame_rendered) {
+            auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(source);
+            if (cameraSrc) {
+                QImage latest = cameraSrc->get_latest_frame();
+                if (!latest.isNull()) {
+                    LOG_INFO("[CANVAS] 渲染 CameraSource: " + source->get_id() + ", 图像尺寸: " + std::to_string(latest.width()) + "x" + std::to_string(latest.height()));
+                    // Scale to fill, cropping if necessary, then draw the center part.
+                    QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                    QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
+                                       (scaled.height() - item_rect.height()) / 2.0,
+                                       item_rect.width(),
+                                       item_rect.height());
+                    painter.drawImage(item_rect, scaled, source_rect);
+                    frame_rendered = true;
+                }
+            }
+        }
+
+        if (frame_rendered) {
+            // 跳到绘制标签（后续统一处理）
+            goto RENDER_LABELS;
         }
 
         // 如果没有来源帧，继续原有 VideoEngine 回退逻辑
@@ -316,6 +342,12 @@ void CanvasWidget::set_canvas_resolution(int width, int height) {
     canvas_width_ = width;
     canvas_height_ = height;
     LOG_INFO("Set canvas resolution: " + std::to_string(width) + "x" + std::to_string(height));
+
+    // 同步更新compositor的画布大小，确保推流分辨率一致
+    if (compositor_) {
+        compositor_->set_canvas_size(width, height);
+    }
+
     refresh();
 }
 
@@ -342,13 +374,8 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
         paint_count = 0;
     }
 
-    // 首先渲染合成器内容（捕获的屏幕/窗口）
-    if (compositor_) {
-        // Compositor 直接绘制到我们的 painter 上
-        compositor_->render(&painter, widget_rect);
-    }
-
-    // 然后绘制场景项（摄像头、图片等）
+    // 只渲染场景项（摄像头、屏幕共享、图片等）
+    // 所有视频源都通过SceneItem在场景系统中统一渲染
     if (renderer_ && current_scene_) {
         // 保存当前render状态
         painter.save();

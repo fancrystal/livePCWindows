@@ -1,36 +1,38 @@
 #pragma once
 
-#include <functional>
 #include <string>
 #include <chrono>
 #include "common/media_clock.h"
 #include <QImage>
+#include <QObject>
 
 namespace live_assistant {
 
-// use MediaTimestamp defined in common/media_clock.h
-
 struct CaptureConfig {
-    enum class TargetType { SCREEN, WINDOW };
+    enum class TargetType { SCREEN, WINDOW, CAMERA };
     TargetType type = TargetType::WINDOW;
-    std::string target_id; // hwnd as string or monitor id
+
+    // For SCREEN: monitor id
+    // For WINDOW: hwnd as string
+    // For CAMERA: dshow device_name or OpenCV index as string
+    std::string target_id;
+
     int fps = 30;
+
+    // SCREEN/WINDOW options
     bool capture_cursor = true;
     bool capture_border = true;
 };
 
 struct CaptureFrame {
-    // Note: BGRA pixel data owned by QImage; safe across threads if deep-copied
-
     QImage image; // captured image (BGRA)
     MediaTimestamp timestamp;
     int width = 0;
     int height = 0;
 };
 
-using CaptureFrameCallback = std::function<void(const CaptureFrame&)>;
-
-class ICaptureSource {
+class ICaptureSource : public QObject {
+    Q_OBJECT
 public:
     virtual ~ICaptureSource() = default;
 
@@ -40,13 +42,14 @@ public:
     virtual bool stop() = 0;
     virtual bool shutdown() = 0;
 
-    // Configuration
-    virtual void set_frame_callback(CaptureFrameCallback cb) = 0;
     virtual const CaptureConfig& get_config() const = 0;
-
-    // Status
     virtual bool is_running() const = 0;
+
+signals:
+    void frameReady(const CaptureFrame& frame);
 };
 
-} // namespace live_assistant
+}
+
+ // namespace live_assistant
 

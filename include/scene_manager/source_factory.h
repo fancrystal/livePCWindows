@@ -96,16 +96,24 @@ public:
     
     // VideoSource接口实现
     bool get_frame(std::vector<uint8_t>& frame_data, int& width, int& height) override;
-    
+
     // 摄像头特定方法
     bool select_camera(const std::string& camera_id);
     std::vector<std::string> get_available_cameras() const;
+
+    // 用于接收外部捕获的数据（如从 ICaptureSource）
+    void push_frame(const QImage& image);
+    QImage get_latest_frame() const;
     
 private:
     std::string name_;
     std::string selected_camera_id_;
     bool initialized_ = false;
     bool running_ = false;
+
+    // 用于存储最新帧（从外部捕获源接收）
+    mutable std::mutex latest_frame_mutex_;
+    QImage latest_frame_;
 };
 
 // 屏幕源实现

@@ -128,17 +128,27 @@ CameraSettingsDialog::CameraSettingsDialog(QWidget *parent) :
 }
 
 void CameraSettingsDialog::set_available_cameras(const std::vector<std::string>& cameras) {
-    // 清空现有列表
+    // Backward-compatible API: treat input as display names only.
+    ui->comboBox_camera->clear();
+
+    for (int i = 0; i < static_cast<int>(cameras.size()); ++i) {
+        ui->comboBox_camera->addItem(QString::fromStdString(cameras[i]), QString());
+    }
+
+    if (!cameras.empty()) {
+        ui->comboBox_camera->setCurrentIndex(0);
+    }
+}
+
+void CameraSettingsDialog::set_available_camera_choices(const std::vector<VideoEngine::CameraChoice>& cameras) {
     ui->comboBox_camera->clear();
     
-    // 添加可用摄像头
-    for (const auto& camera : cameras) {
-        ui->comboBox_camera->addItem(QString::fromStdString(camera));
+    for (const auto& cam : cameras) {
+        ui->comboBox_camera->addItem(QString::fromStdString(cam.display_name), QString::fromStdString(cam.dshow_name));
     }
     
-    // 如果有摄像头，默认选择第一个
     if (!cameras.empty()) {
-        set_camera_name(cameras[0]);
+        ui->comboBox_camera->setCurrentIndex(0);
     }
 }
 
@@ -202,6 +212,11 @@ void CameraSettingsDialog::set_corner_rounding(bool enabled)
 std::string CameraSettingsDialog::get_camera_name() const
 {
     return ui->comboBox_camera->currentText().toStdString();
+}
+
+std::string CameraSettingsDialog::get_camera_device_id() const
+{
+    return ui->comboBox_camera->currentData().toString().toStdString();
 }
 
 std::string CameraSettingsDialog::get_resolution() const

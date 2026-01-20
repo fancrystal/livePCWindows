@@ -11,6 +11,7 @@ namespace live_assistant {
 
 // Adapter that wraps existing CaptureSource implementation to ICaptureSource.
 class WGCaptureSourceAdapter : public ICaptureSource {
+    Q_OBJECT
 public:
     explicit WGCaptureSourceAdapter(const CaptureConfig& cfg);
     ~WGCaptureSourceAdapter() override;
@@ -20,7 +21,6 @@ public:
     bool stop() override;
     bool shutdown() override;
 
-    void set_frame_callback(CaptureFrameCallback cb) override;
     const CaptureConfig& get_config() const override { return cfg_; }
     bool is_running() const override;
 
@@ -30,7 +30,6 @@ private:
     CaptureConfig cfg_;
     std::unique_ptr<WGCCaptureLoop> loop_;
 
-    CaptureFrameCallback frame_cb_;
     std::atomic<bool> running_{false};
 };
 

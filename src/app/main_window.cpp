@@ -2,6 +2,7 @@
 #include "app/camera_settings.h"
 #include "app/screen_share.h"
 #include "app/screen_capture_selector.h"
+#include "app/settings_dialog.h"
 #include "ui_main_window.h"
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/source_factory.h"
@@ -28,6 +29,8 @@
 #include <QStyle>
 #include <QAbstractItemModel>
 #include <QVariant>
+
+#include <unordered_set>
 
 #include "app/add_material_dialog.h"
 #include "app/scene_item_row.h"
@@ -112,6 +115,7 @@ void MainWindow::build_scene_list() {
         row->set_move_up_enabled(row_index > 0);
 
         connect(row, &SceneItemRow::visibilityToggled, this, [this]() {
+            sync_scene_to_compositor();
             if (canvas_widget_) canvas_widget_->refresh();
         });
 
@@ -170,6 +174,7 @@ void MainWindow::on_scene_item_reordered() {
 
     scene->normalize_orders();
     build_scene_list();
+    sync_scene_to_compositor();
     if (canvas_widget_) canvas_widget_->refresh();
 }
 
@@ -179,6 +184,11 @@ void MainWindow::set_live_id(const QString& live_id) {
 
     initialize_modules();
     setup_canvas_widget();
+}
+
+void MainWindow::set_rtmp_target(const QString& server_url, const QString& stream_key) {
+    rtmp_server_url_ = server_url;
+    rtmp_stream_key_ = stream_key;
 }
 
 void MainWindow::initialize_modules() {
@@ -221,6 +231,60 @@ void MainWindow::initialize_modules() {
 }
 
 void MainWindow::setup_ui_connections() {
+    // Settings dialog open (both gears)
+    auto open_settings_dialog = [this]() {
+        if (!encoder_ || !audio_engine_) {
+            QMessageBox::warning(this, "错误", "编码器或音频模块未初始化");
+            return;
+        }
+
+        SettingsDialog dlg(this);
+        dlg.set_current_video_config(encoder_->get_video_config());
+        dlg.set_current_audio_config(encoder_->get_audio_config());
+        dlg.set_available_microphones(audio_engine_->get_available_microphones(), audio_engine_->get_selected_microphone_id());
+
+        if (dlg.exec() == QDialog::Accepted) {
+            // Apply
+            auto new_v = dlg.get_video_config();
+            auto new_a = dlg.get_audio_config();
+            const std::string mic_id = dlg.get_selected_microphone_id();
+
+            // Reinit audio engine/encoder
+            audio_engine_->initialize(new_a.sample_rate, new_a.channels);
+            encoder_->reinitialize_audio_encoder(new_a);
+
+            // Reinit video encoder + bridge settings
+            encoder_->reinitialize_video_encoder(new_v);
+            if (encoder_bridge_) {
+                encoder_bridge_->set_resolution(new_v.width, new_v.height);
+                encoder_bridge_->set_fps(new_v.fps);
+            }
+
+            // Select microphone (phase1: mic only)
+            if (!mic_id.empty()) {
+                audio_engine_->select_microphone(mic_id);
+            }
+
+            // If pushing, require restart to keep header/codecpar consistent
+            if (stream_pusher_ && stream_pusher_->is_pushing()) {
+                QMessageBox::information(this, "提示", "参数已修改，将重启推流使其生效");
+                if (encoder_bridge_) {
+                    encoder_bridge_->stop();
+                }
+                stream_pusher_->stop();
+                streams_registered_ = false;
+            }
+        }
+    };
+
+    if (ui->pushButton_settings_topBar) {
+        connect(ui->pushButton_settings_topBar, &QPushButton::clicked, this, open_settings_dialog);
+    }
+
+    if (ui->pushButton_settings) {
+        connect(ui->pushButton_settings, &QPushButton::clicked, this, open_settings_dialog);
+    }
+
     if (ui->pushButton_addMaterial) {
         connect(ui->pushButton_addMaterial, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Add material dialog opened");
@@ -245,65 +309,115 @@ void MainWindow::setup_ui_connections() {
         connect(ui->pushButton_startLive, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Start live button clicked");
 
+            LOG_INFO("[DIAG] 检查推流器和编码器是否初始化");
             if (!stream_pusher_ || !encoder_) {
+                LOG_ERROR("[DIAG] 推流器或编码器未初始化");
                 QMessageBox::warning(this, "错误", "推流器或编码器未初始化");
                 return;
             }
+            LOG_INFO("[DIAG] 推流器和编码器已初始化");
 
             if (stream_pusher_->is_pushing()) {
+                LOG_INFO("[DIAG] 当前正在推流，准备停止推流");
+                if (encoder_bridge_) {
+                    LOG_INFO("[DIAG] 停止encoder_bridge");
+                    encoder_bridge_->stop();
+                }
+                LOG_INFO("[DIAG] 停止stream_pusher");
                 stream_pusher_->stop();
                 streams_registered_ = false;
+                LOG_INFO("[DIAG] 推流已停止");
                 QMessageBox::information(this, "提示", "已停止推流");
                 return;
             }
 
+            LOG_INFO("[DIAG] 准备开始推流");
+            LOG_INFO("[DIAG] 创建推流配置");
             StreamConfig cfg;
-            cfg.server_url = "rtmp://localhost/live";
-            cfg.stream_key = "test";
+            cfg.server_url = rtmp_server_url_.isEmpty() ? "rtmp://localhost/live" : rtmp_server_url_.toStdString();
+            cfg.stream_key = rtmp_stream_key_.isEmpty() ? "test" : rtmp_stream_key_.toStdString();
             cfg.max_queue_size = 300;
             cfg.auto_reconnect = true;
             cfg.low_latency = true;
+            LOG_INFO("[DIAG] 推流配置: 服务器URL=" + cfg.server_url + ", 流密钥=" + cfg.stream_key + ", 最大队列大小=" + std::to_string(cfg.max_queue_size));
 
+            LOG_INFO("[DIAG] 设置推流配置");
             ErrorCode cfg_ret = stream_pusher_->set_config(cfg);
             if (cfg_ret != ErrorCode::SUCCESS) {
+                LOG_ERROR("[DIAG] 设置推流配置失败，错误码: " + std::to_string(static_cast<int>(cfg_ret)));
                 QMessageBox::warning(this, "错误", "设置推流配置失败");
                 return;
             }
+            LOG_INFO("[DIAG] 推流配置设置成功");
 
             if (!streams_registered_) {
+                LOG_INFO("[DIAG] 音视频流未注册，准备注册");
+                LOG_INFO("[DIAG] 获取音频编码参数和时间基");
                 AVCodecParameters* a_par = encoder_->get_audio_codec_parameters();
                 AVRational a_tb = encoder_->get_audio_time_base();
+                LOG_INFO("[DIAG] 获取视频编码参数和时间基");
                 AVCodecParameters* v_par = encoder_->get_video_codec_parameters();
                 AVRational v_tb = encoder_->get_video_time_base();
 
                 if (!a_par || a_tb.den <= 0 || !v_par || v_tb.den <= 0) {
+                    LOG_ERROR("[DIAG] 音频/视频编码器参数不可用");
                     if (a_par) avcodec_parameters_free(&a_par);
                     if (v_par) avcodec_parameters_free(&v_par);
                     QMessageBox::warning(this, "错误", "音频/视频编码器参数不可用（可能 H264 encoder 不存在）");
                     return;
                 }
+                LOG_INFO("[DIAG] 音视频编码参数获取成功");
 
+                LOG_INFO("[DIAG] 注册音频流");
                 ErrorCode ra = stream_pusher_->register_audio_stream(a_par, a_tb);
+                LOG_INFO("[DIAG] 注册视频流");
                 ErrorCode rv = stream_pusher_->register_video_stream(v_par, v_tb);
 
                 avcodec_parameters_free(&a_par);
                 avcodec_parameters_free(&v_par);
 
                 if (ra != ErrorCode::SUCCESS || rv != ErrorCode::SUCCESS) {
+                    LOG_ERROR("[DIAG] 注册音视频流失败，音频错误码: " + std::to_string(static_cast<int>(ra)) + ", 视频错误码: " + std::to_string(static_cast<int>(rv)));
                     QMessageBox::warning(this, "错误", "注册音视频流失败");
                     return;
                 }
-
+                LOG_INFO("[DIAG] 音视频流注册成功");
                 streams_registered_ = true;
+            } else {
+                LOG_INFO("[DIAG] 音视频流已注册，跳过注册步骤");
             }
 
+            // Ensure audio capture running before pushing.
+            LOG_INFO("[DIAG] 检查音频引擎是否存在");
+            if (audio_engine_) {
+                LOG_INFO("[DIAG] 启动音频捕获");
+                audio_engine_->start_capture();
+            }
+
+            LOG_INFO("[DIAG] 启动推流器");
             ErrorCode start_ret = stream_pusher_->start();
             if (start_ret != ErrorCode::SUCCESS) {
+                LOG_ERROR("[DIAG] 启动推流失败，错误码: " + std::to_string(static_cast<int>(start_ret)));
                 QMessageBox::warning(this, "错误", "启动推流失败");
                 streams_registered_ = false;
                 return;
             }
+            LOG_INFO("[DIAG] 推流器启动成功");
 
+            // Sync compositor to match Scene layout before first encoded frame.
+            LOG_INFO("[DIAG] 在第一个编码帧之前同步compositor和场景布局");
+            sync_scene_to_compositor();
+
+            // Request keyframe on start if supported.
+            // (Encoder currently doesn't expose force_keyframe; kept as a TODO for future.)
+
+            LOG_INFO("[DIAG] 检查encoder_bridge是否存在");
+            if (encoder_bridge_) {
+                LOG_INFO("[DIAG] 启动encoder_bridge，帧率: " + std::to_string(encoder_->get_video_config().fps));
+                encoder_bridge_->start(encoder_->get_video_config().fps);
+            }
+
+            LOG_INFO("[DIAG] 推流已成功开始");
             QMessageBox::information(this, "提示", "已开始推流");
         });
     }
@@ -325,25 +439,37 @@ void MainWindow::show_camera_selector() {
         return;
     }
 
-    std::vector<std::string> cameras = video_engine_->get_available_cameras();
-    if (cameras.empty()) {
+    LOG_INFO("开始获取可用摄像头列表");
+    auto camera_choices = video_engine_->get_available_camera_choices();
+    LOG_INFO("获取到 " + std::to_string(camera_choices.size()) + " 个摄像头设备");
+    
+    if (camera_choices.empty()) {
         LOG_WARNING("No cameras found");
         QMessageBox::information(this, "提示", "未检测到摄像头设备");
         return;
     }
 
+    // 打印每个摄像头的详细信息
+    for (const auto& camera : camera_choices) {
+        LOG_INFO("摄像头设备: " + camera.display_name + " (DShow名称: " + camera.dshow_name + ")");
+    }
+
     CameraSettingsDialog dialog(this);
-    dialog.set_available_cameras(cameras);
+    dialog.set_available_camera_choices(camera_choices);
     dialog.set_resolution("640x360");
     dialog.set_fps(30);
     dialog.set_pixel_format("PIXEL_FORMAT_YUY2");
 
     if (dialog.exec() == QDialog::Accepted) {
+        const std::string camera_device_id = dialog.get_camera_device_id();
         QString selected_camera = QString::fromStdString(dialog.get_camera_name());
 
         std::string resolution = dialog.get_resolution();
         int fps = dialog.get_fps();
         std::string pixel_format = dialog.get_pixel_format();
+
+        LOG_INFO("选中摄像头: " + selected_camera.toStdString() + " (ID: " + camera_device_id + ")");
+        LOG_INFO("摄像头参数 - 分辨率: " + resolution + ", 帧率: " + std::to_string(fps) + ", 像素格式: " + pixel_format);
 
         if (video_engine_) {
             video_engine_->set_camera_resolution(resolution);
@@ -351,42 +477,125 @@ void MainWindow::show_camera_selector() {
             video_engine_->set_camera_pixel_format(pixel_format);
         }
 
-        on_select_camera(selected_camera);
+        if (camera_device_id.empty()) {
+            LOG_ERROR("摄像头设备标识无效");
+            QMessageBox::warning(this, "错误", "摄像头设备标识无效");
+            return;
+        }
+        on_select_camera(selected_camera, camera_device_id);
     }
 }
 
-void MainWindow::on_select_camera(const QString& camera_name) {
-    LOG_INFO("Selected camera: " + camera_name.toStdString());
+void MainWindow::on_select_camera(const QString& camera_name, const std::string& camera_device_id) {
+    LOG_INFO("Selected camera: '" + camera_name.toStdString() + "' with device_id: " + camera_device_id);
 
-    if (!video_engine_) {
-        LOG_ERROR("Video engine not initialized");
+    if (!capture_manager_) {
+        LOG_ERROR("采集管理器未初始化");
+        QMessageBox::warning(this, "错误", "采集管理器未初始化");
         return;
     }
 
-    bool result = video_engine_->select_camera(camera_name.toStdString());
-    if (!result) {
-        LOG_ERROR("Failed to select camera");
-        QMessageBox::warning(this, "错误", "选择摄像头失败");
+    // Use a hash of the unique device_id as the source_id to ensure stability and prevent illegal characters.
+    const std::string source_id = "camera_" + std::to_string(std::hash<std::string>{}(camera_device_id));
+    LOG_INFO("生成的源ID: " + source_id);
+
+    // Dedup: do not allow opening the same physical device twice
+    if (capture_manager_->has_source(source_id)) {
+        LOG_INFO("该摄像头已在使用中: " + source_id);
+        QMessageBox::information(this, "提示", "该摄像头已在使用中");
         return;
     }
 
-    video_engine_->set_capture_mode(VideoEngine::CaptureMode::OPENCV);
-    start_camera_preview();
+    LOG_INFO("创建摄像头采集配置");
+    CaptureConfig cfg;
+    cfg.type = CaptureConfig::TargetType::CAMERA;
+    cfg.target_id = camera_device_id; // Use dshow device_name
+    cfg.fps = 30;
+    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 帧率=" + std::to_string(cfg.fps));
+
+    LOG_INFO("调用CaptureFactory::create_capture_source创建采集源");
+    auto src = CaptureFactory::create_capture_source(cfg);
+    if (!src) {
+        LOG_ERROR("创建摄像头采集源失败");
+        QMessageBox::warning(this, "错误", "创建摄像头采集源失败");
+        return;
+    }
+    LOG_INFO("成功创建摄像头采集源");
+
+    LOG_INFO("连接frameReady信号到Compositor的槽函数");
+    // 使用信号槽连接替代回调，显式指定跨线程连接类型
+    connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
+        LOG_INFO("[DIAG] 收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
+
+        // 更新compositor（用于推流）
+        if (compositor_ && !frame.image.isNull()) {
+            if (!compositor_->has_layer(source_id)) {
+                LOG_INFO("[DIAG] 图层不存在，创建新图层: " + source_id);
+                compositor_->add_layer(source_id);
+            }
+            LOG_INFO("[DIAG] 更新Compositor图层图像: " + source_id);
+            compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
+        }
+
+        // 更新对应的ScreenSource或CameraSource（用于预览显示）
+        if (scene_manager_ && scene_manager_->get_current_scene()) {
+            auto scene = scene_manager_->get_current_scene();
+            auto items = scene->get_all_scene_items();
+            for (auto& item : items) {
+                if (item && item->get_source_id() == source_id) {
+                    // 尝试更新 ScreenSource（屏幕共享）
+                    auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
+                    if (screenSrc) {
+                        LOG_INFO("[DIAG] 更新ScreenSource图像: " + source_id);
+                        screenSrc->push_frame(frame.image);
+                        break;
+                    }
+
+                    // 尝试更新 CameraSource（摄像头）
+                    auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
+                    if (cameraSrc) {
+                        LOG_INFO("[DIAG] 更新CameraSource图像: " + source_id);
+                        cameraSrc->push_frame(frame.image);
+                        break;
+                    }
+                }
+            }
+        }
+    }, Qt::QueuedConnection);
+    LOG_INFO("信号槽连接成功");
+
+    LOG_INFO("将采集源添加到采集管理器: " + source_id);
+    if (!capture_manager_->add_source(source_id, src)) {
+        LOG_ERROR("添加摄像头采集源失败（可能初始化失败）");
+        QMessageBox::warning(this, "错误", "添加摄像头采集源失败（可能初始化失败）");
+        return;
+    }
+    LOG_INFO("采集源添加成功");
 
     if (scene_manager_ && scene_manager_->get_current_scene()) {
+        LOG_INFO("将摄像头源添加到场景中");
         auto scene = scene_manager_->get_current_scene();
-
-        std::string camera_id = "camera_" + std::to_string(rand());
-        auto camera_source = SourceFactory::create_camera_source(camera_id, camera_name.toStdString());
-
+        auto camera_source = SourceFactory::create_camera_source(source_id, camera_name.toStdString());
+        LOG_INFO("初始化场景摄像头源");
         camera_source->initialize();
+        LOG_INFO("启动场景摄像头源");
         camera_source->start();
-
+        LOG_INFO("添加到场景");
         scene->add_source(camera_source);
-        update_scene_items();
-
-        LOG_INFO("Added camera source to scene: " + camera_name.toStdString());
+        LOG_INFO("更新场景项并同步到Compositor");
+        update_scene_items();  // 先调用，确保compositor中有对应的图层
+        LOG_INFO("Added camera source to scene: " + camera_name.toStdString() + ", id=" + source_id);
     }
+
+    // 最后启动摄像头源，确保此时compositor中已经有了对应的图层
+    LOG_INFO("启动摄像头采集源: " + source_id);
+    if (!capture_manager_->start_source(source_id)) {
+        LOG_ERROR("启动摄像头采集源失败");
+        capture_manager_->remove_source(source_id);
+        QMessageBox::warning(this, "错误", "启动摄像头采集源失败");
+        return;
+    }
+    LOG_INFO("摄像头采集源启动成功: " + source_id);
 }
 
 void MainWindow::start_camera_preview() {
@@ -429,66 +638,84 @@ void MainWindow::show_screen_share_selector() {
     if (dialog.exec() == QDialog::Accepted) {
         const auto* selected_target = dialog.get_selected_target();
         if (selected_target) {
+            LOG_INFO(std::string("选择了共享目标: ID=") + selected_target->id + ", 类型=" + (selected_target->type == CaptureTarget::Type::SCREEN ? "屏幕" : "窗口"));
             int fps = 30;
             QString resolution = "原尺寸";
             bool capture_cursor = true;
             bool capture_border = (selected_target->type == CaptureTarget::Type::WINDOW);
 
+            LOG_INFO(std::string("创建共享屏幕采集配置"));
             CaptureConfig cfg;
             cfg.type = selected_target->type == CaptureTarget::Type::SCREEN ? CaptureConfig::TargetType::SCREEN : CaptureConfig::TargetType::WINDOW;
             cfg.target_id = selected_target->id;
             cfg.fps = fps;
             cfg.capture_cursor = capture_cursor;
             cfg.capture_border = capture_border;
+            LOG_INFO(std::string("采集配置: 类型=") + (cfg.type == CaptureConfig::TargetType::SCREEN ? "SCREEN" : "WINDOW") + ", 目标ID=" + cfg.target_id + ", 帧率=" + std::to_string(cfg.fps) + ", 捕获鼠标=" + (cfg.capture_cursor ? "是" : "否") + ", 捕获边框=" + (cfg.capture_border ? "是" : "否"));
 
+            LOG_INFO(std::string("调用CaptureFactory::create_capture_source创建采集源"));
             auto src = CaptureFactory::create_capture_source(cfg);
             if (src) {
                 std::string source_id = std::string("capture_") + selected_target->id;
+                LOG_INFO(std::string("生成的源ID: ") + source_id);
 
-                if (compositor_) {
-                    compositor_->add_layer(source_id);
-                    compositor_->update_layer_transform(source_id, QRectF(50, 50, 640, 360));
-                    compositor_->set_layer_visible(source_id, true);
-                }
+                LOG_INFO(std::string("连接frameReady信号到Compositor的槽函数"));
+                // 使用信号槽连接替代回调，显式指定跨线程连接类型
+                connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
+                    LOG_INFO("   收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
 
-                std::weak_ptr<Scene> weak_scene;
-                if (scene_manager_ && scene_manager_->get_current_scene()) {
-                    weak_scene = scene_manager_->get_current_scene();
-                }
+                    // 对于屏幕共享，同时更新compositor和ScreenSource
+                    if (source_id.find("capture_") == 0) {  // 屏幕共享源ID以"capture_"开头
+                        // 更新compositor（用于推流）
+                        if (compositor_ && !frame.image.isNull()) {
+                            if (!compositor_->has_layer(source_id)) {
+                                LOG_INFO("[DIAG] 图层不存在，创建新图层: " + source_id);
+                                compositor_->add_layer(source_id);
+                            }
+                            LOG_INFO("[DIAG] 更新Compositor图层图像: " + source_id);
+                            compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
+                        }
 
-                src->set_frame_callback([this, source_id, weak_scene](const CaptureFrame& frame) {
-                    LOG_INFO("Capture frame from " + source_id + ", size: " +
-                             std::to_string(frame.width) + "x" + std::to_string(frame.height));
-
-                    if (compositor_ && !frame.image.isNull()) {
-                        compositor_->update_layer_image(source_id, frame.image);
-                    }
-
-                    if (!weak_scene.expired()) {
-                        auto scene = weak_scene.lock();
-                        if (scene) {
+                        // 更新对应的ScreenSource或CameraSource（用于预览显示）
+                        if (scene_manager_ && scene_manager_->get_current_scene()) {
+                            auto scene = scene_manager_->get_current_scene();
                             auto items = scene->get_all_scene_items();
-                            for (auto &it : items) {
-                                auto srcPtr = it->get_source();
-                                if (srcPtr && srcPtr->get_id() == source_id) {
-                                    auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(srcPtr);
+                            for (auto& item : items) {
+                                if (item && item->get_source_id() == source_id) {
+                                    // 尝试更新 ScreenSource（屏幕共享）
+                                    auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                                     if (screenSrc) {
+                                        LOG_INFO("[DIAG] 更新ScreenSource图像: " + source_id);
                                         screenSrc->push_frame(frame.image);
+                                        break;
+                                    }
+
+                                    // 尝试更新 CameraSource（摄像头）
+                                    auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
+                                    if (cameraSrc) {
+                                        LOG_INFO("[DIAG] 更新CameraSource图像: " + source_id);
+                                        cameraSrc->push_frame(frame.image);
+                                        break;
                                     }
                                 }
                             }
                         }
                     }
-                });
+                    // 对于摄像头，只更新ScreenSource（已在其他地方处理）
+                }, Qt::QueuedConnection);
+                LOG_INFO(std::string("信号槽连接成功"));
 
+                LOG_INFO(std::string("将采集源添加到采集管理器: ") + source_id);
                 if (capture_manager_->add_source(source_id, src)) {
+                    LOG_INFO(std::string("启动采集源: ") + source_id);
                     capture_manager_->start_source(source_id);
-                    LOG_INFO("Started capture source: " + source_id);
+                    LOG_INFO(std::string("Started capture source: ") + source_id);
                 } else {
-                    LOG_ERROR("Failed to add capture source: " + source_id);
+                    LOG_ERROR(std::string("Failed to add capture source: ") + source_id);
                 }
 
                 if (scene_manager_ && scene_manager_->get_current_scene()) {
+                    LOG_INFO(std::string("将屏幕共享源添加到场景中"));
                     auto scene = scene_manager_->get_current_scene();
                     auto screen_src = SourceFactory::create_screen_source(source_id, selected_target->name);
                     if (screen_src) {
@@ -496,9 +723,11 @@ void MainWindow::show_screen_share_selector() {
                         screen_src->start();
                         scene->add_source(screen_src);
                         update_scene_items();
-                        LOG_INFO("Added ScreenSource to scene for preview: " + source_id);
+                        LOG_INFO(std::string("Added ScreenSource to scene for preview: ") + source_id);
                     }
                 }
+            } else {
+                LOG_ERROR(std::string("创建屏幕共享采集源失败"));
             }
 
             on_select_screen_share(
@@ -578,6 +807,11 @@ void MainWindow::setup_canvas_widget() {
         LOG_INFO("Scene item selected: " + (item ? item->get_source_id() : "null"));
     });
 
+    connect(canvas_widget_, &CanvasWidget::scene_item_moved, this,
+        [this](std::shared_ptr<SceneItem>, const Transform&, const Transform&) {
+            sync_scene_to_compositor();
+        });
+
     LOG_INFO("Canvas widget setup completed");
 }
 
@@ -585,6 +819,8 @@ void MainWindow::update_preview() {
     if (canvas_widget_) {
         canvas_widget_->refresh();
     }
+
+    // Camera frames are now driven by CaptureManager camera sources.
 }
 
 void MainWindow::encode_and_push() {
@@ -592,19 +828,7 @@ void MainWindow::encode_and_push() {
         return;
     }
 
-    // Video
-    if (auto video_frame = video_engine_->get_latest_frame()) {
-        std::vector<EncodedPacketPtr> packets;
-        ErrorCode result = encoder_->encode_video_frame(video_frame, packets);
-        if (result == ErrorCode::SUCCESS) {
-            for (auto& p : packets) {
-                if (!p) continue;
-                p->wallclock_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
-                stream_pusher_->push_packet(p);
-            }
-        }
-    }
+    // Video: pushed by CompositorEncoderBridge (scene output). Keep audio only here.
 
     // Audio
     if (auto audio_frame = audio_engine_->get_audio_frame()) {
@@ -623,6 +847,7 @@ void MainWindow::encode_and_push() {
 
 void MainWindow::update_scene_items() {
     build_scene_list();
+    sync_scene_to_compositor();
 }
 
 void MainWindow::toggle_scene_item_visibility(int index) {
@@ -736,6 +961,45 @@ QPushButton* MainWindow::create_icon_button(QStyle::StandardPixmap icon, const Q
     button->setMaximumSize(30, 30);
     button->setStyleSheet("QPushButton { border: none; background: transparent; }");
     return button;
+}
+
+void MainWindow::sync_scene_to_compositor() {
+    if (!compositor_ || !scene_manager_ || !scene_manager_->get_current_scene()) {
+        return;
+    }
+
+    auto scene = scene_manager_->get_current_scene();
+    auto items = scene->get_all_scene_items();
+
+    std::unordered_set<std::string> active;
+    active.reserve(items.size());
+
+    for (auto &it : items) {
+        if (!it) continue;
+        auto src = it->get_source();
+        if (!src) continue;
+
+        const std::string sid = src->get_id();
+        active.insert(sid);
+
+        if (!compositor_->has_layer(sid)) {
+            compositor_->add_layer(sid);
+        }
+
+        const auto tr = it->get_transform();
+        const int w = tr.width > 0 ? tr.width : 640;
+        const int h = tr.height > 0 ? tr.height : 360;
+
+        compositor_->update_layer_transform(sid, QRectF(tr.x, tr.y, w, h), tr.opacity);
+        compositor_->set_layer_visible(sid, it->is_visible());
+        compositor_->set_layer_order(sid, it->get_order());
+    }
+
+    for (const auto& lid : compositor_->get_layer_ids()) {
+        if (active.find(lid) == active.end()) {
+            compositor_->remove_layer(lid);
+        }
+    }
 }
 
 } // namespace live_assistant

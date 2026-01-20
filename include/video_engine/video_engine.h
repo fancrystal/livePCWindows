@@ -9,11 +9,9 @@
 #include "common/error.h"
 #include "common/media_clock.h"
 
-
-
 namespace live_assistant {
 
-// 前向声明
+// Forward declarations
 class Scene;
 struct VideoFrame;
 
@@ -40,6 +38,11 @@ public:
         FFMPEG,
         OPENCV
     };
+
+    struct CameraChoice {
+        std::string display_name;   // UI display
+        std::string dshow_name;     // FFmpeg dshow device_name
+    };
     
     VideoEngine();
     ~VideoEngine();
@@ -50,10 +53,13 @@ public:
     bool start_capture();
     bool stop_capture();
     
-    // 获取可用视频设备
+    // 获取可用视频设备（显示名）
     std::vector<std::string> get_available_cameras();
+
+    // 获取可用摄像头（显示名 + dshow device_name）
+    std::vector<CameraChoice> get_available_camera_choices();
+
     bool select_camera(const std::string& camera_id);
-    
 
     // 设置捕获模式（FFMPEG、OPENCV）
     bool set_capture_mode(CaptureMode mode);
@@ -83,34 +89,19 @@ public:
     std::string get_camera_pixel_format() const;
     
 private:
-    // 初始化FFmpeg用于摄像头捕获
     bool initialize_ffmpeg();
-    
-    // 释放FFmpeg资源
     void release_ffmpeg();
-    
-    // 初始化OpenCV用于摄像头捕获
     bool initialize_opencv();
-    
-    // 释放OpenCV资源
     void release_opencv();
     
-    // 捕获线程函数
     void capture_thread_func();
-    
-    // 使用FFmpeg的捕获线程函数
     void ffmpeg_capture_thread_func();
-    
-    // 使用OpenCV的捕获线程函数
     void opencv_capture_thread_func();
-    
-
     
     int output_width_ = 1920;
     int output_height_ = 1080;
     int fps_ = 30;
     
-    // 摄像头参数
     std::string camera_resolution_ = "640x360";
     int camera_fps_ = 30;
     std::string camera_pixel_format_ = "PIXEL_FORMAT_YUY2";
@@ -120,46 +111,45 @@ private:
     std::string selected_camera_;
     CaptureMode capture_mode_ = CaptureMode::FFMPEG;
     
-    // FFmpeg相关成员（使用void*隐藏头文件中的FFmpeg类型）
     void* av_format_context_ = nullptr;
     void* av_codec_context_ = nullptr;
     void* sws_context_ = nullptr;
     int video_stream_index_ = -1;
     
-    // OpenCV相关成员（使用void*隐藏头文件中的OpenCV类型）
     void* cv_video_capture_ = nullptr;
     
-
-    
-    // 线程管理
     std::thread capture_thread_;
     bool stop_thread_ = false;
     
-    // 带线程安全的帧存储
     std::shared_ptr<VideoFrame> latest_frame_;
     std::mutex frame_mutex_;
     std::condition_variable frame_cv_;
     
-    // 初始化标志
     bool ffmpeg_initialized_ = false;
     bool opencv_initialized_ = false;
 
-    
-    // 摄像头设备列表，存储设备路径和友好名称的映射
     std::vector<CameraDevice> camera_devices_;
 };
 
-// 简单的视频帧结构
 struct VideoFrame {
+    enum class PixelFormat {
+        RGBA,
+        NV12,
+    };
+
+    PixelFormat format = PixelFormat::RGBA;
+
     std::unique_ptr<uint8_t[]> data;
+    std::unique_ptr<uint8_t[]> data_uv;
+
     int width = 0;
     int height = 0;
-    int stride = 0;
 
-    // 媒体时间戳（微秒）
+    int stride = 0;
+    int stride_uv = 0;
+
     MediaTimestamp timestamp;
 
-    // 遗留的毫秒时间戳（用于向后兼容）
     int64_t timestamp_ms = 0;
 
     VideoFrame() = default;
