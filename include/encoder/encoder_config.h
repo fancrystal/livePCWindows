@@ -36,7 +36,8 @@ enum class VideoCodecType {
 // 视频编码模式
 enum class VideoEncodingMode {
     CBR,  // 恒定比特率
-    VBR   // 可变比特率
+    VBR,  // 可变比特率
+    CQP   // 恒定量化参数 (constant QP)
 };
 
 // 视频编码预设 (适用于x264/x265)
@@ -96,13 +97,18 @@ struct VideoEncoderConfig {
     int height = 720;  // 默认高度 (720p)
     int fps = 30;  // 默认帧率
     int bitrate = 2500000;  // 默认比特率 (2500kbps)
-    VideoEncodingMode mode = VideoEncodingMode::CBR;  // 默认使用CBR
+    // 默认使用 VBR，更友好地适应网络波动；用户可切换为 CBR 或 CQP
+    VideoEncodingMode mode = VideoEncodingMode::VBR;
     
     // 高级参数
-    int gop = 30;  // 默认GOP大小 (帧率)
+    // 默认GOP设置为2秒（帧数 = fps * 2）
+    int gop = 60;  // 默认GOP大小（帧）
+    // 最大瞬时码率（用于 VBV/CBR 限制），单位 bps。默认与 bitrate 相同。
+    int max_bitrate = 2500000;
     float quality = 23.0f;  // 默认质量 (0-51, 数值越小质量越好)
     VideoEncodingPreset preset = VideoEncodingPreset::MEDIUM;  // 默认预设
-    HWAccelerationType hw_accel = HWAccelerationType::NONE;  // 默认使用软件编码
+    HWAccelerationType hw_accel = HWAccelerationType::NONE;  // 默认不强制指定硬编
+    bool prefer_hw = true; // 默认优先尝试硬件编码（若可用）
     bool b_frames_enabled = false;  // 默认: B帧禁用
     
     // 默认构造函数
@@ -110,9 +116,11 @@ struct VideoEncoderConfig {
     
     // 带显式参数的构造函数
     VideoEncoderConfig(VideoCodecType codec, int width, int height, int fps, int bitrate,
-                       VideoEncodingMode mode = VideoEncodingMode::CBR)
-        : codec(codec), width(width), height(height), fps(fps), bitrate(bitrate), mode(mode), 
-          gop(fps), b_frames_enabled(false) {}
+                       VideoEncodingMode mode = VideoEncodingMode::VBR)
+        : codec(codec), width(width), height(height), fps(fps), bitrate(bitrate), mode(mode),
+          // 默认 2 秒 GOP
+          gop(fps * 2), max_bitrate(bitrate), quality(23.0f), preset(VideoEncodingPreset::MEDIUM),
+          hw_accel(HWAccelerationType::NONE), prefer_hw(true), b_frames_enabled(false) {}
 };
 
 } // namespace live_assistant

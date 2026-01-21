@@ -11,6 +11,8 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 
+#include "common/config_manager.h"
+
 namespace live_assistant {
 
 struct CompositorLayer {

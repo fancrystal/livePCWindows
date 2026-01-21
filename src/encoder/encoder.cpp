@@ -32,6 +32,36 @@ ErrorCode Encoder::initialize_video_encoder(const VideoEncoderConfig& config) {
     video_config_ = config;
     video_encoder_initialized_ = true;
     
+    // Verify codec parameters are available. Some hardware encoders or init paths
+    // may produce an encoder that doesn't expose codec parameters usable by muxers.
+    // If so, fallback to a software encoder (libx264) by disabling prefer_hw.
+    AVCodecParameters* vpar = video_encoder_->get_codec_parameters();
+    if (!vpar) {
+        LOG_WARNING("Video encoder returned null codec parameters; attempting fallback to software encoder");
+        // Shutdown and replace with software encoder
+        video_encoder_->shutdown();
+        video_encoder_.reset();
+
+        VideoEncoderConfig fallback_cfg = config;
+        fallback_cfg.prefer_hw = false;
+        fallback_cfg.hw_accel = HWAccelerationType::NONE;
+        video_encoder_ = EncoderFactory::create_video_encoder(fallback_cfg);
+        if (!video_encoder_) {
+            LOG_ERROR("Fallback software video encoder creation failed");
+            return ErrorCode::INIT_FAILED;
+        }
+        video_config_ = fallback_cfg;
+        vpar = video_encoder_->get_codec_parameters();
+        if (!vpar) {
+            LOG_ERROR("Fallback software encoder also failed to provide codec parameters");
+            return ErrorCode::INIT_FAILED;
+        }
+        LOG_INFO("Fallback to software encoder succeeded and codec parameters are available");
+    } else {
+        // Free the temporary parameters returned by get_codec_parameters()
+        avcodec_parameters_free(&vpar);
+    }
+
     LOG_INFO("Video encoder initialized successfully");
     return ErrorCode::SUCCESS;
 }

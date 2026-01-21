@@ -91,6 +91,8 @@ struct AudioFrame {
 
     MediaTimestamp timestamp;
 
+    int64_t timestamp_ms = 0;
+
     int sample_rate = 0;
     int channels = 0;
     int samples = 0;

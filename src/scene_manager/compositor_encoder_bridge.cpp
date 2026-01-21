@@ -2,7 +2,7 @@
 #include "common/log.h"
 #include "common/error.h"
 #include "video_engine/video_engine.h"
-#include <chrono>
+#include "audio_engine/audio_engine.h"
 
 #include <QImage>
 #include <QPainter>
@@ -57,6 +57,16 @@ void CompositorEncoderBridge::set_stream_pusher(std::shared_ptr<StreamPusher> st
     LOG_INFO("Stream pusher set for encoder bridge");
 }
 
+void CompositorEncoderBridge::set_audio_engine(std::shared_ptr<AudioEngine> audio_engine) {
+    audio_engine_ = audio_engine;
+    LOG_INFO("Audio engine set for encoder bridge");
+}
+
+void CompositorEncoderBridge::set_silent_audio(bool enable) {
+    silent_audio_enabled_ = enable;
+    LOG_INFO(std::string("Silent audio ") + (enable ? "enabled" : "disabled"));
+}
+
 void CompositorEncoderBridge::start(int fps) {
     if (running_) {
         LOG_WARNING("Encoder bridge already running");
@@ -92,6 +102,154 @@ void CompositorEncoderBridge::stop() {
 
 bool CompositorEncoderBridge::is_running() const {
     return running_;
+}
+
+bool CompositorEncoderBridge::start_streaming(const std::string& url) {
+    if (streaming_) {
+        LOG_WARNING("Already streaming");
+        return true;
+    }
+
+    if (!stream_pusher_) {
+        LOG_ERROR("Stream pusher not set");
+        emit streaming_error("Stream pusher not initialized");
+        return false;
+    }
+
+    // 设置推流配置
+    StreamConfig config;
+
+    // 解析URL，分离服务器地址和流密钥
+    std::string server_url = url;
+    std::string stream_key;
+
+    // 简单解析 rtmp://server/app/stream -> server_url: rtmp://server/app, stream_key: stream
+    // trim whitespace
+    auto trim = [](std::string s) {
+        const char* ws = " \t\n\r\f\v";
+        size_t start = s.find_first_not_of(ws);
+        if (start == std::string::npos) return std::string();
+        size_t end = s.find_last_not_of(ws);
+        return s.substr(start, end - start + 1);
+    };
+    std::string url_trim = trim(url);
+    size_t last_slash = url_trim.find_last_of('/');
+    if (last_slash != std::string::npos && last_slash > 7) {  // 确保在协议部分之后
+        server_url = url_trim.substr(0, last_slash);
+        stream_key = url_trim.substr(last_slash + 1);
+    }
+
+    config.server_url = server_url;
+    config.stream_key = stream_key;
+    config.protocol = StreamProtocol::RTMP;
+    LOG_INFO("[BRIDGE] Parsed stream server_url: " + config.server_url + ", stream_key: " + config.stream_key);
+
+    ErrorCode config_result = stream_pusher_->set_config(config);
+    if (config_result != ErrorCode::SUCCESS) {
+        LOG_ERROR("Failed to set stream config for: " + url);
+        emit streaming_error(QString("Failed to set stream config: %1").arg(static_cast<int>(config_result)));
+        return false;
+    }
+    // Ensure audio/video streams are registered before starting the pusher.
+    if (encoder_) {
+        LOG_INFO("[BRIDGE] Registering audio/video streams with StreamPusher");
+        AVCodecParameters* a_par = encoder_->get_audio_codec_parameters();
+        AVRational a_tb = encoder_->get_audio_time_base();
+        AVCodecParameters* v_par = encoder_->get_video_codec_parameters();
+        AVRational v_tb = encoder_->get_video_time_base();
+
+        LOG_INFO(std::string("[BRIDGE] encoder_ present: ") + (encoder_ ? "yes" : "no"));
+        LOG_INFO(std::string("[BRIDGE] audio codec params: ") + (a_par ? "valid" : "null") +
+                 ", video codec params: " + (v_par ? "valid" : "null"));
+
+        // If video codec params are null, attempt to fallback to software encoder and reinitialize.
+        if (!v_par && encoder_) {
+            LOG_WARNING("[BRIDGE] Video codec parameters null; attempting encoder fallback to software");
+            VideoEncoderConfig vc = encoder_->get_video_config();
+            vc.prefer_hw = false;
+            vc.hw_accel = HWAccelerationType::NONE;
+            ErrorCode r = encoder_->reinitialize_video_encoder(vc);
+            if (r == ErrorCode::SUCCESS) {
+                LOG_INFO("[BRIDGE] Reinitialized encoder to software, retrying codec parameter fetch");
+                v_par = encoder_->get_video_codec_parameters();
+                v_tb = encoder_->get_video_time_base();
+                LOG_INFO(std::string("[BRIDGE] audio codec params: ") + (a_par ? "valid" : "null") +
+                         ", video codec params (after fallback): " + (v_par ? "valid" : "null"));
+            } else {
+                LOG_ERROR("[BRIDGE] Failed to reinitialize encoder to software: " + std::to_string(static_cast<int>(r)));
+            }
+        }
+        if (a_par) {
+            LOG_INFO(std::string("[BRIDGE] audio time_base: ") + std::to_string(a_tb.num) + "/" + std::to_string(a_tb.den));
+        }
+        if (v_par) {
+            LOG_INFO(std::string("[BRIDGE] video time_base: ") + std::to_string(v_tb.num) + "/" + std::to_string(v_tb.den));
+        }
+
+        if (!a_par || a_tb.den <= 0 || !v_par || v_tb.den <= 0) {
+            if (a_par) avcodec_parameters_free(&a_par);
+            if (v_par) avcodec_parameters_free(&v_par);
+            LOG_ERROR("[BRIDGE] Audio/Video codec parameters unavailable or invalid, cannot start streaming");
+            emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(ErrorCode::INVALID_STATE)));
+            return false;
+        }
+
+        ErrorCode ra = stream_pusher_->register_audio_stream(a_par, a_tb);
+        ErrorCode rv = stream_pusher_->register_video_stream(v_par, v_tb);
+
+        LOG_INFO("[BRIDGE] register_audio_stream result: " + std::to_string(static_cast<int>(ra)) +
+                 ", register_video_stream result: " + std::to_string(static_cast<int>(rv)));
+
+        avcodec_parameters_free(&a_par);
+        avcodec_parameters_free(&v_par);
+
+        if (ra != ErrorCode::SUCCESS || rv != ErrorCode::SUCCESS) {
+            LOG_ERROR("[BRIDGE] Failed to register audio/video streams, audio_err=" + std::to_string(static_cast<int>(ra)) +
+                      ", video_err=" + std::to_string(static_cast<int>(rv)));
+            emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(ErrorCode::INVALID_STATE)));
+            return false;
+        }
+    } else {
+        LOG_WARNING("[BRIDGE] Encoder not set, skipping stream registration (StreamPusher may fail if streams not registered)");
+    }
+
+    ErrorCode start_result = stream_pusher_->start();
+    if (start_result != ErrorCode::SUCCESS) {
+        LOG_ERROR("Failed to start streaming to: " + url);
+        emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(start_result)));
+        return false;
+    }
+
+    // Start media clock for timestamp synchronization
+    media_clock_.start();
+
+    streaming_ = true;
+    stream_url_ = url;
+    emit streaming_started();
+    LOG_INFO("Streaming started to: " + url);
+    return true;
+}
+
+void CompositorEncoderBridge::stop_streaming() {
+    if (!streaming_) {
+        return;
+    }
+
+    if (stream_pusher_) {
+        stream_pusher_->stop();
+    }
+
+    // Stop media clock
+    media_clock_.stop();
+
+    streaming_ = false;
+    stream_url_.clear();
+    emit streaming_stopped();
+    LOG_INFO("Streaming stopped");
+}
+
+bool CompositorEncoderBridge::is_streaming() const {
+    return streaming_;
 }
 
 void CompositorEncoderBridge::set_fps(int fps) {
@@ -150,29 +308,90 @@ void CompositorEncoderBridge::on_encode_timer() {
 
 void CompositorEncoderBridge::encode_and_push_frame() {
     try {
+        // 获取从推流开始算起的相对时间戳
+        auto current_timestamp_us = media_clock_.get_elapsed_time_us();
+        auto current_timestamp_ms = current_timestamp_us / 1000;
+
+        // 编码视频帧
+        LOG_INFO("[BRIDGE] encode_and_push_frame start, ts_ms=" + std::to_string(current_timestamp_ms));
         auto video_frame = capture_compositor_frame();
-        if (!video_frame) {
-            LOG_WARNING("Failed to capture frame from compositor");
-            return;
-        }
+        if (video_frame) {
+            video_frame->timestamp = MediaTimestamp(current_timestamp_us);
+            video_frame->timestamp_ms = current_timestamp_ms;
 
-        video_frame->timestamp = media_clock_.now();
-        video_frame->timestamp_ms = video_frame->timestamp.us / 1000;
+            std::vector<EncodedPacketPtr> video_packets;
+            ErrorCode video_result = encoder_->encode_video_frame(video_frame, video_packets);
+            LOG_INFO("[BRIDGE] video encode result=" + std::to_string(static_cast<int>(video_result)) +
+                     ", packets=" + std::to_string(video_packets.size()));
 
-        std::vector<EncodedPacketPtr> packets;
-        ErrorCode result = encoder_->encode_video_frame(video_frame, packets);
-
-        if (result != ErrorCode::SUCCESS || packets.empty()) {
-            LOG_WARNING("Failed to encode video frame");
-            return;
-        }
-
-        if (stream_pusher_ && stream_pusher_->is_pushing()) {
-            for (auto& p : packets) {
-                if (!p) continue;
-                p->wallclock_us = video_frame->timestamp.us;
-                stream_pusher_->push_packet(p);
+            if (video_result == ErrorCode::SUCCESS && !video_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
+                for (auto& p : video_packets) {
+                    if (!p) continue;
+                    p->wallclock_us = current_timestamp_us;
+                    // diagnostic: log packet internals before pushing
+                    if (p->pkt) {
+                        LOG_INFO(std::string("[DIAG] Video packet prepared: size=") + std::to_string(p->pkt->size) +
+                                 ", pts=" + std::to_string(p->pts) + ", dts=" + std::to_string(p->dts) +
+                                 ", key=" + std::to_string(p->is_keyframe));
+                    } else {
+                        LOG_INFO("[DIAG] Video packet prepared: pkt=null");
+                    }
+                    stream_pusher_->push_packet(p);
+                }
+                LOG_INFO("[STREAMING] Encoded and pushed video frame, packets: " + std::to_string(video_packets.size()));
+            } else if (video_result != ErrorCode::SUCCESS) {
+                LOG_WARNING("Failed to encode video frame: " + std::to_string(static_cast<int>(video_result)));
             }
+        } else {
+            LOG_WARNING("Failed to capture frame from compositor");
+        }
+
+        // 编码音频帧（优先使用音频引擎），若无可用帧且启用静音回退，则合成静音帧
+        std::shared_ptr<AudioFrame> audio_frame = nullptr;
+        if (audio_engine_) {
+            audio_frame = audio_engine_->get_audio_frame();
+        }
+
+        if (!audio_frame && silent_audio_enabled_) {
+            // create a small silent frame (e.g., 1024 samples)
+            int sample_rate = 48000;
+            int channels = 2;
+            if (audio_engine_) {
+                sample_rate = audio_engine_->get_sample_rate();
+                channels = audio_engine_->get_channels();
+            } else if (encoder_) {
+                auto acfg = encoder_->get_audio_config();
+                if (acfg.sample_rate > 0) sample_rate = acfg.sample_rate;
+                if (acfg.channels > 0) channels = acfg.channels;
+            }
+            int samples = 1024;
+            audio_frame = std::make_shared<AudioFrame>(sample_rate, channels, samples);
+            LOG_INFO("[STREAMING] Using synthetic silent audio frame: " + std::to_string(sample_rate) + "Hz, channels=" + std::to_string(channels));
+        }
+
+        if (audio_frame) {
+            audio_frame->timestamp = MediaTimestamp(current_timestamp_us);
+            audio_frame->timestamp_ms = current_timestamp_ms;
+
+            std::vector<EncodedPacketPtr> audio_packets;
+            ErrorCode audio_result = encoder_->encode_audio_frame(audio_frame, audio_packets);
+            LOG_INFO("[BRIDGE] audio encode result=" + std::to_string(static_cast<int>(audio_result)) +
+                     ", packets=" + std::to_string(audio_packets.size()));
+
+            if (audio_result == ErrorCode::SUCCESS && !audio_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
+                for (auto& p : audio_packets) {
+                    if (!p) continue;
+                    p->wallclock_us = current_timestamp_us;
+                    stream_pusher_->push_packet(p);
+                }
+                LOG_INFO("[STREAMING] Encoded and pushed audio frame, packets: " + std::to_string(audio_packets.size()));
+            } else if (audio_result != ErrorCode::SUCCESS) {
+                LOG_WARNING("Failed to encode audio frame: " + std::to_string(static_cast<int>(audio_result)));
+            } else {
+                LOG_DEBUG("[STREAMING] audio packets empty after encode");
+            }
+        } else {
+            LOG_DEBUG("[STREAMING] No audio frame available and silent audio not enabled");
         }
 
     } catch (const std::exception& ex) {
@@ -189,6 +408,9 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
     if (img.isNull()) {
         return nullptr;
     }
+
+    LOG_INFO("[DIAG] capture_compositor_frame: rendered QImage size: " + std::to_string(img.width()) + "x" + std::to_string(img.height()) +
+             ", expected canvas: " + std::to_string(width_) + "x" + std::to_string(height_));
 
     // Convert composed RGBA image to NV12 for (future) HW-friendly pipeline.
     auto frame = std::make_shared<VideoFrame>();
@@ -207,8 +429,8 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
     }
 
     SwsContext* sws = sws_getContext(
-        width_, height_, AV_PIX_FMT_RGBA,
-        width_, height_, AV_PIX_FMT_NV12,
+        static_cast<int>(width_), static_cast<int>(height_), AV_PIX_FMT_RGBA,
+        static_cast<int>(width_), static_cast<int>(height_), AV_PIX_FMT_NV12,
         SWS_BILINEAR,
         nullptr, nullptr, nullptr);
 
@@ -216,8 +438,8 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
         return nullptr;
     }
 
-    const uint8_t* src_slices[1] = { img.constBits() };
-    int src_strides[1] = { img.bytesPerLine() };
+    const uint8_t* src_slices[1] = { reinterpret_cast<const uint8_t*>(img.constBits()) };
+    int src_strides[1] = { static_cast<int>(img.bytesPerLine()) };
 
     uint8_t* dst_slices[2] = { frame->data.get(), frame->data_uv.get() };
     int dst_strides[2] = { frame->stride, frame->stride_uv };

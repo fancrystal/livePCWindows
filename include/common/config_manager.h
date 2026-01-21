@@ -6,8 +6,77 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <QRectF>
 
 namespace live_assistant {
+
+/**
+ * 画布配置类
+ * 管理画布的显示比例、分辨率等配置
+ */
+class CanvasConfig {
+public:
+    /**
+     * 画布显示模式
+     */
+    enum class DisplayMode {
+        LANDSCAPE_16_9,    // 横屏16:9 (1920x1080)
+        PORTRAIT_9_16      // 竖屏9:16 (1080x1920) - 预留
+    };
+
+    /**
+     * 获取默认画布配置
+     * @return 默认的横屏16:9配置
+     */
+    static CanvasConfig get_default();
+
+    /**
+     * 获取竖屏配置（预留）
+     * @return 竖屏9:16配置
+     */
+    static CanvasConfig get_portrait();
+
+    /**
+     * 构造函数
+     * @param mode 显示模式
+     */
+    explicit CanvasConfig(DisplayMode mode);
+
+    // 获取配置属性
+    DisplayMode get_display_mode() const { return mode_; }
+    int get_width() const { return width_; }
+    int get_height() const { return height_; }
+    double get_aspect_ratio() const { return aspect_ratio_; }
+    const std::string& get_name() const { return name_; }
+
+    /**
+     * 检查给定的尺寸是否适合当前画布
+     * @param width 宽度
+     * @param height 高度
+     * @return 是否适合
+     */
+    bool is_size_compatible(int width, int height) const;
+
+    /**
+     * 计算适合画布的矩形（保持宽高比，可能裁剪）
+     * @param source_width 源宽度
+     * @param source_height 源高度
+     * @param target_width 目标宽度
+     * @param target_height 目标高度
+     * @return 适合的矩形区域
+     */
+    QRectF calculate_fit_rect(int source_width, int source_height,
+                             int target_width, int target_height) const;
+
+private:
+    DisplayMode mode_;
+    int width_;
+    int height_;
+    double aspect_ratio_;
+    std::string name_;
+
+    void initialize_config();
+};
 
 /**
  * 配置管理器类

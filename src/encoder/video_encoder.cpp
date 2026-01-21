@@ -2,6 +2,9 @@
 #include "common/log.h"
 #include "common/error.h"
 #include "video_engine/video_engine.h"  // For VideoFrame definition
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -74,12 +77,95 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     LOG_INFO("Initializing H.264 encoder (FFmpeg)");
 
     config_ = config;
-    next_pts_ = 0;
+    force_keyframe_ = true; // Force first frame to be keyframe for RTMP streaming
+    // Prefer hardware encoder when requested and available.
+    // We'll probe candidates in preferred order based on CPU vendor (Intel -> QSV first, AMD -> AMF first).
+    codec_ = nullptr;
+    if (config_.prefer_hw) {
+        std::vector<const char*> candidates;
 
-    codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
+        // Detect CPU vendor on MSVC/GCC platforms where possible.
+        std::string cpu_vendor;
+#if defined(_MSC_VER) || defined(__GNUC__)
+        {
+#if defined(_MSC_VER)
+            int regs[4] = {0};
+            __cpuid(regs, 0);
+            char vendor[13] = {0};
+            *reinterpret_cast<int*>(vendor) = regs[1];
+            *reinterpret_cast<int*>(vendor + 4) = regs[3];
+            *reinterpret_cast<int*>(vendor + 8) = regs[2];
+            cpu_vendor = std::string(vendor);
+#elif defined(__GNUC__)
+            unsigned int regs[4] = {0};
+            __get_cpuid(0, &regs[0], &regs[1], &regs[2], &regs[3]);
+            char vendor[13] = {0};
+            *reinterpret_cast<unsigned int*>(vendor) = regs[1];
+            *reinterpret_cast<unsigned int*>(vendor + 4) = regs[3];
+            *reinterpret_cast<unsigned int*>(vendor + 8) = regs[2];
+            cpu_vendor = std::string(vendor);
+#endif
+        }
+#endif
+
+        // Build candidates order
+        if (!cpu_vendor.empty() && cpu_vendor.find("GenuineIntel") != std::string::npos) {
+            candidates = {"h264_qsv", "h264_amf", "h264_nvenc"};
+        } else if (!cpu_vendor.empty() && cpu_vendor.find("AuthenticAMD") != std::string::npos) {
+            candidates = {"h264_amf", "h264_qsv", "h264_nvenc"};
+        } else {
+            candidates = {"h264_qsv", "h264_amf", "h264_nvenc"};
+        }
+
+        // Probe each candidate by trying to open a temporary codec context and checking codec parameters.
+        for (const char* hw_name : candidates) {
+            const AVCodec* probe_codec = avcodec_find_encoder_by_name(hw_name);
+            if (!probe_codec) continue;
+
+            // create temporary context for probing
+            AVCodecContext* probe_ctx = avcodec_alloc_context3(probe_codec);
+            if (!probe_ctx) continue;
+            probe_ctx->codec_type = AVMEDIA_TYPE_VIDEO;
+            probe_ctx->width = config_.width > 0 ? config_.width : 1280;
+            probe_ctx->height = config_.height > 0 ? config_.height : 720;
+            probe_ctx->time_base = AVRational{1, config_.fps > 0 ? config_.fps : 30};
+            probe_ctx->framerate = AVRational{config_.fps > 0 ? config_.fps : 30, 1};
+            probe_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+            probe_ctx->bit_rate = config_.bitrate;
+            probe_ctx->gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
+            probe_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+            int ret = avcodec_open2(probe_ctx, probe_codec, nullptr);
+            if (ret >= 0) {
+                AVCodecParameters* tmppar = avcodec_parameters_alloc();
+                if (tmppar) {
+                    if (avcodec_parameters_from_context(tmppar, probe_ctx) >= 0) {
+                        // candidate works -> select it
+                        codec_ = probe_codec;
+                        avcodec_parameters_free(&tmppar);
+                        avcodec_free_context(&probe_ctx);
+                        LOG_INFO(std::string("Selected hardware encoder after probe: ") + hw_name);
+                        break;
+                    }
+                    avcodec_parameters_free(&tmppar);
+                }
+            }
+            // cleanup and continue
+            avcodec_free_context(&probe_ctx);
+        }
+        if (!codec_) {
+            LOG_INFO("No suitable hardware encoder found after probing; will fallback to software x264");
+        }
+    }
+
+    // Fallback to software encoder (libx264) if no hardware encoder was selected/found
     if (!codec_) {
-        LOG_ERROR("Failed to find H264 encoder");
-        return ErrorCode::INIT_FAILED;
+        codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec_) {
+            LOG_ERROR("Failed to find H264 encoder");
+            return ErrorCode::INIT_FAILED;
+        }
+        LOG_INFO(std::string("Using software encoder: ") + codec_->name);
     }
 
     codec_ctx_ = avcodec_alloc_context3(codec_);
@@ -94,7 +180,8 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     codec_ctx_->height = config_.height;
     codec_ctx_->time_base = get_time_base();
     codec_ctx_->framerate = AVRational{config_.fps > 0 ? config_.fps : 30, 1};
-    codec_ctx_->gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps : 30);
+    // GOP: prefer explicit config.gop (frames). Default to 2 seconds worth of frames.
+    codec_ctx_->gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
     codec_ctx_->max_b_frames = config_.b_frames_enabled ? 2 : 0;
     codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
     codec_ctx_->bit_rate = config_.bitrate;
@@ -106,6 +193,32 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     if (codec_ctx_->priv_data) {
         av_opt_set(codec_ctx_->priv_data, "preset", preset_to_string(config_.preset).c_str(), 0);
         av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
+
+        // Only set x264-specific params when using libx264 (software) encoder.
+        if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
+            // Base x264 params to control refs/slices/profile and avoid huge NAL units.
+            // More aggressive slicing to avoid oversized NAL units that break FLV/RTMP
+            std::string x264_params = "ref=1:slice-max-size=400:slices=8:profile=baseline";
+
+            // Rate control: respect user-selected mode (VBR/CBR/CQP)
+            if (config_.mode == VideoEncodingMode::VBR) {
+                // VBR: set a max bitrate (vbv-maxrate) and buffer size to allow variability.
+                x264_params += ":vbv-maxrate=" + std::to_string(config_.max_bitrate / 1000) +
+                               ":vbv-bufsize=" + std::to_string((config_.max_bitrate / 1000) * 2);
+            } else if (config_.mode == VideoEncodingMode::CBR) {
+                // CBR: instruct x264 to use nal-hrd=cbr and tighten vbv limits
+                x264_params += ":nal-hrd=cbr:vbv-maxrate=" + std::to_string(config_.max_bitrate / 1000) +
+                               ":vbv-bufsize=" + std::to_string((config_.max_bitrate / 1000));
+            } else if (config_.mode == VideoEncodingMode::CQP) {
+                // CQP: map quality value to crf if provided; use quality as CRF for x264
+                x264_params += ":crf=" + std::to_string(static_cast<int>(config_.quality));
+            }
+
+            av_opt_set(codec_ctx_->priv_data, "x264-params", x264_params.c_str(), 0);
+            LOG_INFO(std::string("H264Encoder: set x264-params: ") + x264_params);
+        } else {
+            LOG_INFO("H264Encoder: codec not libx264, skipping x264-params configuration");
+        }
     }
 
     if (avcodec_open2(codec_ctx_, codec_, nullptr) < 0) {
@@ -173,7 +286,6 @@ ErrorCode H264Encoder::shutdown() {
     }
 
     codec_ = nullptr;
-    next_pts_ = 0;
     force_keyframe_ = false;
 
     return ErrorCode::SUCCESS;
@@ -246,7 +358,10 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
         frame_->linesize);
     }
 
-    frame_->pts = next_pts_++;
+    // Use timestamp from VideoFrame for proper A/V sync
+    // Convert microseconds to time_base units
+    int64_t pts = av_rescale_q(in->timestamp.us, AV_TIME_BASE_Q, codec_ctx_->time_base);
+    frame_->pts = pts;
 
     if (force_keyframe_) {
         frame_->pict_type = AV_PICTURE_TYPE_I;

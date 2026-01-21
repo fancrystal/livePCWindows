@@ -351,6 +351,25 @@ void CanvasWidget::set_canvas_resolution(int width, int height) {
     refresh();
 }
 
+void CanvasWidget::set_canvas_config(const CanvasConfig& config) {
+    canvas_config_ = config;
+    canvas_width_ = config.get_width();
+    canvas_height_ = config.get_height();
+
+    LOG_INFO("Set canvas config: " + config.get_name() + " (" +
+             std::to_string(canvas_width_) + "x" + std::to_string(canvas_height_) + ")");
+
+    // 同步更新compositor的画布大小，确保推流分辨率一致
+    if (compositor_) {
+        compositor_->set_canvas_size(canvas_width_, canvas_height_);
+    }
+
+    // 更新组件的最小尺寸建议
+    setMinimumSize(canvas_width_ / 4, canvas_height_ / 4); // 允许缩小到1/4
+
+    refresh();
+}
+
 void CanvasWidget::paintEvent(QPaintEvent *event) {
     QPainter painter(this);
 
@@ -377,14 +396,60 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
     // 只渲染场景项（摄像头、屏幕共享、图片等）
     // 所有视频源都通过SceneItem在场景系统中统一渲染
     if (renderer_ && current_scene_) {
-        // 保存当前render状态
-        painter.save();
+        // If a source is maximized, draw it with Fit (keep aspect ratio, show full image)
+        if (is_maximized_ && !maximized_source_id_.empty()) {
+            // Find the maximized scene item
+            std::shared_ptr<SceneItem> maximized_item = nullptr;
+            for (const auto& it : current_scene_->get_all_scene_items()) {
+                if (it && it->get_source() && it->get_source()->get_id() == maximized_source_id_) {
+                    maximized_item = it;
+                    break;
+                }
+            }
 
-        // 渲染整个场景，传递hovered_item
-        renderer_->render(painter, current_scene_, widget_rect, hovered_item_);
+            if (maximized_item) {
+                // Try to draw the source's latest frame (handle ScreenSource and CameraSource)
+                auto src = maximized_item->get_source();
+                QImage latest;
+                // ScreenSource and CameraSource expose get_latest_frame
+                auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(src);
+                auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(src);
+                if (screenSrc) {
+                    latest = screenSrc->get_latest_frame();
+                } else if (cameraSrc) {
+                    latest = cameraSrc->get_latest_frame();
+                }
 
-        // 恢复render状态
-        painter.restore();
+                if (!latest.isNull()) {
+                    // Fit the image into the widget_rect (KeepAspectRatio)
+                    QSize targetSize = widget_rect.size();
+                    QImage scaled = latest.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                    int x = widget_rect.x() + (widget_rect.width() - scaled.width()) / 2;
+                    int y = widget_rect.y() + (widget_rect.height() - scaled.height()) / 2;
+                    QRect display_rect(x, y, scaled.width(), scaled.height());
+                    painter.drawImage(display_rect, scaled);
+                } else {
+                    // Fallback to full scene render if we don't have latest frame
+                    painter.save();
+                    renderer_->render(painter, current_scene_, widget_rect, hovered_item_);
+                    painter.restore();
+                }
+            } else {
+                // If not found, render normally
+                painter.save();
+                renderer_->render(painter, current_scene_, widget_rect, hovered_item_);
+                painter.restore();
+            }
+        } else {
+            // 保存当前render状态
+            painter.save();
+
+            // 渲染整个场景，传递hovered_item
+            renderer_->render(painter, current_scene_, widget_rect, hovered_item_);
+
+            // 恢复render状态
+            painter.restore();
+        }
     }
     
     // 如果没有场景项，显示视频引擎的直接输出（保持向后兼容）
@@ -395,7 +460,7 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
             auto frame = video_engine_->render_frame();
             if (frame && frame->data) {
                 // 将VideoFrame转换为QImage
-                QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
+                QImage image(frame->data.get(   ), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
                 if (!image.isNull()) {
                     // 居中显示
                     int x = (widget_rect.width() - frame->width) / 2;
@@ -801,7 +866,11 @@ void CanvasWidget::maximize_item_in_canvas(const std::shared_ptr<SceneItem>& ite
     // If this source is also a compositor layer (screen/window share), stretch that layer too.
     if (compositor_) {
         compositor_->set_layer_visible(maximized_source_id_, true);
-        compositor_->update_layer_transform(maximized_source_id_, QRectF(0, 0, width(), height()));
+        // Use canvas pixel resolution for compositor layer transform to keep
+        // compositor output aligned with the canvas used for capture/encoding.
+        int cw = canvas_width_ > 0 ? canvas_width_ : width();
+        int ch = canvas_height_ > 0 ? canvas_height_ : height();
+        compositor_->update_layer_transform(maximized_source_id_, QRectF(0, 0, cw, ch));
     }
 
     is_maximized_ = true;

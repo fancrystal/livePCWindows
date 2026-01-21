@@ -24,6 +24,8 @@
 #include <QImage>
 #include <QPixmap>
 #include <QMessageBox>
+#include <QLabel>
+#include <QDateTime>
 #include <QInputDialog>
 #include <QHBoxLayout>
 #include <QStyle>
@@ -31,6 +33,7 @@
 #include <QVariant>
 
 #include <unordered_set>
+#include <algorithm>
 
 #include "app/add_material_dialog.h"
 #include "app/scene_item_row.h"
@@ -205,6 +208,24 @@ void MainWindow::initialize_modules() {
 
     video_engine_->initialize(1920, 1080, 30);
     audio_engine_->initialize(44100, 2);
+    // Default: start microphone capture when entering live room
+    if (audio_engine_) {
+        LOG_INFO("Starting audio capture by default for live room");
+        if (!audio_engine_->start_capture()) {
+            LOG_WARNING("AudioEngine::start_capture failed on startup");
+            // enable silent audio fallback in encoder bridge
+            if (encoder_bridge_) {
+                encoder_bridge_->set_audio_engine(audio_engine_);
+                encoder_bridge_->set_silent_audio(true);
+            }
+            QMessageBox::warning(this, "麦克风故障", "无法打开麦克风，程序将以静音推流作为回退。");
+        } else {
+            if (encoder_bridge_) {
+                encoder_bridge_->set_audio_engine(audio_engine_);
+                encoder_bridge_->set_silent_audio(false);
+            }
+        }
+    }
 
     video_engine_->set_current_scene(scene_manager_->get_current_scene());
 
@@ -213,7 +234,7 @@ void MainWindow::initialize_modules() {
     video_config.height = 1080;
     video_config.fps = 30;
     video_config.bitrate = 2500000;
-    video_config.gop = 30;
+    video_config.gop = 60; // Reduce GOP size for faster keyframe interval (2 seconds at 30fps)
     video_config.b_frames_enabled = false;
     encoder_->initialize_video_encoder(video_config);
 
@@ -228,6 +249,27 @@ void MainWindow::initialize_modules() {
     encoding_timer_->start(33);
 
     streams_registered_ = false;
+    // Live duration label (added to status bar)
+    live_duration_label_ = new QLabel("00:00:00", this);
+    live_duration_label_->setMinimumWidth(100);
+    if (ui->statusBar) {
+        ui->statusBar->addPermanentWidget(live_duration_label_);
+    }
+    live_duration_timer_ = new QTimer(this);
+    connect(live_duration_timer_, &QTimer::timeout, this, [this]() {
+        if (streaming_start_time_ms_ == 0) return;
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        qint64 elapsed_ms = now - streaming_start_time_ms_;
+        qint64 s = elapsed_ms / 1000;
+        qint64 hh = s / 3600;
+        qint64 mm = (s % 3600) / 60;
+        qint64 ss = s % 60;
+        QString text = QString("%1:%2:%3")
+            .arg(hh, 2, 10, QChar('0'))
+            .arg(mm, 2, 10, QChar('0'))
+            .arg(ss, 2, 10, QChar('0'));
+        if (live_duration_label_) live_duration_label_->setText(text);
+    });
 }
 
 void MainWindow::setup_ui_connections() {
@@ -285,6 +327,12 @@ void MainWindow::setup_ui_connections() {
         connect(ui->pushButton_settings, &QPushButton::clicked, this, open_settings_dialog);
     }
 
+    // 状态标签初始化
+    if (ui->label_status) {
+        ui->label_status->setText("预览中");
+        ui->label_status->setStyleSheet("font-weight: bold; font-size: 14px; color: #00aa00;");
+    }
+
     if (ui->pushButton_addMaterial) {
         connect(ui->pushButton_addMaterial, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Add material dialog opened");
@@ -307,118 +355,44 @@ void MainWindow::setup_ui_connections() {
 
     if (ui->pushButton_startLive) {
         connect(ui->pushButton_startLive, &QPushButton::clicked, this, [this]() {
-            LOG_INFO("Start live button clicked");
-
-            LOG_INFO("[DIAG] 检查推流器和编码器是否初始化");
-            if (!stream_pusher_ || !encoder_) {
-                LOG_ERROR("[DIAG] 推流器或编码器未初始化");
-                QMessageBox::warning(this, "错误", "推流器或编码器未初始化");
+            if (!encoder_bridge_) {
+                QMessageBox::warning(this, "错误", "推流系统未初始化");
                 return;
             }
-            LOG_INFO("[DIAG] 推流器和编码器已初始化");
 
-            if (stream_pusher_->is_pushing()) {
-                LOG_INFO("[DIAG] 当前正在推流，准备停止推流");
-                if (encoder_bridge_) {
-                    LOG_INFO("[DIAG] 停止encoder_bridge");
-                    encoder_bridge_->stop();
+            if (encoder_bridge_->is_streaming()) {
+                // 停止推流
+                encoder_bridge_->stop_streaming();
+                ui->pushButton_startLive->setText("开始直播");
+                if (ui->label_status) {
+                    ui->label_status->setText("推流结束");
+                    ui->label_status->setStyleSheet("font-weight: bold; font-size: 14px; color: #aa0000;");
                 }
-                LOG_INFO("[DIAG] 停止stream_pusher");
-                stream_pusher_->stop();
-                streams_registered_ = false;
-                LOG_INFO("[DIAG] 推流已停止");
-                QMessageBox::information(this, "提示", "已停止推流");
+                QMessageBox::information(this, "提示", "推流已停止");
                 return;
             }
 
             LOG_INFO("[DIAG] 准备开始推流");
-            LOG_INFO("[DIAG] 创建推流配置");
-            StreamConfig cfg;
-            cfg.server_url = rtmp_server_url_.isEmpty() ? "rtmp://localhost/live" : rtmp_server_url_.toStdString();
-            cfg.stream_key = rtmp_stream_key_.isEmpty() ? "test" : rtmp_stream_key_.toStdString();
-            cfg.max_queue_size = 300;
-            cfg.auto_reconnect = true;
-            cfg.low_latency = true;
-            LOG_INFO("[DIAG] 推流配置: 服务器URL=" + cfg.server_url + ", 流密钥=" + cfg.stream_key + ", 最大队列大小=" + std::to_string(cfg.max_queue_size));
-
-            LOG_INFO("[DIAG] 设置推流配置");
-            ErrorCode cfg_ret = stream_pusher_->set_config(cfg);
-            if (cfg_ret != ErrorCode::SUCCESS) {
-                LOG_ERROR("[DIAG] 设置推流配置失败，错误码: " + std::to_string(static_cast<int>(cfg_ret)));
-                QMessageBox::warning(this, "错误", "设置推流配置失败");
+            // 开始推流
+            bool ok;
+            QString url = QInputDialog::getText(this, "推流地址",
+                                      "请输入RTMP推流地址:",
+                                      QLineEdit::Normal,
+                                      "rtmp://47.92.156.37:1935/live/aaa", &ok);
+            if (!ok || url.isEmpty()) {
                 return;
             }
-            LOG_INFO("[DIAG] 推流配置设置成功");
 
-            if (!streams_registered_) {
-                LOG_INFO("[DIAG] 音视频流未注册，准备注册");
-                LOG_INFO("[DIAG] 获取音频编码参数和时间基");
-                AVCodecParameters* a_par = encoder_->get_audio_codec_parameters();
-                AVRational a_tb = encoder_->get_audio_time_base();
-                LOG_INFO("[DIAG] 获取视频编码参数和时间基");
-                AVCodecParameters* v_par = encoder_->get_video_codec_parameters();
-                AVRational v_tb = encoder_->get_video_time_base();
-
-                if (!a_par || a_tb.den <= 0 || !v_par || v_tb.den <= 0) {
-                    LOG_ERROR("[DIAG] 音频/视频编码器参数不可用");
-                    if (a_par) avcodec_parameters_free(&a_par);
-                    if (v_par) avcodec_parameters_free(&v_par);
-                    QMessageBox::warning(this, "错误", "音频/视频编码器参数不可用（可能 H264 encoder 不存在）");
-                    return;
+            if (encoder_bridge_->start_streaming(url.toStdString())) {
+                ui->pushButton_startLive->setText("停止直播");
+                if (ui->label_status) {
+                    ui->label_status->setText("正在推流");
+                    ui->label_status->setStyleSheet("font-weight: bold; font-size: 14px; color: #00aa00;");
                 }
-                LOG_INFO("[DIAG] 音视频编码参数获取成功");
-
-                LOG_INFO("[DIAG] 注册音频流");
-                ErrorCode ra = stream_pusher_->register_audio_stream(a_par, a_tb);
-                LOG_INFO("[DIAG] 注册视频流");
-                ErrorCode rv = stream_pusher_->register_video_stream(v_par, v_tb);
-
-                avcodec_parameters_free(&a_par);
-                avcodec_parameters_free(&v_par);
-
-                if (ra != ErrorCode::SUCCESS || rv != ErrorCode::SUCCESS) {
-                    LOG_ERROR("[DIAG] 注册音视频流失败，音频错误码: " + std::to_string(static_cast<int>(ra)) + ", 视频错误码: " + std::to_string(static_cast<int>(rv)));
-                    QMessageBox::warning(this, "错误", "注册音视频流失败");
-                    return;
-                }
-                LOG_INFO("[DIAG] 音视频流注册成功");
-                streams_registered_ = true;
+                QMessageBox::information(this, "成功", "推流已启动");
             } else {
-                LOG_INFO("[DIAG] 音视频流已注册，跳过注册步骤");
+                QMessageBox::warning(this, "错误", "开始推流失败，请检查推流地址");
             }
-
-            // Ensure audio capture running before pushing.
-            LOG_INFO("[DIAG] 检查音频引擎是否存在");
-            if (audio_engine_) {
-                LOG_INFO("[DIAG] 启动音频捕获");
-                audio_engine_->start_capture();
-            }
-
-            LOG_INFO("[DIAG] 启动推流器");
-            ErrorCode start_ret = stream_pusher_->start();
-            if (start_ret != ErrorCode::SUCCESS) {
-                LOG_ERROR("[DIAG] 启动推流失败，错误码: " + std::to_string(static_cast<int>(start_ret)));
-                QMessageBox::warning(this, "错误", "启动推流失败");
-                streams_registered_ = false;
-                return;
-            }
-            LOG_INFO("[DIAG] 推流器启动成功");
-
-            // Sync compositor to match Scene layout before first encoded frame.
-            LOG_INFO("[DIAG] 在第一个编码帧之前同步compositor和场景布局");
-            sync_scene_to_compositor();
-
-            // Request keyframe on start if supported.
-            // (Encoder currently doesn't expose force_keyframe; kept as a TODO for future.)
-
-            LOG_INFO("[DIAG] 检查encoder_bridge是否存在");
-            if (encoder_bridge_) {
-                LOG_INFO("[DIAG] 启动encoder_bridge，帧率: " + std::to_string(encoder_->get_video_config().fps));
-                encoder_bridge_->start(encoder_->get_video_config().fps);
-            }
-
-            LOG_INFO("[DIAG] 推流已成功开始");
-            QMessageBox::information(this, "提示", "已开始推流");
         });
     }
 }
@@ -788,14 +762,30 @@ void MainWindow::setup_canvas_widget() {
     canvas_widget_ = new CanvasWidget(this);
     canvas_widget_->set_scene_manager(scene_manager_);
     canvas_widget_->set_video_engine(video_engine_);
-    canvas_widget_->set_canvas_resolution(1920, 1080);
+    // 使用默认的画布配置（横屏16:9）
+    set_canvas_config(canvas_config_);
 
     canvas_widget_->set_compositor(compositor_);
 
     encoder_bridge_->set_compositor(compositor_);
     encoder_bridge_->set_encoder(encoder_);
     encoder_bridge_->set_stream_pusher(stream_pusher_);
+    encoder_bridge_->set_audio_engine(audio_engine_);
     encoder_bridge_->set_resolution(1920, 1080);
+    // Start the encoder bridge so it begins capturing/compositing frames for streaming.
+    if (encoder_ && encoder_bridge_) {
+        encoder_bridge_->set_fps(static_cast<int>(encoder_->get_video_config().fps));
+        encoder_bridge_->start(static_cast<int>(encoder_->get_video_config().fps));
+        LOG_INFO("Encoder bridge started from MainWindow with fps: " + std::to_string(encoder_->get_video_config().fps));
+    }
+
+    // 连接推流控制信号
+    connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_started,
+            this, &MainWindow::on_streaming_started);
+    connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_stopped,
+            this, &MainWindow::on_streaming_stopped);
+    connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_error,
+            this, &MainWindow::on_streaming_error);
 
     ui->verticalLayout_liveArea->removeWidget(ui->label_livePreview);
     delete ui->label_livePreview;
@@ -830,17 +820,38 @@ void MainWindow::encode_and_push() {
 
     // Video: pushed by CompositorEncoderBridge (scene output). Keep audio only here.
 
-    // Audio
-    if (auto audio_frame = audio_engine_->get_audio_frame()) {
-        std::vector<EncodedPacketPtr> packets;
-        ErrorCode result = encoder_->encode_audio_frame(audio_frame, packets);
-        if (result == ErrorCode::SUCCESS) {
-            for (auto& p : packets) {
-                if (!p) continue;
-                p->wallclock_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
-                stream_pusher_->push_packet(p);
-            }
+    // Audio - Always generate audio frames to keep stream alive
+    auto audio_frame = audio_engine_->get_audio_frame();
+    if (!audio_frame) {
+        // Generate silent audio frame when no audio is available
+        int sample_rate = audio_engine_->get_sample_rate() > 0 ? audio_engine_->get_sample_rate() : 44100;
+        int channels = audio_engine_->get_channels() > 0 ? audio_engine_->get_channels() : 2;
+        int samples_per_frame = 1024; // Standard AAC frame size
+
+        audio_frame = std::make_shared<AudioFrame>(sample_rate, channels, samples_per_frame);
+        LOG_DEBUG("[MAIN] Generated silent audio frame: " + std::to_string(sample_rate) + "Hz, " +
+                 std::to_string(channels) + "ch, " + std::to_string(samples_per_frame) + " samples");
+    } else {
+        LOG_DEBUG("[MAIN] Got real audio frame: sample_rate=" + std::to_string(audio_frame->sample_rate) +
+                 ", channels=" + std::to_string(audio_frame->channels) + ", samples=" + std::to_string(audio_frame->samples));
+    }
+
+    // Set timestamps for audio frame (use elapsed time from streaming start)
+    auto current_timestamp_us = media_clock_.get_elapsed_time_us();
+    audio_frame->timestamp = MediaTimestamp(current_timestamp_us);
+    audio_frame->timestamp_ms = current_timestamp_us / 1000;
+
+    std::vector<EncodedPacketPtr> packets;
+    ErrorCode result = encoder_->encode_audio_frame(audio_frame, packets);
+    LOG_INFO("[MAIN] audio encode result=" + std::to_string(static_cast<int>(result)) +
+             ", packets=" + std::to_string(packets.size()));
+
+    if (result == ErrorCode::SUCCESS && !packets.empty()) {
+        for (auto& p : packets) {
+            if (!p) continue;
+            p->wallclock_us = current_timestamp_us;
+            ErrorCode push_ret = stream_pusher_->push_packet(p);
+            LOG_INFO("[MAIN] push_packet returned: " + std::to_string(static_cast<int>(push_ret)));
         }
     }
 }
@@ -990,7 +1001,16 @@ void MainWindow::sync_scene_to_compositor() {
         const int w = tr.width > 0 ? tr.width : 640;
         const int h = tr.height > 0 ? tr.height : 360;
 
-        compositor_->update_layer_transform(sid, QRectF(tr.x, tr.y, w, h), tr.opacity);
+        // 确保视频内容在画布范围内，不超出边界
+        int canvas_width = canvas_widget_->get_canvas_config().get_width();
+        int canvas_height = canvas_widget_->get_canvas_config().get_height();
+
+        int clamped_x = (std::max)(0, (std::min)(tr.x, canvas_width - w));
+        int clamped_y = (std::max)(0, (std::min)(tr.y, canvas_height - h));
+        int clamped_w = (std::min)(w, canvas_width - clamped_x);
+        int clamped_h = (std::min)(h, canvas_height - clamped_y);
+
+        compositor_->update_layer_transform(sid, QRectF(clamped_x, clamped_y, clamped_w, clamped_h), tr.opacity);
         compositor_->set_layer_visible(sid, it->is_visible());
         compositor_->set_layer_order(sid, it->get_order());
     }
@@ -1000,6 +1020,63 @@ void MainWindow::sync_scene_to_compositor() {
             compositor_->remove_layer(lid);
         }
     }
+}
+
+// 推流控制方法实现
+
+void MainWindow::on_streaming_started() {
+    LOG_INFO("推流状态：已开始");
+    streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
+    if (live_duration_label_) live_duration_label_->setText("00:00:00");
+    if (live_duration_timer_) live_duration_timer_->start(1000);
+    // 可以在这里更新UI状态，比如显示"正在推流"的状态
+}
+
+void MainWindow::on_streaming_stopped() {
+    LOG_INFO("推流状态：已停止");
+    if (live_duration_timer_) live_duration_timer_->stop();
+    streaming_start_time_ms_ = 0;
+    if (live_duration_label_) live_duration_label_->setText("00:00:00");
+    // 可以在这里更新UI状态
+}
+
+void MainWindow::on_streaming_error(const QString& error) {
+    LOG_ERROR("推流错误: " + error.toStdString());
+    QMessageBox::warning(this, "推流错误", error);
+}
+
+// 画布配置管理方法实现
+void MainWindow::set_canvas_config(const CanvasConfig& config) {
+    canvas_config_ = config;
+
+    // 更新CanvasWidget
+    if (canvas_widget_) {
+        canvas_widget_->set_canvas_config(config);
+    }
+
+    // 更新编码器配置
+    if (encoder_ && encoder_bridge_) {
+        int width = config.get_width();
+        int height = config.get_height();
+
+        // 重新初始化视频编码器
+        VideoEncoderConfig video_config;
+        video_config.width = width;
+        video_config.height = height;
+        video_config.fps = 30;
+        video_config.bitrate = 2500000;
+        video_config.gop = 60;
+        video_config.b_frames_enabled = false;
+
+        encoder_->reinitialize_video_encoder(video_config);
+        encoder_bridge_->set_resolution(width, height);
+    }
+
+    LOG_INFO("Canvas config updated to: " + config.get_name());
+}
+
+const CanvasConfig& MainWindow::get_canvas_config() const {
+    return canvas_config_;
 }
 
 } // namespace live_assistant

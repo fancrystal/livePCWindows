@@ -77,7 +77,6 @@ private:
     VideoEncoderConfig config_;
     bool initialized_ = false;
     bool force_keyframe_ = false;
-    int64_t next_pts_ = 0;
 
     const AVCodec* codec_ = nullptr;
     AVCodecContext* codec_ctx_ = nullptr;

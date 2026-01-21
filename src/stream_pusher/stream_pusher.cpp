@@ -38,6 +38,12 @@ ErrorCode StreamPusher::register_audio_stream(AVCodecParameters* codecpar, AVRat
         Log::error("Cannot register stream while not in IDLE state");
         return ErrorCode::INVALID_STATE;
     }
+    // Ensure RTMP pusher initialized (creates format context) before registering streams.
+    ErrorCode init_result = rtmp_pusher_.initialize(config_);
+    if (init_result != ErrorCode::SUCCESS) {
+        Log::error("Failed to initialize RTMP pusher before registering audio stream");
+        return init_result;
+    }
     return rtmp_pusher_.register_audio_stream(codecpar, time_base);
 }
 
@@ -45,6 +51,12 @@ ErrorCode StreamPusher::register_video_stream(AVCodecParameters* codecpar, AVRat
     if (state_ != StreamState::IDLE) {
         Log::error("Cannot register stream while not in IDLE state");
         return ErrorCode::INVALID_STATE;
+    }
+    // Ensure RTMP pusher initialized (creates format context) before registering streams.
+    ErrorCode init_result = rtmp_pusher_.initialize(config_);
+    if (init_result != ErrorCode::SUCCESS) {
+        Log::error("Failed to initialize RTMP pusher before registering video stream");
+        return init_result;
     }
     return rtmp_pusher_.register_video_stream(codecpar, time_base);
 }
@@ -62,11 +74,17 @@ ErrorCode StreamPusher::start() {
         return ErrorCode::INVALID_PARAM;
     }
     
-    ErrorCode result = rtmp_pusher_.initialize(config_);
-    if (result != ErrorCode::SUCCESS) {
-        Log::error("Failed to initialize RTMP pusher");
-        set_state(StreamState::ERR);
-        return result;
+    // Initialize RTMP pusher only if not already initialized (to avoid clearing registered streams).
+    ErrorCode result = ErrorCode::SUCCESS;
+    if (!rtmp_pusher_.is_initialized()) {
+        result = rtmp_pusher_.initialize(config_);
+        if (result != ErrorCode::SUCCESS) {
+            Log::error("Failed to initialize RTMP pusher");
+            set_state(StreamState::ERR);
+            return result;
+        }
+    } else {
+        Log::info("RTMP pusher already initialized, skipping initialize()");
     }
     
     set_state(StreamState::CONNECTING);
@@ -113,14 +131,17 @@ ErrorCode StreamPusher::stop() {
 
 ErrorCode StreamPusher::push_packet(EncodedPacketPtr packet) {
     if (state_ != StreamState::PUSHING) {
-            return ErrorCode::INVALID_STATE;
+        Log::warn("push_packet called but stream not in PUSHING state");
+        return ErrorCode::INVALID_STATE;
     }
-    
+
+    Log::info("push_packet called, attempting to enqueue packet");
     if (!push_queue_.push(std::move(packet))) {
         Log::warn("Failed to push packet to queue, queue is full");
         return ErrorCode::QUEUE_FULL;
     }
-    
+
+    Log::info("Packet enqueued successfully");
     return ErrorCode::SUCCESS;
 }
 
@@ -131,8 +152,10 @@ void StreamPusher::push_thread_func() {
     
     while (!stop_thread_) {
         if (push_queue_.pop(packet, 100)) {
+            Log::info("Popped packet from queue, sending...");
             ErrorCode result = rtmp_pusher_.send_packet(packet);
-            
+            Log::info("send_packet returned: " + std::to_string(static_cast<int>(result)));
+
             if (result != ErrorCode::SUCCESS) {
                 Log::error("Failed to send packet: " + std::to_string(static_cast<int>(result)));
                 

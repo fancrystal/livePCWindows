@@ -89,26 +89,12 @@ QLabel { color: #ffffff; }</string>
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="pushButton_preview">
+        <widget class="QLabel" name="label_status">
          <property name="text">
-          <string>预览</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="pushButton_live">
-         <property name="text">
-          <string>直播中</string>
+          <string>预览中</string>
          </property>
          <property name="styleSheet">
-          <string notr="true">background-color: #00cc00; color: #ffffff;</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QPushButton" name="pushButton_ended">
-         <property name="text">
-          <string>已结束</string>
+          <string notr="true">font-weight: bold; font-size: 14px; color: #00aa00;</string>
          </property>
         </widget>
        </item>

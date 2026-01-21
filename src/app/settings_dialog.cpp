@@ -25,6 +25,18 @@ void SettingsDialog::populate_comboboxes() {
     ui->comboBox_fps->clear();
     ui->comboBox_fps->addItems({"15", "20", "25", "30", "60"});
 
+    // Encoding mode (VBR/CBR/CQP)
+    ui->comboBox_encodingMode->clear();
+    ui->comboBox_encodingMode->addItems({"VBR", "CBR", "CQP"});
+
+    // Max bitrate (kbps)
+    ui->spinBox_maxBitrate->setMinimum(100);
+    ui->spinBox_maxBitrate->setMaximum(100000);
+    ui->spinBox_maxBitrate->setValue(2500);
+
+    // We auto-select hardware encoder by priority; only expose prefer_hw toggle
+    ui->checkBox_preferHW->setChecked(true);
+
     // Audio
     ui->comboBox_sampleRate->clear();
     ui->comboBox_sampleRate->addItems({"44100", "48000"});
@@ -63,6 +75,18 @@ void SettingsDialog::set_current_video_config(const VideoEncoderConfig& config) 
 
     ui->spinBox_videoBitrate->setValue(config.bitrate / 1000); // kbps
     ui->spinBox_gop->setValue(config.gop);
+
+    // Encoding mode
+    QString modeStr = "VBR";
+    if (config.mode == VideoEncodingMode::CBR) modeStr = "CBR";
+    else if (config.mode == VideoEncodingMode::CQP) modeStr = "CQP";
+    idx = ui->comboBox_encodingMode->findText(modeStr);
+    if (idx >= 0) ui->comboBox_encodingMode->setCurrentIndex(idx);
+
+    // max bitrate
+    ui->spinBox_maxBitrate->setValue(config.max_bitrate / 1000);
+
+    ui->checkBox_preferHW->setChecked(config.prefer_hw);
 }
 
 void SettingsDialog::set_current_audio_config(const AudioEncoderConfig& config) {
@@ -91,6 +115,19 @@ VideoEncoderConfig SettingsDialog::get_video_config() const {
     cfg.fps = ui->comboBox_fps->currentText().toInt();
     cfg.bitrate = ui->spinBox_videoBitrate->value() * 1000;
     cfg.gop = ui->spinBox_gop->value();
+
+    // Encoding mode
+    QString mode = ui->comboBox_encodingMode->currentText();
+    if (mode == "CBR") cfg.mode = VideoEncodingMode::CBR;
+    else if (mode == "CQP") cfg.mode = VideoEncodingMode::CQP;
+    else cfg.mode = VideoEncodingMode::VBR;
+
+    // max bitrate (kbps -> bps)
+    cfg.max_bitrate = ui->spinBox_maxBitrate->value() * 1000;
+
+    // We use internal priority to choose HW encoder (qsv>amf>nvenc). Do not expose specific hw selection.
+    cfg.hw_accel = HWAccelerationType::NONE;
+    cfg.prefer_hw = ui->checkBox_preferHW->isChecked();
 
     return cfg;
 }

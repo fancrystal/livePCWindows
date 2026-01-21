@@ -82,6 +82,56 @@
          </property>
         </widget>
        </item>
+       <item row="4" column="0">
+        <widget class="QLabel" name="label_encodingMode">
+         <property name="text">
+          <string>编码模式</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="1">
+        <widget class="QComboBox" name="comboBox_encodingMode"/>
+       </item>
+       <item row="5" column="0">
+        <widget class="QLabel" name="label_maxBitrate">
+         <property name="text">
+          <string>最大码率(kbps)</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="1">
+        <widget class="QSpinBox" name="spinBox_maxBitrate">
+         <property name="minimum">
+          <number>100</number>
+         </property>
+         <property name="maximum">
+          <number>100000</number>
+         </property>
+         <property name="value">
+          <number>2500</number>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="0">
+        <widget class="QLabel" name="label_hwAccel">
+         <property name="text">
+          <string>硬件加速</string>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="1">
+        <widget class="QComboBox" name="comboBox_hwAccel"/>
+       </item>
+       <item row="7" column="0">
+        <widget class="QLabel" name="label_preferHW">
+         <property name="text">
+          <string>优先硬编</string>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="1">
+        <widget class="QCheckBox" name="checkBox_preferHW"/>
+       </item>
       </layout>
      </widget>
      <widget class="QWidget" name="tabAudio">

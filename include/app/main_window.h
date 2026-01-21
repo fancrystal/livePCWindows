@@ -6,6 +6,10 @@
 #include <QStyle>
 #include <QTimer>
 #include <memory>
+#include <qlabel.h>
+
+#include "common/media_clock.h"
+#include "common/config_manager.h"
 
 namespace Ui {
 class MainWindow;
@@ -38,6 +42,10 @@ public:
     // 推流目标（后续与直播间列表联通时由外部设置）
     void set_rtmp_target(const QString& server_url, const QString& stream_key);
 
+    // 画布配置管理
+    void set_canvas_config(const CanvasConfig& config);
+    const CanvasConfig& get_canvas_config() const;
+
 private slots:
     void update_preview();
     void encode_and_push();
@@ -47,6 +55,11 @@ private slots:
     void on_screen_share_button_clicked();
     void on_select_screen_share(const QString& target_name, bool is_screen_mode, int fps, const QString& resolution, bool capture_cursor, bool capture_border);
     void on_scene_item_reordered();
+
+    // 推流控制
+    void on_streaming_started();
+    void on_streaming_stopped();
+    void on_streaming_error(const QString& error);
 
 private:
     void setup_scene_list();
@@ -77,6 +90,12 @@ private:
     // Encoding timer for pushing stream（这里主要用于音频推送；视频由 CompositorEncoderBridge 推送）
     QTimer* encoding_timer_;
 
+    // Media clock for timestamp synchronization
+    MediaClock media_clock_;
+
+    // Canvas configuration
+    CanvasConfig canvas_config_ = CanvasConfig::get_default();
+
     // Live ID
     QString live_id_;
 
@@ -89,6 +108,11 @@ private:
     // RTMP target
     QString rtmp_server_url_;
     QString rtmp_stream_key_;
+
+    // Live duration display
+    QLabel* live_duration_label_ = nullptr;
+    QTimer* live_duration_timer_ = nullptr;
+    qint64 streaming_start_time_ms_ = 0;
 
     // Initialization
     void initialize_modules();

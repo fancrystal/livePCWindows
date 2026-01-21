@@ -11,6 +11,11 @@
 #include "stream_pusher/stream_pusher.h"
 #include "common/media_clock.h"
 
+// Forward declarations
+namespace live_assistant {
+class AudioEngine;
+}
+
 namespace live_assistant {
 
 class CompositorEncoderBridge : public QObject {
@@ -24,11 +29,19 @@ public:
     void set_compositor(std::shared_ptr<Compositor> compositor);
     void set_encoder(std::shared_ptr<Encoder> encoder);
     void set_stream_pusher(std::shared_ptr<StreamPusher> stream_pusher);
+    void set_audio_engine(std::shared_ptr<class AudioEngine> audio_engine);
+    // 静音回退开关（当麦克风不可用时启用静音帧）
+    void set_silent_audio(bool enable);
 
     // 控制
     void start(int fps = 30);
     void stop();
     bool is_running() const;
+
+    // 推流控制
+    bool start_streaming(const std::string& url);
+    void stop_streaming();
+    bool is_streaming() const;
 
     // 配置
     void set_fps(int fps);
@@ -43,6 +56,11 @@ signals:
     void quality_degraded(const QString& reason);
     void quality_restored();
 
+    // 推流状态信号
+    void streaming_started();
+    void streaming_stopped();
+    void streaming_error(const QString& error);
+
 private slots:
     void on_compositor_frame_ready();
     void on_encode_timer();
@@ -56,6 +74,7 @@ private:
     std::shared_ptr<Compositor> compositor_;
     std::shared_ptr<Encoder> encoder_;
     std::shared_ptr<StreamPusher> stream_pusher_;
+    std::shared_ptr<AudioEngine> audio_engine_;
 
 
     // 定时器
@@ -68,7 +87,10 @@ private:
 
     // 状态
     bool running_ = false;
+    bool streaming_ = false;
+    std::string stream_url_;
     MediaClock media_clock_;
+    bool silent_audio_enabled_ = false;
 
     // 降级策略
     bool adaptive_quality_enabled_ = true;

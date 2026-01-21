@@ -37,6 +37,9 @@ public:
     // 是否已连接到服务器
     bool is_connected() const;
     
+    // 是否已初始化（format context 已创建）
+    bool is_initialized() const;
+    
     // 获取当前统计信息
     struct Stats {
         bool connected;

@@ -244,6 +244,8 @@ void Compositor::get_performance_stats(double& avg_fps, double& avg_render_time_
 void Compositor::render(QPainter* painter, const QRect& target_rect) {
     if (!painter) return;
 
+    LOG_INFO("[DIAG] Compositor::render called, target_rect: " + std::to_string(target_rect.width()) + "x" + std::to_string(target_rect.height()));
+
     // Draw layers
     std::lock_guard<std::mutex> lock(layers_mutex_);
 
@@ -263,37 +265,37 @@ void Compositor::render(QPainter* painter, const QRect& target_rect) {
 
             // Draw QImage if available, otherwise draw placeholder
             if (!layer.qimage.isNull()) {
-                LOG_INFO("[DIAG] Compositor::render - 绘制图层 " + layer.source_id + ", 图像尺寸: " + std::to_string(layer.qimage.width()) + "x" + std::to_string(layer.qimage.height()) + ", 目标矩形: " + std::to_string(target_rect.width()) + "x" + std::to_string(target_rect.height()));
+                LOG_INFO("[DIAG] Compositor::render - 绘制图层 " + layer.source_id + ", 图像尺寸: " + std::to_string(layer.qimage.width()) + "x" + std::to_string(layer.qimage.height()) + ", 目标矩形: " + std::to_string(layer.dest_rect.width()) + "x" + std::to_string(layer.dest_rect.height()));
 
-                // Calculate the scaled size to fit the target rectangle while maintaining aspect ratio
+                // Use the layer's dest_rect for positioning and scaling
+                QRectF target_rect_in_canvas = layer.dest_rect;
+
+                // Scale to fit the dest_rect, maintaining aspect ratio
                 QSize image_size = layer.qimage.size();
-                QSize target_size = target_rect.size();
+                QSizeF target_size = target_rect_in_canvas.size();
 
-                // Calculate scaling factor to fit within target rectangle
-                double scale_x = static_cast<double>(target_size.width()) / image_size.width();
-                double scale_y = static_cast<double>(target_size.height()) / image_size.height();
-                double scale = (std::min)(scale_x, scale_y);
+                // Scale to fill the target rect, cropping if necessary (like CanvasWidget)
+                QImage scaled = layer.qimage.scaled(target_size.toSize(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
 
-                // Calculate scaled image size
-                int scaled_width = static_cast<int>(image_size.width() * scale);
-                int scaled_height = static_cast<int>(image_size.height() * scale);
+                // Calculate source rect to crop the center part if needed
+                QRectF source_rect;
+                if (scaled.width() > target_size.width() || scaled.height() > target_size.height()) {
+                    double source_x = (scaled.width() - target_size.width()) / 2.0;
+                    double source_y = (scaled.height() - target_size.height()) / 2.0;
+                    source_rect = QRectF(source_x, source_y, target_size.width(), target_size.height());
+                } else {
+                    source_rect = QRectF(0, 0, scaled.width(), scaled.height());
+                }
 
-                // Calculate position to center the image
-                int x = target_rect.x() + (target_size.width() - scaled_width) / 2;
-                int y = target_rect.y() + (target_size.height() - scaled_height) / 2;
+                // Draw the image at the specified position
+                painter->drawImage(target_rect_in_canvas, scaled, source_rect);
 
-                QRect dest_rect(x, y, scaled_width, scaled_height);
-
-                // Scale and draw the image
-                QImage scaled = layer.qimage.scaled(scaled_width, scaled_height, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                painter->drawImage(dest_rect, scaled);
-
-                LOG_INFO("[DIAG] Compositor::render - 图层 " + layer.source_id + " 绘制完成, 缩放后尺寸: " + std::to_string(scaled_width) + "x" + std::to_string(scaled_height) + ", 位置: (" + std::to_string(x) + "," + std::to_string(y) + ")");
+                LOG_INFO("[DIAG] Compositor::render - 图层 " + layer.source_id + " 绘制完成, 位置: (" + std::to_string(target_rect_in_canvas.x()) + "," + std::to_string(target_rect_in_canvas.y()) + "), 大小: " + std::to_string(target_rect_in_canvas.width()) + "x" + std::to_string(target_rect_in_canvas.height()));
             } else {
-                // Placeholder rectangle
-                painter->fillRect(target_rect, QColor(64, 128, 255));
+                // Placeholder rectangle using the layer's dest_rect
+                painter->fillRect(layer.dest_rect, QColor(64, 128, 255));
                 painter->setPen(Qt::white);
-                painter->drawText(target_rect, Qt::AlignCenter,
+                painter->drawText(layer.dest_rect, Qt::AlignCenter,
                                QString("Layer: %1").arg(QString::fromStdString(layer.source_id)));
             }
         }

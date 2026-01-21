@@ -6,6 +6,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
+#include <libavutil/error.h>
 }
 
 namespace live_assistant {
@@ -25,6 +26,14 @@ RTMPPusher::~RTMPPusher() {
 ErrorCode RTMPPusher::initialize(const StreamConfig& config) {
     LOG_INFO("Initializing RTMP pusher");
     
+    // If already initialized (format_ctx_ exists), skip re-initialization to avoid
+    // clearing previously registered streams.
+    if (format_ctx_) {
+        LOG_INFO("RTMP pusher already initialized, skipping re-initialize");
+        config_ = config;
+        return ErrorCode::SUCCESS;
+    }
+
     config_ = config;
     header_written_ = false;
     
@@ -52,6 +61,10 @@ ErrorCode RTMPPusher::init_format_context() {
     }
     
     return ErrorCode::SUCCESS;
+}
+
+bool RTMPPusher::is_initialized() const {
+    return format_ctx_ != nullptr;
 }
 
 ErrorCode RTMPPusher::register_audio_stream(AVCodecParameters* codecpar, AVRational time_base) {
@@ -108,9 +121,13 @@ ErrorCode RTMPPusher::open_output() {
     }
 
     std::string full_url = config_.server_url + "/" + config_.stream_key;
-    
-    if (avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE) < 0) {
-        LOG_ERROR("Failed to open output URL: " + full_url);
+    //test
+    full_url = "D://test.flv";
+    int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
+    if (ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR(std::string("Failed to open output URL: ") + full_url + ", error: " + errbuf);
         return ErrorCode::CONNECT_FAILED;
     }
     
@@ -151,22 +168,25 @@ ErrorCode RTMPPusher::disconnect() {
     if (!connected_) {
         return ErrorCode::SUCCESS;
     }
-    
+
     LOG_INFO("Disconnecting from RTMP server");
-    
+
     if (format_ctx_ && header_written_) {
         av_write_trailer(format_ctx_);
     }
-    
+
     if (format_ctx_ && format_ctx_->pb) {
         avio_close(format_ctx_->pb);
         format_ctx_->pb = nullptr;
     }
-    
+
     connected_ = false;
     header_written_ = false;
     stats_.connected = false;
-    
+
+    // Free the format context to allow proper re-initialization
+    free_resources();
+
     LOG_INFO("Disconnected from RTMP server");
     return ErrorCode::SUCCESS;
 }
@@ -217,9 +237,29 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         av_packet_rescale_ts(avpkt, packet->encoder_time_base, st->time_base);
     }
 
-    int ret = av_interleaved_write_frame(format_ctx_, avpkt);
+    LOG_INFO("RTMPPusher::send_packet - preparing to send packet, stream_index=" + std::to_string(avpkt->stream_index) +
+             ", size=" + std::to_string(avpkt->size) + ", flags=" + std::to_string(avpkt->flags));
+
+    // Clone the packet to decouple ownership from producer threads/encoders.
+    // This prevents cases where the original AVPacket memory is reused or freed
+    // before the muxer writes it.
+    AVPacket* write_pkt = av_packet_clone(avpkt);
+    AVPacket* pkt_to_free = write_pkt;
+    if (!write_pkt) {
+        // Fallback: use original packet (shouldn't normally happen)
+        write_pkt = avpkt;
+        pkt_to_free = nullptr;
+    }
+
+    int ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+    if (pkt_to_free) {
+        av_packet_free(&pkt_to_free);
+    }
+
     if (ret < 0) {
-        LOG_ERROR("Failed to send packet");
+        char errbuf[128] = {0};
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
         return ErrorCode::SEND_FAILED;
     }
     

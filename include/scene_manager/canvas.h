@@ -10,6 +10,7 @@
 
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/compositor.h"
+#include "common/config_manager.h"
 
 namespace live_assistant {
 
@@ -48,6 +49,10 @@ public:
     
     // 设置画布分辨率
     void set_canvas_resolution(int width, int height);
+
+    // 设置画布配置（支持不同比例）
+    void set_canvas_config(const CanvasConfig& config);
+    const CanvasConfig& get_canvas_config() const { return canvas_config_; }
     
     // 设置视频引擎，用于直接显示摄像头帧
     void set_video_engine(std::shared_ptr<VideoEngine> video_engine);
@@ -99,6 +104,7 @@ private:
     std::shared_ptr<Compositor> compositor_;    // 合成器，用于多源渲染
     
     // 画布属性
+    CanvasConfig canvas_config_ = CanvasConfig::get_default();
     int canvas_width_ = 1920;
     int canvas_height_ = 1080;
     bool interaction_enabled_ = true;

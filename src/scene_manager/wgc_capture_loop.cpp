@@ -167,12 +167,21 @@ bool WGCCaptureLoop::init_capture_objects()
 
 void WGCCaptureLoop::resize_swapchain()
 {
-    if (!swapchain_) return;
-    winrt::check_hresult(swapchain_->ResizeBuffers(2,
-        static_cast<uint32_t>(last_size_.Width),
-        static_cast<uint32_t>(last_size_.Height),
-        static_cast<DXGI_FORMAT>(pixel_format_),
-        0));
+    try {
+        if (!swapchain_) return;
+        winrt::check_hresult(swapchain_->ResizeBuffers(2,
+            static_cast<uint32_t>(last_size_.Width),
+            static_cast<uint32_t>(last_size_.Height),
+            static_cast<DXGI_FORMAT>(pixel_format_),
+            0));
+    } catch (const winrt::hresult_error& ex) {
+        LOG_ERROR("[WGC] winrt::hresult_error in resize_swapchain: " + winrt::to_string(ex.message()) +
+                 ", code: " + std::to_string(ex.code()));
+    } catch (const std::exception& ex) {
+        LOG_ERROR("[WGC] std::exception in resize_swapchain: " + std::string(ex.what()));
+    } catch (...) {
+        LOG_ERROR("[WGC] Unknown exception in resize_swapchain");
+    }
 }
 
 bool WGCCaptureLoop::try_resize_swapchain(winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame const& frame)
@@ -190,8 +199,9 @@ void WGCCaptureLoop::on_frame_arrived(
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
     winrt::Windows::Foundation::IInspectable const&)
 {
-    LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 帧到达，stopping_: " + std::string(stopping_ ? "true" : "false"));
-    if (stopping_) return;
+    try {
+        LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 帧到达，stopping_: " + std::string(stopping_ ? "true" : "false"));
+        if (stopping_) return;
 
     bool resized = false;
     winrt::com_ptr<ID3D11Texture2D> surfaceTexture;
@@ -243,6 +253,14 @@ void WGCCaptureLoop::on_frame_arrived(
         }
     } else {
         LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - surfaceTexture为空");
+    }
+    } catch (const winrt::hresult_error& ex) {
+        LOG_ERROR("[WGC] winrt::hresult_error in on_frame_arrived: " + winrt::to_string(ex.message()) +
+                 ", code: " + std::to_string(ex.code()));
+    } catch (const std::exception& ex) {
+        LOG_ERROR("[WGC] std::exception in on_frame_arrived: " + std::string(ex.what()));
+    } catch (...) {
+        LOG_ERROR("[WGC] Unknown exception in on_frame_arrived");
     }
 }
 
