@@ -28,6 +28,8 @@
 #include <QDateTime>
 #include <QInputDialog>
 #include <QHBoxLayout>
+#include <QMenu>
+#include <QAction>
 #include <QStyle>
 #include <QAbstractItemModel>
 #include <QVariant>
@@ -211,15 +213,36 @@ void MainWindow::initialize_modules() {
     // Default: start microphone capture when entering live room
     if (audio_engine_) {
         LOG_INFO("Starting audio capture by default for live room");
-        if (!audio_engine_->start_capture()) {
-            LOG_WARNING("AudioEngine::start_capture failed on startup");
+        update_audio_status("🎤 初始化中...","orange");
+
+        // Try to start audio capture
+        bool audio_started = false;
+        int retry_count = 3;
+
+        for (int i = 0; i < retry_count && !audio_started; ++i) {
+            if (i > 0) {
+                LOG_INFO("Retrying audio capture startup (attempt " + std::to_string(i + 1) + ")");
+                QThread::msleep(500); // Wait a bit before retry
+            }
+
+            if (audio_engine_->start_capture()) {
+                audio_started = true;
+                break;
+            }
+        }
+
+        if (!audio_started) {
+            LOG_WARNING("AudioEngine::start_capture failed after " + std::to_string(retry_count) + " attempts");
+            update_audio_status("🎤 故障", "red");
             // enable silent audio fallback in encoder bridge
             if (encoder_bridge_) {
                 encoder_bridge_->set_audio_engine(audio_engine_);
                 encoder_bridge_->set_silent_audio(true);
             }
-            QMessageBox::warning(this, "麦克风故障", "无法打开麦克风，程序将以静音推流作为回退。");
+            QMessageBox::warning(this, "麦克风故障",
+                "无法打开麦克风，程序将以静音推流作为回退。\n\n可能的原因：\n• 麦克风被其他程序占用\n• 音频设备驱动问题\n• 系统音频服务未运行\n\n请尝试：\n1. 检查麦克风是否被其他程序使用\n2. 重新启动应用程序\n3. 检查音频设备设置");
         } else {
+            update_audio_status("🎤 正常", "green");
             if (encoder_bridge_) {
                 encoder_bridge_->set_audio_engine(audio_engine_);
                 encoder_bridge_->set_silent_audio(false);
@@ -252,8 +275,20 @@ void MainWindow::initialize_modules() {
     // Live duration label (added to status bar)
     live_duration_label_ = new QLabel("00:00:00", this);
     live_duration_label_->setMinimumWidth(100);
+
+    // Audio status indicator
+    audio_status_label_ = new QLabel("🎤 未初始化", this);
+    audio_status_label_->setMinimumWidth(120);
+    audio_status_label_->setStyleSheet("color: orange; font-weight: bold;");
+
     if (ui->statusBar) {
+        // Ensure status bar is visible
+        ui->statusBar->setVisible(true);
+        ui->statusBar->addWidget(audio_status_label_);
         ui->statusBar->addPermanentWidget(live_duration_label_);
+
+        // Force status bar update
+        ui->statusBar->update();
     }
     live_duration_timer_ = new QTimer(this);
     connect(live_duration_timer_, &QTimer::timeout, this, [this]() {
@@ -395,6 +430,47 @@ void MainWindow::setup_ui_connections() {
             }
         });
     }
+
+    // Audio control connections
+    if (ui->pushButton_mic) {
+        connect(ui->pushButton_mic, &QPushButton::clicked, this, [this]() {
+            toggle_microphone();
+        });
+
+        // Right-click context menu for microphone selection
+        ui->pushButton_mic->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(ui->pushButton_mic, &QPushButton::customContextMenuRequested, this, [this](const QPoint& pos) {
+            show_microphone_menu(ui->pushButton_mic->mapToGlobal(pos));
+        });
+    }
+
+    if (ui->slider_mic) {
+        connect(ui->slider_mic, &QSlider::valueChanged, this, [this](int value) {
+            set_microphone_volume(value / 100.0f);
+        });
+    }
+
+    if (ui->pushButton_speaker) {
+        connect(ui->pushButton_speaker, &QPushButton::clicked, this, [this]() {
+            toggle_speaker();
+        });
+
+        // Right-click context menu for speaker selection (placeholder for future)
+        ui->pushButton_speaker->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(ui->pushButton_speaker, &QPushButton::customContextMenuRequested, this, [this](const QPoint& pos) {
+            show_speaker_menu(ui->pushButton_speaker->mapToGlobal(pos));
+        });
+    }
+
+    if (ui->slider_speaker) {
+        connect(ui->slider_speaker, &QSlider::valueChanged, this, [this](int value) {
+            set_speaker_volume(value / 100.0f);
+        });
+    }
+
+    // Initialize audio controls
+    update_microphone_ui();
+    update_speaker_ui();
 }
 
 void MainWindow::on_camera_button_clicked() {
@@ -1020,6 +1096,136 @@ void MainWindow::sync_scene_to_compositor() {
             compositor_->remove_layer(lid);
         }
     }
+}
+
+void MainWindow::update_audio_status(const QString& text, const QString& color) {
+    if (audio_status_label_) {
+        audio_status_label_->setText(text);
+        if (!color.isEmpty()) {
+            audio_status_label_->setStyleSheet("color: " + color + ";");
+        }
+    }
+}
+
+void MainWindow::toggle_microphone() {
+    microphone_enabled_ = !microphone_enabled_;
+    if (audio_engine_) {
+        audio_engine_->set_microphone_mute(!microphone_enabled_);
+    }
+    update_microphone_ui();
+    LOG_INFO(std::string("Microphone ") + (microphone_enabled_ ? "enabled" : "disabled"));
+}
+
+void MainWindow::set_microphone_volume(float volume) {
+    if (audio_engine_) {
+        audio_engine_->set_microphone_volume(volume);
+    }
+    if (ui->label_micLevel) {
+        ui->label_micLevel->setText(QString::number(static_cast<int>(volume * 100)) + "%");
+    }
+    // Update slider position
+    if (ui->slider_mic) {
+        ui->slider_mic->setValue(static_cast<int>(volume * 100));
+    }
+}
+
+void MainWindow::update_microphone_ui() {
+    if (ui->pushButton_mic) {
+        ui->pushButton_mic->setText(microphone_enabled_ ? "🎤" : "🎤❌");
+        ui->pushButton_mic->setStyleSheet(microphone_enabled_ ?
+            "border: none; background: transparent; font-size: 16px;" :
+            "border: none; background: transparent; font-size: 16px; color: #ff6666;");
+    }
+
+    if (ui->slider_mic && audio_engine_) {
+        int volume = static_cast<int>(audio_engine_->get_microphone_volume() * 100);
+        ui->slider_mic->setValue(volume);
+        if (ui->label_micLevel) {
+            ui->label_micLevel->setText(QString::number(volume) + "%");
+        }
+    }
+}
+
+void MainWindow::show_microphone_menu(const QPoint& pos) {
+    if (!audio_engine_) return;
+
+    QMenu menu(this);
+    menu.setTitle("选择麦克风");
+
+    auto devices = audio_engine_->get_available_microphones();
+    auto current_id = audio_engine_->get_selected_microphone_id();
+
+    for (const auto& device : devices) {
+        QAction* action = menu.addAction(QString::fromUtf8(device.name.c_str()));
+        action->setCheckable(true);
+        action->setChecked(device.id == current_id);
+
+        connect(action, &QAction::triggered, this, [this, device_id = device.id]() {
+            if (audio_engine_->select_microphone(device_id)) {
+                LOG_INFO("Selected microphone: " + device_id);
+                // Restart audio capture with new device
+                audio_engine_->stop_capture();
+                if (!audio_engine_->start_capture()) {
+                    update_audio_status("🎤 故障", "red");
+                } else {
+                    update_audio_status("🎤 正常", "green");
+                }
+            }
+        });
+    }
+
+    menu.exec(pos);
+}
+
+void MainWindow::toggle_speaker() {
+    speaker_enabled_ = !speaker_enabled_;
+    if (audio_engine_) {
+        audio_engine_->set_speaker_mute(!speaker_enabled_);
+    }
+    update_speaker_ui();
+    LOG_INFO(std::string("Speaker ") + (speaker_enabled_ ? "enabled" : "disabled"));
+}
+
+void MainWindow::set_speaker_volume(float volume) {
+    if (audio_engine_) {
+        audio_engine_->set_speaker_volume(volume);
+    }
+    if (ui->label_speakerLevel) {
+        ui->label_speakerLevel->setText(QString::number(static_cast<int>(volume * 100)) + "%");
+    }
+    // Update slider position
+    if (ui->slider_speaker) {
+        ui->slider_speaker->setValue(static_cast<int>(volume * 100));
+    }
+}
+
+void MainWindow::update_speaker_ui() {
+    if (ui->pushButton_speaker) {
+        ui->pushButton_speaker->setText(speaker_enabled_ ? "🔊" : "🔇");
+        ui->pushButton_speaker->setStyleSheet(speaker_enabled_ ?
+            "border: none; background: transparent; font-size: 16px;" :
+            "border: none; background: transparent; font-size: 16px; color: #ff6666;");
+    }
+
+    if (ui->slider_speaker && audio_engine_) {
+        int volume = static_cast<int>(audio_engine_->get_speaker_volume() * 100);
+        ui->slider_speaker->setValue(volume);
+        if (ui->label_speakerLevel) {
+            ui->label_speakerLevel->setText(QString::number(volume) + "%");
+        }
+    }
+}
+
+void MainWindow::show_speaker_menu(const QPoint& pos) {
+    // Placeholder for speaker device selection
+    // In a full implementation, this would show available speaker devices
+    QMenu menu(this);
+    menu.setTitle("扬声器设备");
+
+    QAction* placeholder = menu.addAction("默认扬声器 (功能开发中...)");
+    placeholder->setEnabled(false);
+
+    menu.exec(pos);
 }
 
 // 推流控制方法实现

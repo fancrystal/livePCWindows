@@ -8,6 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Ensure MSVC is used with standard library include paths.
 # (Do not force -std:c++17 in CMAKE_CXX_FLAGS; CMAKE_CXX_STANDARD handles it.)
 
+# MSVC specific settings to ensure standard library includes are found
+if(MSVC)
+    # Ensure we're using the correct MSVC runtime
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus")
+endif()
+
 
 # Windows specific defines for WinRT and Windows Graphics Capture
 if(WIN32)

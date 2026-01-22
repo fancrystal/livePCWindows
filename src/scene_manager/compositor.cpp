@@ -151,12 +151,15 @@ QImage Compositor::render_to_image(int width, int height) {
 
     QPainter painter(&img);
 
-    // Keep consistent coordinate system with canvas
+    // For streaming/encoding, we want to render the full canvas content at the target resolution
+    // Don't apply scaling if canvas size matches the target size (streaming case)
     const QSize canvas = canvas_size_;
     if (canvas.width() > 0 && canvas.height() > 0 && (canvas.width() != width || canvas.height() != height)) {
+        // This is for preview rendering where canvas size differs from display size
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         painter.scale(static_cast<double>(width) / canvas.width(), static_cast<double>(height) / canvas.height());
     }
+    // For streaming (canvas_size == target_size), render directly without scaling
 
     render(&painter, QRect(0, 0, width, height));
     painter.end();
@@ -199,14 +202,40 @@ void Compositor::paintEvent(QPaintEvent* event) {
             // Draw QImage if available, otherwise draw placeholder
             if (!layer.qimage.isNull()) {
                 LOG_INFO("[DIAG] 图层 " + layer.source_id + " 有图像数据, 尺寸: " + std::to_string(layer.qimage.width()) + "x" + std::to_string(layer.qimage.height()));
-                painter.drawImage(layer.dest_rect.toRect(), layer.qimage);
-                LOG_INFO("[DIAG] 图层 " + layer.source_id + " 绘制完成");
+                // Map layer.dest_rect (canvas coordinates) to widget coordinates
+                QRect widget_rect = rect();
+                int base_w = canvas_size_.width() > 0 ? canvas_size_.width() : 1920;
+                int base_h = canvas_size_.height() > 0 ? canvas_size_.height() : 1080;
+                double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
+                double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
+                double scale = (std::min)(scale_x, scale_y);
+                double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
+                double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+
+                QRectF dest = layer.dest_rect;
+                QRectF mapped_rect(dest.x() * scale + offset_x, dest.y() * scale + offset_y, dest.width() * scale, dest.height() * scale);
+
+                painter.drawImage(mapped_rect, layer.qimage);
+                LOG_INFO("[DIAG] 图层 " + layer.source_id + " 绘制完成, 位置: (" + std::to_string(mapped_rect.x()) + "," + std::to_string(mapped_rect.y()) + "), 大小: " + std::to_string(mapped_rect.width()) + "x" + std::to_string(mapped_rect.height()));
             } else {
                 LOG_INFO("[DIAG] 图层 " + layer.source_id + " 没有图像数据, 绘制占位符");
                 // Placeholder rectangle
-                painter.fillRect(layer.dest_rect.toRect(), QColor(64, 128, 255));
+                QRect widget_rect = rect();
+                int base_w = canvas_size_.width() > 0 ? canvas_size_.width() : 1920;
+                int base_h = canvas_size_.height() > 0 ? canvas_size_.height() : 1080;
+                double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
+                double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
+                double scale = (std::min)(scale_x, scale_y);
+                double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
+                double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+                QRectF dest = layer.dest_rect;
+                QRect mapped_rect(static_cast<int>(dest.x() * scale + offset_x),
+                                  static_cast<int>(dest.y() * scale + offset_y),
+                                  static_cast<int>(dest.width() * scale),
+                                  static_cast<int>(dest.height() * scale));
+                painter.fillRect(mapped_rect, QColor(64, 128, 255));
                 painter.setPen(Qt::white);
-                painter.drawText(layer.dest_rect.toRect(), Qt::AlignCenter,
+                painter.drawText(mapped_rect, Qt::AlignCenter,
                                QString("Layer: %1").arg(QString::fromStdString(layer.source_id)));
                 LOG_INFO("[DIAG] 图层 " + layer.source_id + " 占位符绘制完成");
             }

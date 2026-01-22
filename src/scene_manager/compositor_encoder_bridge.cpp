@@ -213,6 +213,12 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
         LOG_WARNING("[BRIDGE] Encoder not set, skipping stream registration (StreamPusher may fail if streams not registered)");
     }
 
+    // Request encoder to emit a keyframe for the next encoded frame before starting push
+    if (encoder_) {
+        ErrorCode fk = encoder_->force_keyframe();
+        LOG_INFO(std::string("[BRIDGE] Requested encoder to force next keyframe: ") + std::to_string(static_cast<int>(fk)));
+    }
+
     ErrorCode start_result = stream_pusher_->start();
     if (start_result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to start streaming to: " + url);
@@ -336,6 +342,10 @@ void CompositorEncoderBridge::encode_and_push_frame() {
                     } else {
                         LOG_INFO("[DIAG] Video packet prepared: pkt=null");
                     }
+                    // Also log whether we requested forced keyframe for this frame
+                    if (p->is_keyframe) {
+                        LOG_INFO("[DIAG] Video packet is keyframe");
+                    }
                     stream_pusher_->push_packet(p);
                 }
                 LOG_INFO("[STREAMING] Encoded and pushed video frame, packets: " + std::to_string(video_packets.size()));
@@ -346,14 +356,19 @@ void CompositorEncoderBridge::encode_and_push_frame() {
             LOG_WARNING("Failed to capture frame from compositor");
         }
 
-        // 编码音频帧（优先使用音频引擎），若无可用帧且启用静音回退，则合成静音帧
+        // 编码音频帧（优先使用音频引擎），若无可用帧则自动合成静音帧以保持A/V同步
         std::shared_ptr<AudioFrame> audio_frame = nullptr;
+        bool using_real_audio = false;
+
         if (audio_engine_) {
             audio_frame = audio_engine_->get_audio_frame();
+            if (audio_frame) {
+                using_real_audio = true;
+            }
         }
 
-        if (!audio_frame && silent_audio_enabled_) {
-            // create a small silent frame (e.g., 1024 samples)
+        if (!audio_frame) {
+            // 自动生成静音帧以保持A/V同步
             int sample_rate = 48000;
             int channels = 2;
             if (audio_engine_) {
@@ -364,9 +379,12 @@ void CompositorEncoderBridge::encode_and_push_frame() {
                 if (acfg.sample_rate > 0) sample_rate = acfg.sample_rate;
                 if (acfg.channels > 0) channels = acfg.channels;
             }
-            int samples = 1024;
+            // 使用更大的缓冲区以减少静音帧的数量
+            int samples = 2048;  // 46ms at 44.1kHz, should match typical video frame interval
             audio_frame = std::make_shared<AudioFrame>(sample_rate, channels, samples);
-            LOG_INFO("[STREAMING] Using synthetic silent audio frame: " + std::to_string(sample_rate) + "Hz, channels=" + std::to_string(channels));
+            LOG_DEBUG("[STREAMING] Using synthetic silent audio frame for A/V sync: " +
+                     std::to_string(sample_rate) + "Hz, channels=" + std::to_string(channels) +
+                     ", samples=" + std::to_string(samples));
         }
 
         if (audio_frame) {
@@ -376,7 +394,8 @@ void CompositorEncoderBridge::encode_and_push_frame() {
             std::vector<EncodedPacketPtr> audio_packets;
             ErrorCode audio_result = encoder_->encode_audio_frame(audio_frame, audio_packets);
             LOG_INFO("[BRIDGE] audio encode result=" + std::to_string(static_cast<int>(audio_result)) +
-                     ", packets=" + std::to_string(audio_packets.size()));
+                     ", packets=" + std::to_string(audio_packets.size()) +
+                     (using_real_audio ? " (real audio)" : " (silent audio)"));
 
             if (audio_result == ErrorCode::SUCCESS && !audio_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
                 for (auto& p : audio_packets) {
@@ -391,7 +410,8 @@ void CompositorEncoderBridge::encode_and_push_frame() {
                 LOG_DEBUG("[STREAMING] audio packets empty after encode");
             }
         } else {
-            LOG_DEBUG("[STREAMING] No audio frame available and silent audio not enabled");
+            // This should not happen with the new logic above
+            LOG_WARNING("[STREAMING] Unexpected: no audio frame available after automatic silent audio generation");
         }
 
     } catch (const std::exception& ex) {

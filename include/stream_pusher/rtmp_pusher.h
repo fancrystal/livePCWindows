@@ -3,6 +3,11 @@
 #include "common/error.h"
 #include "stream_pusher/stream_config.h"
 #include "stream_pusher/encoded_packet.h"
+// STL
+#include <atomic>
+#include <mutex>
+#include <chrono>
+#include <cstdint>
 
 // FFmpeg类型的前向声明
 struct AVFormatContext;
@@ -69,6 +74,24 @@ private:
     bool connected_ = false;
     
     Stats stats_ = {false, 0, 0, 0, 0};
+    
+    // Reconnect/backoff configuration
+    int max_reconnect_attempts = 6;
+    int base_backoff_ms = 500; // initial backoff in ms
+    
+    // Metrics helpers
+    mutable std::mutex stats_mutex_;
+    int64_t last_bytes_snapshot_ = 0;
+    std::chrono::steady_clock::time_point last_snapshot_time_;
+    
+    // Allow stopping reconnect loops if destructor runs
+    std::atomic<bool> stop_reconnect_{false};
+    
+    // Force next video packet to be treated as a keyframe (used after header write)
+    std::atomic<bool> force_next_keyframe_{false};
+    
+    // Whether we've sent the first video keyframe yet
+    bool have_sent_first_key_ = false;
 };
 
 } // namespace live_assistant

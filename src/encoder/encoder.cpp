@@ -235,4 +235,12 @@ ErrorCode Encoder::set_audio_bitrate(int bitrate) {
     return audio_encoder_->set_bitrate(bitrate);
 }
 
+ErrorCode Encoder::force_keyframe() {
+    if (!video_encoder_initialized_ || !video_encoder_) {
+        LOG_WARNING("force_keyframe called but video encoder not initialized");
+        return ErrorCode::INVALID_STATE;
+    }
+    return video_encoder_->force_keyframe();
+}
+
 } // namespace live_assistant

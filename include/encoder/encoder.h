@@ -56,6 +56,9 @@ public:
     ErrorCode set_video_bitrate(int bitrate);
     ErrorCode set_audio_bitrate(int bitrate);
     
+    // Force the next video frame to be a keyframe (IDR)
+    ErrorCode force_keyframe();
+    
 private:
     std::unique_ptr<VideoEncoder> video_encoder_;
     VideoEncoderConfig video_config_;

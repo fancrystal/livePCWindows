@@ -140,6 +140,9 @@ public:
     // 渲染单个场景项
     void render_scene_item(QPainter& painter, const std::shared_ptr<SceneItem>& item, const QRect& target_rect, const std::shared_ptr<SceneItem>& hovered_item = nullptr);
     
+    // 设置画布逻辑大小（用于将场景坐标映射到显示/编码分辨率）
+    void set_canvas_size(int width, int height);
+
     // 设置渲染属性
     void set_show_bounding_boxes(bool show) { show_bounding_boxes_ = show; }
     void set_show_resize_handles(bool show) { show_resize_handles_ = show; }
@@ -156,6 +159,10 @@ private:
     // 渲染设置
     bool show_bounding_boxes_ = true;
     bool show_resize_handles_ = true;
+    
+    // 逻辑画布尺寸（用于将场景坐标映射到显示/编码分辨率）
+    int canvas_width_ = 1920;
+    int canvas_height_ = 1080;
 };
 
 } // namespace live_assistant

@@ -11,6 +11,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#include <libavutil/hwcontext.h>
 }
 
 namespace live_assistant {
@@ -135,6 +136,18 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             probe_ctx->gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
             probe_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
+            // If probing QSV, try creating a qsv hwdevice and attach it to the probe context
+            AVBufferRef* hw_device_ctx = nullptr;
+            if (std::string(hw_name).find("qsv") != std::string::npos) {
+                if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_QSV, nullptr, nullptr, 0) == 0 && hw_device_ctx) {
+                    // attach hwdevice to probe context
+                    probe_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+                } else {
+                    if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+                    hw_device_ctx = nullptr;
+                }
+            }
+
             int ret = avcodec_open2(probe_ctx, probe_codec, nullptr);
             if (ret >= 0) {
                 AVCodecParameters* tmppar = avcodec_parameters_alloc();
@@ -144,6 +157,7 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
                         codec_ = probe_codec;
                         avcodec_parameters_free(&tmppar);
                         avcodec_free_context(&probe_ctx);
+                        if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
                         LOG_INFO(std::string("Selected hardware encoder after probe: ") + hw_name);
                         break;
                     }
@@ -152,6 +166,7 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             }
             // cleanup and continue
             avcodec_free_context(&probe_ctx);
+            if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
         }
         if (!codec_) {
             LOG_INFO("No suitable hardware encoder found after probing; will fallback to software x264");
@@ -225,6 +240,8 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         LOG_ERROR("Failed to open H264 encoder");
         return ErrorCode::INIT_FAILED;
     }
+    // Ensure the encoder will produce a keyframe for the first frame after initialization.
+    force_keyframe_ = true;
 
     frame_ = av_frame_alloc();
     if (!frame_) {
@@ -413,6 +430,11 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
             av_packet_free(&pkt);
             LOG_ERROR("avcodec_receive_packet failed");
             return ErrorCode::ENCODING_ERROR;
+        }
+
+        // Ensure packet is reference-counted so its data buffer isn't freed unexpectedly
+        if (av_packet_make_refcounted(pkt) < 0) {
+            LOG_WARNING("av_packet_make_refcounted failed for received packet; proceeding but this may risk buffer lifetime issues");
         }
 
         auto out = std::make_shared<EncodedPacket>();

@@ -48,6 +48,21 @@ public:
 
     std::shared_ptr<AudioFrame> get_audio_frame();
 
+    // Volume control (0.0 to 1.0)
+    bool set_microphone_volume(float volume);
+    float get_microphone_volume() const;
+
+    // Mute/unmute
+    bool set_microphone_mute(bool mute);
+    bool get_microphone_mute() const;
+
+    // Speaker volume control (system level)
+    bool set_speaker_volume(float volume);
+    float get_speaker_volume() const;
+
+    bool set_speaker_mute(bool mute);
+    bool get_speaker_mute() const;
+
     bool add_audio_source(std::shared_ptr<AudioEngine> source);
     bool remove_audio_source(std::shared_ptr<AudioEngine> source);
 
@@ -67,6 +82,12 @@ private:
 
     bool noise_suppression_enabled_ = false;
     bool echo_cancellation_enabled_ = false;
+
+    // Volume control
+    float microphone_volume_ = 1.0f;
+    bool microphone_muted_ = false;
+    float speaker_volume_ = 1.0f;
+    bool speaker_muted_ = false;
 
     IMMDeviceEnumerator* enumerator_ = nullptr;
     IMMDevice* audio_device_ = nullptr;

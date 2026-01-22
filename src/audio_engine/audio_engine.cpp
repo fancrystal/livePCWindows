@@ -213,7 +213,78 @@ std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
             frame_queue_.pop();
         }
     }
+
+    // Apply volume control and mute to the audio frame
+    if (frame && frame->raw_data) {
+        if (microphone_muted_) {
+            // Fill with silence
+            memset(frame->raw_data, 0, frame->samples * frame->channels * sizeof(int16_t));
+        } else if (microphone_volume_ < 1.0f) {
+            // Apply volume scaling
+            float scale = microphone_volume_;
+            int16_t* data = frame->raw_data;
+            for (int i = 0; i < frame->samples * frame->channels; ++i) {
+                data[i] = static_cast<int16_t>(data[i] * scale);
+            }
+        }
+    }
+
     return frame;
+}
+
+// Volume control implementation
+bool AudioEngine::set_microphone_volume(float volume) {
+    microphone_volume_ = (std::max)(0.0f, (std::min)(volume, 1.0f));
+    LOG_INFO("Microphone volume set to: " + std::to_string(microphone_volume_));
+    return true;
+}
+
+float AudioEngine::get_microphone_volume() const {
+    return microphone_volume_;
+}
+
+bool AudioEngine::set_microphone_mute(bool mute) {
+    microphone_muted_ = mute;
+    LOG_INFO(std::string("Microphone ") + (mute ? "muted" : "unmuted"));
+    return true;
+}
+
+bool AudioEngine::get_microphone_mute() const {
+    return microphone_muted_;
+}
+
+bool AudioEngine::set_speaker_volume(float volume) {
+    speaker_volume_ = (std::max)(0.0f, (std::min)(volume, 1.0f));
+    LOG_INFO("Speaker volume set to: " + std::to_string(speaker_volume_));
+
+    // On Windows, we could adjust system speaker volume here
+    // For now, just store the value
+#ifdef _WIN32
+    // TODO: Implement Windows system speaker volume control
+#endif
+
+    return true;
+}
+
+float AudioEngine::get_speaker_volume() const {
+    return speaker_volume_;
+}
+
+bool AudioEngine::set_speaker_mute(bool mute) {
+    speaker_muted_ = mute;
+    LOG_INFO(std::string("Speaker ") + (mute ? "muted" : "unmuted"));
+
+    // On Windows, we could mute/unmute system speaker here
+    // For now, just store the value
+#ifdef _WIN32
+    // TODO: Implement Windows system speaker mute control
+#endif
+
+    return true;
+}
+
+bool AudioEngine::get_speaker_mute() const {
+    return speaker_muted_;
 }
 
 bool AudioEngine::add_audio_source(std::shared_ptr<AudioEngine> source) {
@@ -368,6 +439,25 @@ void AudioEngine::capture_thread_func() {
                 frame_queue_.push(frame);
             }
             frame_cv_.notify_one();
+            
+            // Diagnostic: log when we receive non-silent audio data (rate-limited)
+            bool non_silent = false;
+            if (frame->raw_data) {
+                int64_t sum_abs = 0;
+                int total = frame->samples * frame->channels;
+                for (int i = 0; i < total; ++i) {
+                    sum_abs += std::abs(frame->raw_data[i]);
+                    if (sum_abs > 0) { non_silent = true; break; }
+                }
+            }
+            static int non_silent_log_skips = 0;
+            if (non_silent) {
+                if (non_silent_log_skips == 0) {
+                    LOG_INFO("Audio capture: received non-silent frame, samples=" + std::to_string(frame->samples) +
+                             ", channels=" + std::to_string(frame->channels));
+                }
+                non_silent_log_skips = (non_silent_log_skips + 1) % 50; // log at most 1/50 frames
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }

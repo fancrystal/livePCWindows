@@ -14,25 +14,32 @@ CanvasRenderer::CanvasRenderer() {
     LOG_INFO("CanvasRenderer initialized");
 }
 
+void CanvasRenderer::set_canvas_size(int w, int h) {
+    if (w > 0 && h > 0) {
+        canvas_width_ = w;
+        canvas_height_ = h;
+    }
+}
+
 void CanvasRenderer::render(QPainter& painter, const std::shared_ptr<Scene>& scene, const QRect& target_rect, const std::shared_ptr<SceneItem>& hovered_item) {
     if (!scene) {
         // 绘制空白背景
         painter.fillRect(target_rect, QBrush(QColor(40, 40, 40)));
         return;
     }
-    
+
     // 绘制背景
     painter.fillRect(target_rect, QBrush(QColor(40, 40, 40)));
-    
+
     // 获取所有场景项
     auto scene_items = scene->get_all_scene_items();
-    
+
     // 按顺序(z-index)对场景项排序
-    std::sort(scene_items.begin(), scene_items.end(), 
+    std::sort(scene_items.begin(), scene_items.end(),
         [](const std::shared_ptr<SceneItem>& a, const std::shared_ptr<SceneItem>& b) {
             return a->get_order() < b->get_order();
         });
-    
+
     // 渲染每个场景项
     for (const auto& item : scene_items) {
         render_scene_item(painter, item, target_rect, hovered_item);
@@ -43,16 +50,29 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
     if (!item || !item->is_visible()) {
         return;
     }
-    
+
     // 获取变换和源
     auto transform = item->get_transform();
     auto source = item->get_source();
-    
-    // 计算项的位置和大小
-    int x = transform.x;
-    int y = transform.y;
-    int width = transform.width;
-    int height = transform.height;
+
+    // 将画布坐标转换为显示坐标
+    // 使用 renderer 所保存的 canvas 宽高（由 CanvasWidget 同步设置）
+    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
+    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
+
+    double scale_x = static_cast<double>(target_rect.width()) / static_cast<double>(base_w);
+    double scale_y = static_cast<double>(target_rect.height()) / static_cast<double>(base_h);
+    double scale = (std::min)(scale_x, scale_y); // 保持纵横比
+
+    // 计算居中偏移（letterbox/pillarbox）
+    double offset_x = (target_rect.width() - base_w * scale) / 2.0;
+    double offset_y = (target_rect.height() - base_h * scale) / 2.0;
+
+    // 转换坐标（将 transform 的 canvas 坐标映射到 target_rect）
+    int x = static_cast<int>(transform.x * scale + offset_x);
+    int y = static_cast<int>(transform.y * scale + offset_y);
+    int width = static_cast<int>(transform.width * scale);
+    int height = static_cast<int>(transform.height * scale);
     
     // 如果宽度或高度为0，设置默认值
     if (width == 0 || height == 0) {
@@ -178,14 +198,40 @@ RENDER_LABELS:;
     
     // 仅当hovered_item是当前项时，显示边界框和调整大小句柄
     if (item == hovered_item) {
-        // 如果启用，绘制边界框
+        QRect mapped_rect = item_rect;
+
+        // 如果启用，绘制边界框（使用映射后的坐标）
         if (show_bounding_boxes_) {
-            draw_bounding_box(painter, transform, true);
+            QPen pen(QColor(0, 255, 255));
+            pen.setWidth(2);
+            pen.setStyle(Qt::DashLine);
+            painter.setPen(pen);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(mapped_rect);
         }
-        
-        // 如果启用，绘制调整大小句柄
+
+        // 如果启用，绘制调整大小句柄（使用映射后的坐标）
         if (show_resize_handles_) {
-            draw_resize_handles(painter, transform);
+            const int handle_size = 8;
+            QBrush handle_brush(QColor(0, 255, 255));
+            QPen handle_pen(QColor(0, 150, 255), 1);
+            painter.setBrush(handle_brush);
+            painter.setPen(handle_pen);
+
+            std::vector<QPoint> handles = {
+                QPoint(mapped_rect.left() - handle_size / 2, mapped_rect.top() - handle_size / 2),
+                QPoint(mapped_rect.left() + mapped_rect.width() / 2 - handle_size / 2, mapped_rect.top() - handle_size / 2),
+                QPoint(mapped_rect.right() - handle_size / 2, mapped_rect.top() - handle_size / 2),
+                QPoint(mapped_rect.right() - handle_size / 2, mapped_rect.top() + mapped_rect.height() / 2 - handle_size / 2),
+                QPoint(mapped_rect.right() - handle_size / 2, mapped_rect.bottom() - handle_size / 2),
+                QPoint(mapped_rect.left() + mapped_rect.width() / 2 - handle_size / 2, mapped_rect.bottom() - handle_size / 2),
+                QPoint(mapped_rect.left() - handle_size / 2, mapped_rect.bottom() - handle_size / 2),
+                QPoint(mapped_rect.left() - handle_size / 2, mapped_rect.top() + mapped_rect.height() / 2 - handle_size / 2)
+            };
+
+            for (const auto& handle : handles) {
+                painter.drawRect(handle.x(), handle.y(), handle_size, handle_size);
+            }
         }
     }
     
@@ -348,6 +394,10 @@ void CanvasWidget::set_canvas_resolution(int width, int height) {
         compositor_->set_canvas_size(width, height);
     }
 
+    if (renderer_) {
+        renderer_->set_canvas_size(width, height);
+    }
+
     refresh();
 }
 
@@ -362,6 +412,11 @@ void CanvasWidget::set_canvas_config(const CanvasConfig& config) {
     // 同步更新compositor的画布大小，确保推流分辨率一致
     if (compositor_) {
         compositor_->set_canvas_size(canvas_width_, canvas_height_);
+    }
+
+    // 同步更新渲染器的逻辑画布尺寸，保证预览与推流映射一致
+    if (renderer_) {
+        renderer_->set_canvas_size(canvas_width_, canvas_height_);
     }
 
     // 更新组件的最小尺寸建议
@@ -484,18 +539,29 @@ std::shared_ptr<SceneItem> CanvasWidget::hit_test(int x, int y) const {
     // 反转列表，从上到下检查
     std::reverse(scene_items.begin(), scene_items.end());
     
+    // compute mapping from canvas to widget coordinates
+    QRect widget_rect = this->rect();
+    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
+    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
+    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
+    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
+    double scale = (std::min)(scale_x, scale_y);
+    double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
+    double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+
     for (const auto& item : scene_items) {
         auto transform = item->get_transform();
-        
-        // 计算边界框
-        QRect rect(transform.x, transform.y, transform.width, transform.height);
-        
-        // 检查点是否在矩形内
-        if (rect.contains(x, y)) {
+        QRect mapped_rect(
+            static_cast<int>(transform.x * scale + offset_x),
+            static_cast<int>(transform.y * scale + offset_y),
+            static_cast<int>(transform.width * scale),
+            static_cast<int>(transform.height * scale));
+
+        if (mapped_rect.contains(x, y)) {
             return item;
         }
-        
-        // 检查调整大小句柄
+
+        // check handles using mapped_rect
         if (is_in_resize_handle(x, y, transform)) {
             return item;
         }
@@ -508,24 +574,30 @@ bool CanvasWidget::is_in_resize_handle(int x, int y, const Transform& transform)
     const int handle_size = 8;
     const int half_handle = handle_size / 2;
     
-    // 检查所有8个调整大小句柄
+    // Map transform to widget coordinates then check all 8 resize handles
+    QRect widget_rect = this->rect();
+    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
+    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
+    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
+    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
+    double scale = (std::min)(scale_x, scale_y);
+    double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
+    double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+
+    int mx = static_cast<int>(transform.x * scale + offset_x);
+    int my = static_cast<int>(transform.y * scale + offset_y);
+    int mw = static_cast<int>(transform.width * scale);
+    int mh = static_cast<int>(transform.height * scale);
+
     std::vector<QRect> handles = {
-        // 左上
-        QRect(transform.x - half_handle, transform.y - half_handle, handle_size, handle_size),
-        // 上中
-        QRect(transform.x + transform.width / 2 - half_handle, transform.y - half_handle, handle_size, handle_size),
-        // 右上
-        QRect(transform.x + transform.width - half_handle, transform.y - half_handle, handle_size, handle_size),
-        // 右中
-        QRect(transform.x + transform.width - half_handle, transform.y + transform.height / 2 - half_handle, handle_size, handle_size),
-        // 右下
-        QRect(transform.x + transform.width - half_handle, transform.y + transform.height - half_handle, handle_size, handle_size),
-        // 下中
-        QRect(transform.x + transform.width / 2 - half_handle, transform.y + transform.height - half_handle, handle_size, handle_size),
-        // 左下
-        QRect(transform.x - half_handle, transform.y + transform.height - half_handle, handle_size, handle_size),
-        // 左中
-        QRect(transform.x - half_handle, transform.y + transform.height / 2 - half_handle, handle_size, handle_size)
+        QRect(mx - half_handle, my - half_handle, handle_size, handle_size),
+        QRect(mx + mw / 2 - half_handle, my - half_handle, handle_size, handle_size),
+        QRect(mx + mw - half_handle, my - half_handle, handle_size, handle_size),
+        QRect(mx + mw - half_handle, my + mh / 2 - half_handle, handle_size, handle_size),
+        QRect(mx + mw - half_handle, my + mh - half_handle, handle_size, handle_size),
+        QRect(mx + mw / 2 - half_handle, my + mh - half_handle, handle_size, handle_size),
+        QRect(mx - half_handle, my + mh - half_handle, handle_size, handle_size),
+        QRect(mx - half_handle, my + mh / 2 - half_handle, handle_size, handle_size)
     };
     
     // 检查鼠标是否在任何句柄中
@@ -542,16 +614,26 @@ bool CanvasWidget::is_in_camera_resize_handle(int x, int y, int& handle_index) c
     const int handle_size = 8;
     const int half_handle = handle_size / 2;
     
-    // 只检查4个角落的调整大小句柄
+    // Map camera_transform_ (canvas coords) to widget coords and check 4 corner handles
+    QRect widget_rect = this->rect();
+    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
+    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
+    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
+    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
+    double scale = (std::min)(scale_x, scale_y);
+    double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
+    double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+
+    int mx = static_cast<int>(camera_transform_.x * scale + offset_x);
+    int my = static_cast<int>(camera_transform_.y * scale + offset_y);
+    int mw = static_cast<int>(camera_transform_.width * scale);
+    int mh = static_cast<int>(camera_transform_.height * scale);
+
     std::vector<QRect> handles = {
-        // 0: 左上
-        QRect(camera_transform_.x - half_handle, camera_transform_.y - half_handle, handle_size, handle_size),
-        // 1: 右上
-        QRect(camera_transform_.x + camera_transform_.width - half_handle, camera_transform_.y - half_handle, handle_size, handle_size),
-        // 2: 右下
-        QRect(camera_transform_.x + camera_transform_.width - half_handle, camera_transform_.y + camera_transform_.height - half_handle, handle_size, handle_size),
-        // 3: 左下
-        QRect(camera_transform_.x - half_handle, camera_transform_.y + camera_transform_.height - half_handle, handle_size, handle_size)
+        QRect(mx - half_handle, my - half_handle, handle_size, handle_size),
+        QRect(mx + mw - half_handle, my - half_handle, handle_size, handle_size),
+        QRect(mx + mw - half_handle, my + mh - half_handle, handle_size, handle_size),
+        QRect(mx - half_handle, my + mh - half_handle, handle_size, handle_size)
     };
     
     // 检查鼠标是否在任何句柄中
@@ -695,9 +777,25 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *event) {
         return;
     }
     
-    // 计算鼠标移动增量
+    // 计算鼠标移动增量（widget 坐标）
     int delta_x = event->pos().x() - last_mouse_pos_.x();
     int delta_y = event->pos().y() - last_mouse_pos_.y();
+
+    // 计算 widget->canvas 的缩放因子，并把 widget delta 转换为 canvas delta
+    QRect widget_rect = this->rect();
+    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
+    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
+    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
+    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
+    double scale = (std::min)(scale_x, scale_y);
+    double canvas_dx = delta_x;
+    double canvas_dy = delta_y;
+    if (scale > 1e-6) {
+        canvas_dx = delta_x / scale;
+        canvas_dy = delta_y / scale;
+    }
+    int cdelta_x = static_cast<int>(std::round(canvas_dx));
+    int cdelta_y = static_cast<int>(std::round(canvas_dy));
     
     if (selected_item_) {
         // 处理SceneItem的拖动
@@ -710,17 +808,17 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *event) {
         Transform new_transform = transform;
         
         if (is_resizing_) {
-            // 处理调整大小
-            new_transform.width += delta_x;
-            new_transform.height += delta_y;
+            // 处理调整大小（使用 canvas deltas）
+            new_transform.width += cdelta_x;
+            new_transform.height += cdelta_y;
             
             // 确保最小尺寸
             new_transform.width = (std::max)(50, new_transform.width);
             new_transform.height = (std::max)(50, new_transform.height);
         } else {
-            // 处理移动
-            new_transform.x += delta_x;
-            new_transform.y += delta_y;
+            // 处理移动（使用 canvas deltas）
+            new_transform.x += cdelta_x;
+            new_transform.y += cdelta_y;
         }
         
         // 更新变换
@@ -738,37 +836,37 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *event) {
         // 处理摄像头视频帧的拖动或缩放
         Transform new_transform = camera_transform_;
         
-        if (is_resizing_ && camera_resize_handle_ != -1) {
+            if (is_resizing_ && camera_resize_handle_ != -1) {
             // 处理缩放，根据不同的句柄索引实现不同的拉伸逻辑
             switch (camera_resize_handle_) {
                 case 0: // 左上
                     // 调整x、y坐标和宽高
-                    new_transform.x += delta_x;
-                    new_transform.y += delta_y;
-                    new_transform.width -= delta_x;
-                    new_transform.height -= delta_y;
+                    new_transform.x += cdelta_x;
+                    new_transform.y += cdelta_y;
+                    new_transform.width -= cdelta_x;
+                    new_transform.height -= cdelta_y;
                     break;
                 case 1: // 右上
                     // 调整y坐标、宽度，保持x坐标不变
-                    new_transform.y += delta_y;
-                    new_transform.width += delta_x;
-                    new_transform.height -= delta_y;
+                    new_transform.y += cdelta_y;
+                    new_transform.width += cdelta_x;
+                    new_transform.height -= cdelta_y;
                     break;
                 case 2: // 右下
                     // 只调整宽高，保持x、y坐标不变
-                    new_transform.width += delta_x;
-                    new_transform.height += delta_y;
+                    new_transform.width += cdelta_x;
+                    new_transform.height += cdelta_y;
                     break;
                 case 3: // 左下
                     // 调整x坐标、高度，保持y坐标不变
-                    new_transform.x += delta_x;
-                    new_transform.width -= delta_x;
-                    new_transform.height += delta_y;
+                    new_transform.x += cdelta_x;
+                    new_transform.width -= cdelta_x;
+                    new_transform.height += cdelta_y;
                     break;
                 default:
                     // 未知句柄，使用默认缩放逻辑
-                    new_transform.width += delta_x;
-                    new_transform.height += delta_y;
+                    new_transform.width += cdelta_x;
+                    new_transform.height += cdelta_y;
                     break;
             }
             

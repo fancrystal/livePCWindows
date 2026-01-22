@@ -195,34 +195,57 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     if (!packet) {
         return ErrorCode::INVALID_PARAM;
     }
-    
+
     if (!connected_ || !header_written_ || !format_ctx_ || !format_ctx_->pb) {
         return ErrorCode::NOT_CONNECTED;
     }
-    
+
     if (!packet->pkt) {
         return ErrorCode::INVALID_PARAM;
     }
 
     AVPacket* avpkt = packet->pkt.get();
 
+    // Basic sanity checks for packet data
+    if (!avpkt->data || avpkt->size <= 0) {
+        LOG_WARNING("RTMPPusher::send_packet - invalid packet data (data=null or size<=0), dropping packet");
+        return ErrorCode::INVALID_PARAM;
+    }
+
     // Determine target stream and its time_base
     AVStream* st = nullptr;
     if (packet->type == MediaType::AUDIO) {
         if (!audio_stream_) {
             return ErrorCode::INVALID_STATE;
-    }
+        }
         st = audio_stream_;
-    stats_.audio_packets_sent++;
+        stats_.audio_packets_sent++;
     } else {
         if (!video_stream_) {
             return ErrorCode::INVALID_STATE;
-}
+        }
         st = video_stream_;
         stats_.video_packets_sent++;
 
+        // If caller marked packet as keyframe, respect it
         if (packet->is_keyframe) {
             avpkt->flags |= AV_PKT_FLAG_KEY;
+        }
+
+        // If we were requested to force next keyframe, mark it
+        if (force_next_keyframe_.exchange(false)) {
+            avpkt->flags |= AV_PKT_FLAG_KEY;
+            LOG_INFO("RTMPPusher::send_packet - forcing this video packet as keyframe due to bridge request");
+        }
+
+        // Ensure we don't send non-key video frames before the first keyframe (to avoid corrupted first frame)
+        if (!have_sent_first_key_) {
+            if (!(avpkt->flags & AV_PKT_FLAG_KEY)) {
+                LOG_WARNING("RTMPPusher::send_packet - dropping initial non-key video packet to wait for first keyframe, size=" + std::to_string(avpkt->size));
+                return ErrorCode::SUCCESS; // drop silently
+            } else {
+                have_sent_first_key_ = true;
+            }
         }
     }
 
@@ -232,38 +255,108 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     avpkt->pts = packet->pts;
     avpkt->dts = packet->dts;
     avpkt->duration = packet->duration;
-    
+
     if (packet->encoder_time_base.num > 0 && packet->encoder_time_base.den > 0) {
         av_packet_rescale_ts(avpkt, packet->encoder_time_base, st->time_base);
     }
 
-    LOG_INFO("RTMPPusher::send_packet - preparing to send packet, stream_index=" + std::to_string(avpkt->stream_index) +
+    LOG_INFO("RTMPPusher::send_packet - preparing to send packet, type=" +
+             std::string(packet->type == MediaType::AUDIO ? "AUDIO" : "VIDEO") +
+             ", stream_index=" + std::to_string(avpkt->stream_index) +
              ", size=" + std::to_string(avpkt->size) + ", flags=" + std::to_string(avpkt->flags));
 
-    // Clone the packet to decouple ownership from producer threads/encoders.
-    // This prevents cases where the original AVPacket memory is reused or freed
-    // before the muxer writes it.
+    // Clone the packet to ensure we have our own copy with refcounted buffers
     AVPacket* write_pkt = av_packet_clone(avpkt);
-    AVPacket* pkt_to_free = write_pkt;
     if (!write_pkt) {
-        // Fallback: use original packet (shouldn't normally happen)
+        LOG_ERROR("RTMPPusher::send_packet - failed to clone packet, using original (risky)");
         write_pkt = avpkt;
-        pkt_to_free = nullptr;
+    }
+    AVPacket* pkt_to_free = (write_pkt != avpkt) ? write_pkt : nullptr;
+
+    // For video packets, check if we need fragmentation (only for AVCC format)
+    bool fragmented = false;
+    if (packet->type == MediaType::VIDEO && st->codecpar &&
+        st->codecpar->codec_id == AV_CODEC_ID_H264 &&
+        st->codecpar->extradata && st->codecpar->extradata_size >= 5 &&
+        write_pkt->size > 64 * 1024) { // Only fragment packets > 64KB
+
+        // Check nal_length_size (usually 4 for AVCC)
+        uint8_t nal_length_size = st->codecpar->extradata[4] & 0x03;
+        if (nal_length_size == 3) nal_length_size = 4; // 3 means 4 bytes
+
+        if (nal_length_size == 4) {
+            fragmented = true;
+            LOG_DEBUG("RTMPPusher::send_packet - fragmenting large AVCC packet, size=" + std::to_string(write_pkt->size));
+
+            // Fragment the packet
+            const uint8_t* data = write_pkt->data;
+            size_t remaining = write_pkt->size;
+            size_t offset = 0;
+
+            while (remaining >= 4) {
+                // Read NAL length (big-endian)
+                uint32_t nal_len = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+                offset += 4;
+
+                if (nal_len == 0 || nal_len > remaining - 4) {
+                    LOG_WARNING("RTMPPusher::send_packet - invalid NAL length " + std::to_string(nal_len) + " at offset " + std::to_string(offset - 4));
+                    fragmented = false;
+                    break;
+                }
+
+                // Create fragment packet
+                AVPacket* frag_pkt = av_packet_alloc();
+                if (!frag_pkt) {
+                    LOG_ERROR("RTMPPusher::send_packet - failed to alloc fragment packet");
+                    fragmented = false;
+                    break;
+                }
+
+                // Copy packet metadata
+                av_packet_ref(frag_pkt, write_pkt);
+                frag_pkt->data = write_pkt->data + offset - 4; // Include length prefix
+                frag_pkt->size = nal_len + 4;
+                frag_pkt->stream_index = write_pkt->stream_index;
+
+                int ret = av_interleaved_write_frame(format_ctx_, frag_pkt);
+                av_packet_free(&frag_pkt);
+
+                if (ret < 0) {
+                    char errbuf[128] = {0};
+                    av_strerror(ret, errbuf, sizeof(errbuf));
+                    LOG_ERROR("RTMPPusher::send_packet - failed to send fragment: " + std::string(errbuf));
+                    fragmented = false;
+                    break;
+                }
+
+                offset += nal_len;
+                remaining -= (nal_len + 4);
+                stats_.bytes_sent += (nal_len + 4);
+            }
+
+            if (!fragmented) {
+                LOG_WARNING("RTMPPusher::send_packet - fragmentation failed, falling back to sending whole packet");
+            }
+        }
     }
 
-    int ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+    // Send the original packet if not fragmented or fragmentation failed
+    if (!fragmented) {
+        int ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+        if (ret < 0) {
+            char errbuf[128] = {0};
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
+            if (pkt_to_free) av_packet_free(&pkt_to_free);
+            return ErrorCode::SEND_FAILED;
+        }
+        stats_.bytes_sent += avpkt->size;
+    }
+
     if (pkt_to_free) {
         av_packet_free(&pkt_to_free);
     }
 
-    if (ret < 0) {
-        char errbuf[128] = {0};
-        av_strerror(ret, errbuf, sizeof(errbuf));
-        LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
-        return ErrorCode::SEND_FAILED;
-    }
-    
-    stats_.bytes_sent += avpkt->size;
     return ErrorCode::SUCCESS;
 }
 

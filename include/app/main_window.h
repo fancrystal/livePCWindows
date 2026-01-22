@@ -64,7 +64,7 @@ private slots:
 private:
     void setup_scene_list();
     void build_scene_list();
-
+    void update_audio_status(const QString& text, const QString& color);
     QListWidget* listWidget_sceneItems_{nullptr};
 
     Ui::MainWindow *ui;
@@ -114,6 +114,13 @@ private:
     QTimer* live_duration_timer_ = nullptr;
     qint64 streaming_start_time_ms_ = 0;
 
+    // Audio status display
+    QLabel* audio_status_label_ = nullptr;
+
+    // Audio control state
+    bool microphone_enabled_ = true;
+    bool speaker_enabled_ = true;
+
     // Initialization
     void initialize_modules();
     void setup_ui_connections();
@@ -135,6 +142,17 @@ private:
     void toggle_scene_item_visibility(int index);
     void show_scene_item_settings(int index);
     void delete_scene_item(int index);
+
+    // Audio control methods
+    void toggle_microphone();
+    void set_microphone_volume(float volume);
+    void update_microphone_ui();
+    void show_microphone_menu(const QPoint& pos);
+
+    void toggle_speaker();
+    void set_speaker_volume(float volume);
+    void update_speaker_ui();
+    void show_speaker_menu(const QPoint& pos);
 
     // Scene items UI management
     void update_scene_items();
