@@ -108,6 +108,9 @@ private:
     AVFrame* frame_ = nullptr;
 
     SwrContext* swr_ = nullptr;
+    // Pending planar samples per channel used to accumulate until codec frame_size
+    std::vector<std::vector<float>> pending_planar_samples_;
+    int pending_samples_per_channel_ = 0;
 };
 
 } // namespace live_assistant

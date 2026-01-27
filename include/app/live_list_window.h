@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include "http/network_manager.h"
+#include <QPoint>
 
 namespace Ui {
 class LiveListWindow;
@@ -43,6 +44,9 @@ private:
     void add_live_item(const QJsonObject& live_info);
     void update_pagination();
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     Ui::LiveListWindow *ui;
     NetworkManager* network_manager_;
@@ -52,6 +56,11 @@ private:
     int current_page_;
     int total_pages_;
     QString server_address_;
+    // frameless drag support
+    bool dragging_;
+    QPoint dragStartPos_;
+private slots:
+    // (QML integration removed)
 };
 
 } // namespace live_assistant

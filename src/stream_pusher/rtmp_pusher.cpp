@@ -219,13 +219,23 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             return ErrorCode::INVALID_STATE;
         }
         st = audio_stream_;
-        stats_.audio_packets_sent++;
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.audio_packets_sent++;
+            last_audio_packet_time_ = std::chrono::steady_clock::now();
+            audio_packets_since_last_calc_++;
+        }
     } else {
         if (!video_stream_) {
             return ErrorCode::INVALID_STATE;
         }
         st = video_stream_;
-        stats_.video_packets_sent++;
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.video_packets_sent++;
+            last_video_packet_time_ = std::chrono::steady_clock::now();
+            video_packets_since_last_calc_++;
+        }
 
         // If caller marked packet as keyframe, respect it
         if (packet->is_keyframe) {
@@ -259,11 +269,6 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     if (packet->encoder_time_base.num > 0 && packet->encoder_time_base.den > 0) {
         av_packet_rescale_ts(avpkt, packet->encoder_time_base, st->time_base);
     }
-
-    LOG_INFO("RTMPPusher::send_packet - preparing to send packet, type=" +
-             std::string(packet->type == MediaType::AUDIO ? "AUDIO" : "VIDEO") +
-             ", stream_index=" + std::to_string(avpkt->stream_index) +
-             ", size=" + std::to_string(avpkt->size) + ", flags=" + std::to_string(avpkt->flags));
 
     // Clone the packet to ensure we have our own copy with refcounted buffers
     AVPacket* write_pkt = av_packet_clone(avpkt);
@@ -365,11 +370,43 @@ bool RTMPPusher::is_connected() const {
 }
 
 RTMPPusher::Stats RTMPPusher::get_stats() const {
-    return stats_;
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+
+    Stats current_stats = stats_;
+    auto now = std::chrono::steady_clock::now();
+
+    // 计算运行时间
+    auto total_duration = std::chrono::duration_cast<std::chrono::seconds>(now - stats_.start_time);
+    if (total_duration.count() > 0) {
+        // 计算带宽 (kbps)
+        current_stats.bandwidth_kbps = static_cast<double>(stats_.bytes_sent * 8) / 1000.0 / total_duration.count();
+
+        // 计算视频帧率 (基于最近的包发送情况)
+        auto video_duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_video_packet_time_);
+        if (video_duration.count() > 0 && video_packets_since_last_calc_ > 0) {
+            current_stats.video_fps = static_cast<double>(video_packets_since_last_calc_) / video_duration.count();
+        }
+
+        // 计算音频包发送速率
+        auto audio_duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_audio_packet_time_);
+        if (audio_duration.count() > 0 && audio_packets_since_last_calc_ > 0) {
+            current_stats.audio_packets_per_sec = static_cast<double>(audio_packets_since_last_calc_) / audio_duration.count();
+        }
+    }
+
+    current_stats.total_bytes_sent = stats_.bytes_sent;
+
+    return current_stats;
 }
 
 void RTMPPusher::reset_stats() {
-    stats_ = {connected_, 0, 0, 0, 0};
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    auto now = std::chrono::steady_clock::now();
+    stats_ = {connected_, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, now};
+    last_video_packet_time_ = now;
+    last_audio_packet_time_ = now;
+    video_packets_since_last_calc_ = 0;
+    audio_packets_since_last_calc_ = 0;
 }
 
 void RTMPPusher::free_resources() {

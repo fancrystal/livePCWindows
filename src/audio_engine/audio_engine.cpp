@@ -76,6 +76,14 @@ bool AudioEngine::start_capture() {
     stop_capture_flag_ = false;
 
 #ifdef _WIN32
+    // Ensure WASAPI initialized before starting capture thread
+    if (!audio_client_ || !capture_client_) {
+        ErrorCode init_res = initialize_wasapi();
+        if (init_res != ErrorCode::SUCCESS) {
+            LOG_ERROR("start_capture: WASAPI not initialized, aborting start_capture");
+            return false;
+        }
+    }
     capture_thread_ = std::thread(&AudioEngine::capture_thread_func, this);
 #endif
 
@@ -229,6 +237,31 @@ std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
         }
     }
 
+    // Diagnostic: log when returning a frame (rate-limited)
+    static int get_frame_log_skips = 0;
+    if (frame) {
+        bool all_zero = true;
+        if (frame->raw_data) {
+            int total = frame->samples * frame->channels;
+            for (int i = 0; i < total; ++i) {
+                if (frame->raw_data[i] != 0) { all_zero = false; break; }
+            }
+        }
+        if (get_frame_log_skips == 0) {
+            LOG_INFO("AudioEngine::get_audio_frame returning frame: samples=" + std::to_string(frame->samples) +
+                     ", channels=" + std::to_string(frame->channels) +
+                     ", muted=" + (microphone_muted_ ? "yes" : "no") +
+                     ", volume=" + std::to_string(microphone_volume_) +
+                     ", all_zero=" + (all_zero ? "yes" : "no"));
+        }
+        get_frame_log_skips = (get_frame_log_skips + 1) % 20;
+    } else {
+        if (get_frame_log_skips == 0) {
+            LOG_DEBUG("AudioEngine::get_audio_frame - no frame available in queue");
+        }
+        get_frame_log_skips = (get_frame_log_skips + 1) % 20;
+    }
+
     return frame;
 }
 
@@ -351,7 +384,9 @@ ErrorCode AudioEngine::initialize_wasapi() {
 
     hr = audio_device_->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&audio_client_);
     if (FAILED(hr)) {
-        LOG_ERROR("Failed to activate audio client: " + std::to_string(hr));
+        char buf[64];
+        sprintf_s(buf, "0x%08x", static_cast<unsigned int>(hr));
+        LOG_ERROR(std::string("Failed to activate audio client: hr=") + std::to_string(hr) + " (" + buf + ")");
         return ErrorCode::AUDIO_DEVICE_ERROR;
     }
 
@@ -363,13 +398,15 @@ ErrorCode AudioEngine::initialize_wasapi() {
     }
     format_ = pWaveFormat;
 
-    pWaveFormat->wFormatTag = WAVE_FORMAT_PCM;
-    pWaveFormat->nChannels = channels_;
-    pWaveFormat->nSamplesPerSec = sample_rate_;
-    pWaveFormat->wBitsPerSample = 16;
-    pWaveFormat->nBlockAlign = (pWaveFormat->nChannels * pWaveFormat->wBitsPerSample) / 8;
-    pWaveFormat->nAvgBytesPerSec = pWaveFormat->nSamplesPerSec * pWaveFormat->nBlockAlign;
-    pWaveFormat->cbSize = 0;
+    // Use device mix format as-is to avoid unsupported-format errors.
+    // Update engine sample_rate_ / channels_ to match device if not explicitly configured.
+    if (pWaveFormat) {
+        if (sample_rate_ <= 0) sample_rate_ = pWaveFormat->nSamplesPerSec;
+        if (channels_ <= 0) channels_ = pWaveFormat->nChannels;
+        LOG_INFO("Device mix format: sample_rate=" + std::to_string(pWaveFormat->nSamplesPerSec) +
+                 ", channels=" + std::to_string(pWaveFormat->nChannels) +
+                 ", wFormatTag=" + std::to_string(pWaveFormat->wFormatTag));
+    }
 
     hr = audio_client_->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, pWaveFormat, nullptr);
     if (FAILED(hr)) {
@@ -379,7 +416,9 @@ ErrorCode AudioEngine::initialize_wasapi() {
 
     hr = audio_client_->GetService(__uuidof(IAudioCaptureClient), (void**)&capture_client_);
     if (FAILED(hr)) {
-        LOG_ERROR("Failed to get capture client: " + std::to_string(hr));
+        char buf2[64];
+        sprintf_s(buf2, "0x%08x", static_cast<unsigned int>(hr));
+        LOG_ERROR(std::string("Failed to get capture client: hr=") + std::to_string(hr) + " (" + buf2 + ")");
         return ErrorCode::AUDIO_DEVICE_ERROR;
     }
 
@@ -429,7 +468,57 @@ void AudioEngine::capture_thread_func() {
 
             auto frame = std::make_shared<AudioFrame>(sample_rate_, channels_, numFramesToRead);
             if (frame->raw_data) {
-                 memcpy(frame->raw_data, pData, numFramesToRead * channels_ * sizeof(int16_t));
+                // Convert device buffer to int16_t raw_data according to mix format
+                WAVEFORMATEX* wf = static_cast<WAVEFORMATEX*>(format_);
+                if (wf && wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+                    // float32 -> int16
+                    float* fdata = reinterpret_cast<float*>(pData);
+                    int total = numFramesToRead * channels_;
+                    for (int i = 0; i < total; ++i) {
+                        float v = fdata[i];
+                        // clamp
+                        if (v > 1.0f) v = 1.0f;
+                        if (v < -1.0f) v = -1.0f;
+                        int32_t iv = static_cast<int32_t>(std::round(v * 32767.0f));
+                        if (iv > 32767) iv = 32767;
+                        if (iv < -32768) iv = -32768;
+                        frame->raw_data[i] = static_cast<int16_t>(iv);
+                    }
+                } else if (wf && wf->wFormatTag == WAVE_FORMAT_PCM && wf->wBitsPerSample == 16) {
+                    // int16 PCM
+                    memcpy(frame->raw_data, pData, numFramesToRead * channels_ * sizeof(int16_t));
+                } else if (wf && wf->wFormatTag == WAVE_FORMAT_PCM && wf->wBitsPerSample == 32) {
+                    // int32 PCM -> int16
+                    int32_t* idata = reinterpret_cast<int32_t*>(pData);
+                    int total = numFramesToRead * channels_;
+                    for (int i = 0; i < total; ++i) {
+                        int64_t iv = idata[i] >> 16; // downscale 32->16
+                        if (iv > 32767) iv = 32767;
+                        if (iv < -32768) iv = -32768;
+                        frame->raw_data[i] = static_cast<int16_t>(iv);
+                    }
+                } else {
+                    // Unknown format: try to memcpy as int16 as fallback
+                    memcpy(frame->raw_data, pData, numFramesToRead * channels_ * sizeof(int16_t));
+                }
+                // Post-conversion: check clipping and apply soft attenuation if needed
+                int total = numFramesToRead * channels_;
+                int32_t maxAbs = 0;
+                for (int i = 0; i < total; ++i) {
+                    int32_t v = std::abs(static_cast<int32_t>(frame->raw_data[i]));
+                    if (v > maxAbs) maxAbs = v;
+                }
+                const int32_t clipThreshold = 30000;
+                if (maxAbs > clipThreshold) {
+                    double scale = static_cast<double>(clipThreshold) / static_cast<double>(maxAbs);
+                    for (int i = 0; i < total; ++i) {
+                        int32_t val = static_cast<int32_t>(std::round(frame->raw_data[i] * scale));
+                        if (val > 32767) val = 32767;
+                        if (val < -32768) val = -32768;
+                        frame->raw_data[i] = static_cast<int16_t>(val);
+                    }
+                    LOG_INFO("Audio capture: applied attenuation scale=" + std::to_string(scale) + " due to peak=" + std::to_string(maxAbs));
+                }
             }
 
             capture_client_->ReleaseBuffer(numFramesToRead);
@@ -458,6 +547,19 @@ void AudioEngine::capture_thread_func() {
                 }
                 non_silent_log_skips = (non_silent_log_skips + 1) % 50; // log at most 1/50 frames
             }
+            
+            // Log every 10 captured frames a short summary to verify capture is active
+            static int capture_summary_skips = 0;
+            if (capture_summary_skips == 0) {
+                bool muted = microphone_muted_;
+                float vol = microphone_volume_;
+                LOG_INFO("Audio capture: queued frame, samples=" + std::to_string(frame->samples) +
+                         ", channels=" + std::to_string(frame->channels) +
+                         ", non_silent=" + (non_silent ? "yes" : "no") +
+                         ", muted=" + (muted ? "yes" : "no") +
+                         ", volume=" + std::to_string(vol));
+            }
+            capture_summary_skips = (capture_summary_skips + 1) % 10;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }

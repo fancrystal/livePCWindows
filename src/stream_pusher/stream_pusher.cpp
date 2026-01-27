@@ -226,17 +226,21 @@ bool StreamPusher::is_in_error() const {
 StreamPusher::Stats StreamPusher::get_stats() const {
     Stats stats;
     stats.state = state_.load();
-    
+
     auto rtmp_stats = rtmp_pusher_.get_stats();
     stats.connected = rtmp_stats.connected;
     stats.audio_packets_sent = rtmp_stats.audio_packets_sent;
     stats.video_packets_sent = rtmp_stats.video_packets_sent;
-    
+    stats.bandwidth_kbps = rtmp_stats.bandwidth_kbps;
+    stats.video_fps = rtmp_stats.video_fps;
+    stats.audio_packets_per_sec = rtmp_stats.audio_packets_per_sec;
+    stats.total_bytes_sent = rtmp_stats.total_bytes_sent;
+
     auto queue_stats = push_queue_.get_stats();
     stats.discarded_packets = queue_stats.discarded_packets;
-    
+
     stats.reconnect_attempts = reconnect_attempts_.load();
-    
+
     return stats;
 }
 

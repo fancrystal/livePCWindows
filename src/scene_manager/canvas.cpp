@@ -2,6 +2,7 @@
 #include "common/log.h"
 #include "video_engine/video_engine.h"
 #include "scene_manager/source_factory.h"
+#include "scene_manager/render_utils.h"
 #include <QTimer>
 #include <QBrush>
 #include <QPen>
@@ -56,23 +57,13 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
     auto source = item->get_source();
 
     // 将画布坐标转换为显示坐标
-    // 使用 renderer 所保存的 canvas 宽高（由 CanvasWidget 同步设置）
-    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
-    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
-
-    double scale_x = static_cast<double>(target_rect.width()) / static_cast<double>(base_w);
-    double scale_y = static_cast<double>(target_rect.height()) / static_cast<double>(base_h);
-    double scale = (std::min)(scale_x, scale_y); // 保持纵横比
-
-    // 计算居中偏移（letterbox/pillarbox）
-    double offset_x = (target_rect.width() - base_w * scale) / 2.0;
-    double offset_y = (target_rect.height() - base_h * scale) / 2.0;
+    auto mapping = compute_canvas_mapping(target_rect, canvas_width_, canvas_height_);
 
     // 转换坐标（将 transform 的 canvas 坐标映射到 target_rect）
-    int x = static_cast<int>(transform.x * scale + offset_x);
-    int y = static_cast<int>(transform.y * scale + offset_y);
-    int width = static_cast<int>(transform.width * scale);
-    int height = static_cast<int>(transform.height * scale);
+    int x = static_cast<int>(transform.x * mapping.scale + mapping.offset_x);
+    int y = static_cast<int>(transform.y * mapping.scale + mapping.offset_y);
+    int width = static_cast<int>(transform.width * mapping.scale);
+    int height = static_cast<int>(transform.height * mapping.scale);
     
     // 如果宽度或高度为0，设置默认值
     if (width == 0 || height == 0) {
@@ -94,9 +85,8 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
         auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(source);
         if (screenSrc) {
             QImage latest = screenSrc->get_latest_frame();
-            if (!latest.isNull()) {
-                LOG_INFO("[CANVAS] 渲染 ScreenSource: " + source->get_id() + ", 图像尺寸: " + std::to_string(latest.width()) + "x" + std::to_string(latest.height()));
-                // Scale to fill, cropping if necessary, then draw the center part.
+                if (!latest.isNull()) {
+                    // Scale to fill, cropping if necessary, then draw the center part.
                 QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
                 QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
                                    (scaled.height() - item_rect.height()) / 2.0,
@@ -113,7 +103,6 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
             if (cameraSrc) {
                 QImage latest = cameraSrc->get_latest_frame();
                 if (!latest.isNull()) {
-                    LOG_INFO("[CANVAS] 渲染 CameraSource: " + source->get_id() + ", 图像尺寸: " + std::to_string(latest.width()) + "x" + std::to_string(latest.height()));
                     // Scale to fill, cropping if necessary, then draw the center part.
                     QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
                     QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
@@ -434,19 +423,6 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
     // 绘制背景
     painter.fillRect(widget_rect, QBrush(QColor(40, 40, 40)));
 
-    static int paint_count = 0;
-    paint_count++;
-    if (paint_count % 60 == 0) {  // 每60次打印一次
-        LOG_INFO("paintEvent called, count: " + std::to_string(paint_count) +
-                  ", renderer_: " + (renderer_ ? "valid" : "null") +
-                  ", current_scene_: " + (current_scene_ ? "valid" : "null") +
-                  ", video_engine_: " + (video_engine_ ? "valid" : "null") +
-                  ", compositor_: " + (compositor_ ? "valid" : "null"));
-    }
-    // 防止溢出，重置计数
-    if (paint_count >= 1000000) {
-        paint_count = 0;
-    }
 
     // 只渲染场景项（摄像头、屏幕共享、图片等）
     // 所有视频源都通过SceneItem在场景系统中统一渲染
@@ -541,13 +517,10 @@ std::shared_ptr<SceneItem> CanvasWidget::hit_test(int x, int y) const {
     
     // compute mapping from canvas to widget coordinates
     QRect widget_rect = this->rect();
-    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
-    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
-    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
-    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
-    double scale = (std::min)(scale_x, scale_y);
-    double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
-    double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+    auto mapping = compute_canvas_mapping(widget_rect, canvas_width_, canvas_height_);
+    double scale = mapping.scale;
+    double offset_x = mapping.offset_x;
+    double offset_y = mapping.offset_y;
 
     for (const auto& item : scene_items) {
         auto transform = item->get_transform();
@@ -576,13 +549,10 @@ bool CanvasWidget::is_in_resize_handle(int x, int y, const Transform& transform)
     
     // Map transform to widget coordinates then check all 8 resize handles
     QRect widget_rect = this->rect();
-    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
-    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
-    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
-    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
-    double scale = (std::min)(scale_x, scale_y);
-    double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
-    double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+    auto mapping = compute_canvas_mapping(widget_rect, canvas_width_, canvas_height_);
+    double scale = mapping.scale;
+    double offset_x = mapping.offset_x;
+    double offset_y = mapping.offset_y;
 
     int mx = static_cast<int>(transform.x * scale + offset_x);
     int my = static_cast<int>(transform.y * scale + offset_y);
@@ -616,13 +586,10 @@ bool CanvasWidget::is_in_camera_resize_handle(int x, int y, int& handle_index) c
     
     // Map camera_transform_ (canvas coords) to widget coords and check 4 corner handles
     QRect widget_rect = this->rect();
-    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
-    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
-    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
-    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
-    double scale = (std::min)(scale_x, scale_y);
-    double offset_x = (widget_rect.width() - base_w * scale) / 2.0;
-    double offset_y = (widget_rect.height() - base_h * scale) / 2.0;
+    auto mapping = compute_canvas_mapping(widget_rect, canvas_width_, canvas_height_);
+    double scale = mapping.scale;
+    double offset_x = mapping.offset_x;
+    double offset_y = mapping.offset_y;
 
     int mx = static_cast<int>(camera_transform_.x * scale + offset_x);
     int my = static_cast<int>(camera_transform_.y * scale + offset_y);
@@ -783,19 +750,9 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *event) {
 
     // 计算 widget->canvas 的缩放因子，并把 widget delta 转换为 canvas delta
     QRect widget_rect = this->rect();
-    int base_w = canvas_width_ > 0 ? canvas_width_ : 1920;
-    int base_h = canvas_height_ > 0 ? canvas_height_ : 1080;
-    double scale_x = static_cast<double>(widget_rect.width()) / static_cast<double>(base_w);
-    double scale_y = static_cast<double>(widget_rect.height()) / static_cast<double>(base_h);
-    double scale = (std::min)(scale_x, scale_y);
-    double canvas_dx = delta_x;
-    double canvas_dy = delta_y;
-    if (scale > 1e-6) {
-        canvas_dx = delta_x / scale;
-        canvas_dy = delta_y / scale;
-    }
-    int cdelta_x = static_cast<int>(std::round(canvas_dx));
-    int cdelta_y = static_cast<int>(std::round(canvas_dy));
+    auto mapping = compute_canvas_mapping(widget_rect, canvas_width_, canvas_height_);
+    int cdelta_x, cdelta_y;
+    convert_widget_deltas_to_canvas(delta_x, delta_y, cdelta_x, cdelta_y, mapping);
     
     if (selected_item_) {
         // 处理SceneItem的拖动

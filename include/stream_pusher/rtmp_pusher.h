@@ -52,6 +52,13 @@ public:
         int video_packets_sent;
         int bytes_sent;
         int reconnect_attempts;
+
+        // 计算出的实时统计信息
+        double bandwidth_kbps;        // 带宽 (kb/s)
+        double video_fps;             // 视频帧率
+        double audio_packets_per_sec; // 音频包发送速率
+        int64_t total_bytes_sent;     // 总发送字节数
+        std::chrono::steady_clock::time_point start_time; // 开始时间
     };
     Stats get_stats() const;
     
@@ -73,16 +80,20 @@ private:
     bool header_written_ = false;
     bool connected_ = false;
     
-    Stats stats_ = {false, 0, 0, 0, 0};
-    
+    Stats stats_ = {false, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, std::chrono::steady_clock::now()};
+
     // Reconnect/backoff configuration
     int max_reconnect_attempts = 6;
     int base_backoff_ms = 500; // initial backoff in ms
-    
+
     // Metrics helpers
     mutable std::mutex stats_mutex_;
     int64_t last_bytes_snapshot_ = 0;
     std::chrono::steady_clock::time_point last_snapshot_time_;
+    std::chrono::steady_clock::time_point last_video_packet_time_;
+    std::chrono::steady_clock::time_point last_audio_packet_time_;
+    int video_packets_since_last_calc_ = 0;
+    int audio_packets_since_last_calc_ = 0;
     
     // Allow stopping reconnect loops if destructor runs
     std::atomic<bool> stop_reconnect_{false};

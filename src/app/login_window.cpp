@@ -5,6 +5,12 @@
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QQuickWidget>
+#include <QQmlContext>
+#include <QQmlError>
+#include <QUrl>
+#include <QMouseEvent>
+#include <QPoint>
 
 namespace live_assistant {
 
@@ -17,6 +23,11 @@ LoginWindow::LoginWindow(QWidget *parent) :
     
     // 设置窗口标题
     setWindowTitle("启点点直播 - 登录");
+    
+    // Hide status bar from the .ui which has a white background strip
+    if (ui->statusbar) {
+        ui->statusbar->hide();
+    }
     
     // 初始化登录URL和API密钥
     login_url_ = "http://api.example.com";
@@ -33,6 +44,50 @@ LoginWindow::LoginWindow(QWidget *parent) :
     on_passwordLoginButton_clicked();
     
     LOG_INFO("LoginWindow created");
+    
+    // Create QML-based login UI and embed it into this window.
+    // If QML fails to load, the original UI (from ui file) remains as fallback.
+    // Make window frameless and support translucent background for rounded corners
+    setWindowFlag(Qt::FramelessWindowHint, true);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+
+    dragging_ = false;
+
+    qmlWidget_ = new QQuickWidget(this);
+    qmlWidget_->setResizeMode(QQuickWidget::SizeRootObjectToView);
+    // Make QQuickWidget background transparent so underlying window chrome doesn't show a white strip
+    qmlWidget_->setClearColor(Qt::transparent);
+    qmlWidget_->rootContext()->setContextProperty("loginWindow", this);
+
+    // Force QML widget to be the central widget immediately to hide the original UI.
+    setCentralWidget(qmlWidget_);
+
+    qmlWidget_->setSource(QUrl("qrc:/qml/Login.qml"));
+    if (qmlWidget_->status() == QQuickWidget::Error) {
+        LOG_INFO("QML Login failed to load, dumping errors");
+        const QList<QQmlError> errs = qmlWidget_->errors();
+        for (const QQmlError &e : errs) {
+            LOG_INFO(std::string("QML Error: ") + e.toString().toStdString());
+        }
+
+#ifdef HAVE_QT_GRAPHICALEFFECTS
+        LOG_INFO("GraphicalEffects expected but QML load failed; keeping central widget but content may be empty");
+#else
+        LOG_INFO("GraphicalEffects not available or QML failed; attempting to load basic QML fallback");
+        qmlWidget_->setSource(QUrl("qrc:/qml/Login_basic.qml"));
+        if (qmlWidget_->status() == QQuickWidget::Error) {
+            LOG_INFO("Basic QML fallback also failed; keeping central widget but content may be empty");
+            const QList<QQmlError> errs2 = qmlWidget_->errors();
+            for (const QQmlError &e : errs2) {
+                LOG_INFO(std::string("QML Basic Error: ") + e.toString().toStdString());
+            }
+        } else {
+            LOG_INFO("Loaded basic QML fallback successfully");
+        }
+#endif
+    } else {
+        LOG_INFO("QML Login loaded successfully");
+    }
 }
 
 LoginWindow::~LoginWindow() {
@@ -182,6 +237,18 @@ void LoginWindow::save_login_info() {
     LOG_INFO("Saved login info: username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
 }
 
+void LoginWindow::save_login_info_credentials(const QString& username, const QString& password, bool remember) {
+    // Save credentials directly to QSettings without accessing UI widgets.
+    settings_.setValue("username", username);
+    if (remember) {
+        settings_.setValue("password", password);
+    } else {
+        settings_.remove("password");
+    }
+    settings_.setValue("remember", remember);
+    LOG_INFO("Saved login info (credentials API): username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
+}
+
 bool LoginWindow::validate_login(const QString& username, const QString& password) {
     // 暂时使用模拟登录逻辑，因为HTTP模块还未完全集成
     LOG_INFO("模拟登录验证: username=" + username.toStdString() + ", password=" + password.toStdString());
@@ -253,6 +320,52 @@ void LoginWindow::on_agreementLabel_linkActivated(const QString &link) {
     // 处理服务条款和隐私协议的点击事件
     QMessageBox::information(this, "提示", "服务条款和隐私协议");
     LOG_INFO("Agreement link clicked");
+}
+
+void LoginWindow::qmlLogin(const QString& username, const QString& password) {
+    // Simulate login when called from QML (no validation).
+    LOG_INFO("qmlLogin called: username=" + username.toStdString());
+    // Do NOT modify QWidget UI pointers here — they may be deleted when we replaced the central widget.
+    // Keep simulated login purely internal.
+
+    // Set simulated user info
+    user_id_ = username.isEmpty() ? "admin" : username;
+    token_ = "qml_simulated_token";
+    login_key_ = "qml_simulated_key";
+
+    // Save directly to settings without touching QWidget UI pointers
+    save_login_info_credentials(user_id_, password, true);
+
+    emit login_success();
+    close();
+}
+
+void LoginWindow::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        dragging_ = true;
+        dragStartPos_ = event->globalPos() - frameGeometry().topLeft();
+        event->accept();
+    } else {
+        QMainWindow::mousePressEvent(event);
+    }
+}
+
+void LoginWindow::mouseMoveEvent(QMouseEvent* event) {
+    if (dragging_ && (event->buttons() & Qt::LeftButton)) {
+        move(event->globalPos() - dragStartPos_);
+        event->accept();
+    } else {
+        QMainWindow::mouseMoveEvent(event);
+    }
+}
+
+void LoginWindow::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        dragging_ = false;
+        event->accept();
+    } else {
+        QMainWindow::mouseReleaseEvent(event);
+    }
 }
 
 } // namespace live_assistant

@@ -204,56 +204,6 @@ QLabel { color: #ffffff; }</string>
            </property>
           </widget>
          </item>
-         
-         <!-- 添加直播画面按钮 -->
-         <item>
-          <widget class="QWidget" name="addLiveWidget" native="true">
-           <property name="minimumSize">
-            <size>
-             <width>0</width>
-             <height>60</height>
-            </size>
-           </property>
-           <property name="maximumSize">
-            <size>
-             <width>16777215</width>
-             <height>60</height>
-            </size>
-           </property>
-           <layout class="QVBoxLayout" name="verticalLayout_addLive">
-            <property name="spacing">
-             <number>0</number>
-            </property>
-            <property name="leftMargin">
-             <number>0</number>
-            </property>
-            <property name="topMargin">
-             <number>0</number>
-            </property>
-            <property name="rightMargin">
-             <number>0</number>
-            </property>
-            <property name="bottomMargin">
-             <number>0</number>
-            </property>
-            <item>
-             <widget class="QLabel" name="label_addLive">
-              <property name="text">
-               <string>添加直播画面</string>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignCenter</set>
-              </property>
-              <property name="styleSheet">
-               <string notr="true">font-size: 14px;</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </widget>
-         </item>
-         
- 
         </layout>
        </widget>
       </item>
@@ -701,7 +651,7 @@ QLabel { color: #ffffff; }</string>
        
        <!-- 状态显示 -->
        <item>
-        <widget class="QLabel" name="label_status">
+        <widget class="QLabel" name="label_statusInfo">
          <property name="text">
           <string>码率: 0kb/s | FPS: 0.00 | CPU: 0.0% | 内存: 0.0%</string>
          </property>

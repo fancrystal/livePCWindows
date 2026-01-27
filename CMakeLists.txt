@@ -23,8 +23,8 @@ if(WIN32)
     add_definitions(-DCPPWINRT_VERSION="2.0.230207.1")
 endif()
 
-# Find Qt dependencies
-find_package(Qt6 COMPONENTS Core Widgets WebSockets REQUIRED)
+# Find Qt dependencies (add Qml/Quick for QML login)
+find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets GraphicalEffects)
 qt_standard_project_setup()
 
 # Third-party library paths
@@ -61,6 +61,9 @@ set(HTTP_HEADERS "include/http/network_manager.h")
 
 # UI files - let Qt handle them automatically
 set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui")
+
+# Add QML and image resources (resources/qml.qrc)
+qt_add_resources(RCC_QML_SOURCES resources/qml.qrc)
     
 set(ALL_SOURCES
     ${APP_SOURCES}
@@ -72,6 +75,7 @@ set(ALL_SOURCES
     ${ENCODER_SOURCES}
     ${STREAM_PUSHER_SOURCES}
 )
+list(APPEND ALL_SOURCES ${RCC_QML_SOURCES})
 
 set(ALL_HEADERS
     ${APP_HEADERS}
@@ -87,6 +91,9 @@ qt_add_executable(LiveAssistant ${ALL_SOURCES} ${ALL_HEADERS} ${APP_UIS})
 target_link_libraries(LiveAssistant PRIVATE 
     Qt6::Core 
     Qt6::Widgets 
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickWidgets
     Qt6::WebSockets
     # FFmpeg libraries
     ${FFMPEG_DIR}/lib/x64/avformat.lib
@@ -103,6 +110,11 @@ target_link_libraries(LiveAssistant PRIVATE
     # libcurl library
     ${LIBCURL_DIR}/lib/x64/libcurl.lib
 )
+# Optionally link GraphicalEffects if available
+if (TARGET Qt6::GraphicalEffects)
+    target_link_libraries(LiveAssistant PRIVATE Qt6::GraphicalEffects)
+    target_compile_definitions(LiveAssistant PRIVATE HAVE_QT_GRAPHICALEFFECTS=1)
+endif()
 
 # Windows specific libraries for WASAPI and screen capture
 if(WIN32)

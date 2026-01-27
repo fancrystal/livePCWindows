@@ -57,6 +57,12 @@ public:
         int video_packets_sent;
         int discarded_packets;
         int reconnect_attempts;
+
+        // 计算出的实时统计信息
+        double bandwidth_kbps;        // 带宽 (kb/s)
+        double video_fps;             // 视频帧率
+        double audio_packets_per_sec; // 音频包发送速率
+        int64_t total_bytes_sent;     // 总发送字节数
     };
     Stats get_stats() const;
     

@@ -397,6 +397,37 @@ void CompositorEncoderBridge::encode_and_push_frame() {
                      ", packets=" + std::to_string(audio_packets.size()) +
                      (using_real_audio ? " (real audio)" : " (silent audio)"));
 
+            // Diagnostic dump: save a few seconds of raw PCM before encoding to help debug distortions
+            if (using_real_audio && audio_frame->raw_data) {
+                static FILE* pcm_dump_fp = nullptr;
+                static size_t pcm_dump_written = 0;
+                const size_t dump_limit_bytes = 5 * 44100 * 2 * sizeof(int16_t); // 5 seconds @44.1k stereo int16
+                if (!pcm_dump_fp) {
+                    // Use absolute path inside project to avoid relative working-dir issues
+                    std::string path = "D:\\\\work\\\\project\\\\LiveAssistant\\\\build_vs2019\\\\audio_capture_dump.pcm";
+                    pcm_dump_fp = fopen(path.c_str(), "wb");
+                    if (!pcm_dump_fp) {
+                        LOG_WARNING(std::string("[DIAG] Failed to open PCM dump file: ") + path);
+                    } else {
+                        LOG_INFO(std::string("[DIAG] PCM dump file opened: ") + path);
+                    }
+                }
+                if (pcm_dump_fp && pcm_dump_written < dump_limit_bytes) {
+                    size_t frame_bytes = static_cast<size_t>(audio_frame->samples) * static_cast<size_t>(audio_frame->channels) * sizeof(int16_t);
+                    size_t to_write = frame_bytes;
+                    if (pcm_dump_written + to_write > dump_limit_bytes) {
+                        to_write = dump_limit_bytes - pcm_dump_written;
+                    }
+                    fwrite(audio_frame->raw_data, 1, to_write, pcm_dump_fp);
+                    pcm_dump_written += to_write;
+                    if (pcm_dump_written >= dump_limit_bytes) {
+                        LOG_INFO("[DIAG] PCM dump reached limit (" + std::to_string(pcm_dump_written) + " bytes)");
+                        fclose(pcm_dump_fp);
+                        pcm_dump_fp = nullptr;
+                    }
+                }
+            }
+
             if (audio_result == ErrorCode::SUCCESS && !audio_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
                 for (auto& p : audio_packets) {
                     if (!p) continue;

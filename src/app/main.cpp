@@ -22,9 +22,6 @@ int main(int argc, char *argv[]) {
     // Create live list window (hidden initially)
     live_assistant::LiveListWindow live_list_window;
     
-    // Create main window (hidden initially)
-    live_assistant::MainWindow main_window;
-    
     // Connect login success signal to show live list window
     QObject::connect(&login_window, &live_assistant::LoginWindow::login_success, &live_list_window, [&live_list_window, &login_window]() {
         // 设置用户信息
@@ -35,12 +32,14 @@ int main(int argc, char *argv[]) {
         live_list_window.show();
     });
     
-    // Connect live selected signal to show main window
-    QObject::connect(&live_list_window, &live_assistant::LiveListWindow::live_selected, &main_window, [&main_window](const QString& live_id) {
+    // Connect live selected signal to create and show main window
+    QObject::connect(&live_list_window, &live_assistant::LiveListWindow::live_selected, [&live_list_window](const QString& live_id) {
+        // 创建主窗口
+        live_assistant::MainWindow* main_window = new live_assistant::MainWindow();
         // 设置选中的直播ID
-        main_window.set_live_id(live_id);
+        main_window->set_live_id(live_id);
         // 显示主窗口
-        main_window.show();
+        main_window->show();
     });
     
     // Show login window

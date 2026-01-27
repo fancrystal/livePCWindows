@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <memory>
 #include <qlabel.h>
+#include <QPointer>
 
 #include "common/media_clock.h"
 #include "common/config_manager.h"
@@ -65,6 +66,9 @@ private:
     void setup_scene_list();
     void build_scene_list();
     void update_audio_status(const QString& text, const QString& color);
+    void update_streaming_stats();
+    void update_system_info();
+    std::pair<double, double> get_system_info();
     QListWidget* listWidget_sceneItems_{nullptr};
 
     Ui::MainWindow *ui;
@@ -78,7 +82,28 @@ private:
     std::shared_ptr<CaptureManagerIface> capture_manager_;
 
     // Canvas widget
-    CanvasWidget* canvas_widget_;
+    QPointer<CanvasWidget> canvas_widget_;
+    // Stage placeholder container (visual only until canvas is attached)
+    QPointer<QWidget> stageContainer_ = nullptr;
+    QPointer<QPushButton> stageAddButton_ = nullptr;
+    QPointer<QLabel> placeholderIcon_ = nullptr;
+    QPointer<QLabel> placeholderText_ = nullptr;
+    QPointer<QWidget> stagePlaceholderWidget_ = nullptr; // layout placeholder to reserve space
+
+    // Stage drag / window state
+    bool stage_dragging_ = false;
+    QPoint stage_drag_start_pos_;
+    QPoint stage_orig_pos_;
+    bool stage_maximized_ = false;
+    QRect stage_normal_geometry_;
+    bool stage_minimized_ = false;
+    QPushButton* stageRestoreButton_ = nullptr; // shown when minimized
+    QPushButton* stageBtnMax_ = nullptr;
+    QPushButton* stageBtnMin_ = nullptr;
+    QPushButton* stageBtnRestore_ = nullptr;
+    // Window dragging via custom title bar
+    bool window_dragging_ = false;
+    QPoint window_drag_start_pos_;
 
     // Compositor and encoder bridge
     std::shared_ptr<Compositor> compositor_;
@@ -113,6 +138,16 @@ private:
     QLabel* live_duration_label_ = nullptr;
     QTimer* live_duration_timer_ = nullptr;
     qint64 streaming_start_time_ms_ = 0;
+
+    // Statistics display
+    QTimer* stats_update_timer_ = nullptr;
+    QTimer* system_info_timer_ = nullptr;
+    double cached_cpu_usage_ = 0.0;
+    double cached_memory_mb_ = 0.0;
+    // CPU sampling state (windows)
+    uint64_t prev_idle_ = 0;
+    uint64_t prev_sys_ = 0;
+    bool first_cpu_sample_ = true;
 
     // Audio status display
     QLabel* audio_status_label_ = nullptr;
@@ -154,6 +189,9 @@ private:
     void update_speaker_ui();
     void show_speaker_menu(const QPoint& pos);
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
     // Scene items UI management
     void update_scene_items();
 
@@ -162,6 +200,12 @@ private:
     QPushButton* create_scene_item_button(const QString& text, const QString& style = "");
     QPushButton* create_icon_button(const QString& icon_text, const QString& tooltip = "");
     QPushButton* create_icon_button(QStyle::StandardPixmap icon, const QString& tooltip = "");
+    // UI helpers
+    void updateStagePlaceholderVisibility();
+    void repositionPlaceholderOverlays();
+    // Stage window controls
+    void toggleStageMaximize();
+    void restoreStage();
 };
 
 } // namespace live_assistant

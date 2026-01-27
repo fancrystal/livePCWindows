@@ -1,4 +1,4 @@
-QT       += core widgets
+QT       += core widgets qml quick quickwidgets graphicaleffects
 
 TARGET = LiveAssistant
 TEMPLATE = app
@@ -39,6 +39,10 @@ HEADERS += \
 
 FORMS += \
     src/app/main_window.ui
+
+# Add qml resources for the new QML login UI
+RESOURCES += \
+    resources/qml.qrc
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

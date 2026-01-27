@@ -25,9 +25,19 @@
 #include <QPixmap>
 #include <QMessageBox>
 #include <QLabel>
+#include <QPainter>
+#include <QPainterPath>
+#include <QLinearGradient>
 #include <QDateTime>
 #include <QInputDialog>
 #include <QHBoxLayout>
+#include <QProcess>
+#include <QTextStream>
+#include <QGuiApplication>
+#include <QScreen>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 #include <QMenu>
 #include <QAction>
 #include <QStyle>
@@ -52,9 +62,232 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->setupUi(this);
 
     setWindowTitle("LiveAssistant");
+    // Enhance top bar title: replace simple text with logo + gradient title + italic suffix
+    if (ui->topBar) {
+        // style the topBar to match dark gradient header
+        ui->topBar->setStyleSheet("QWidget { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(28,18,20,220), stop:1 rgba(42,20,24,200)); border-bottom: 1px solid rgba(255,255,255,0.03); }");
+
+        // create container
+        QWidget* titleContainer = new QWidget(ui->topBar);
+        titleContainer->setObjectName("titleContainer");
+        titleContainer->setStyleSheet("background: transparent;");
+        QHBoxLayout* tlay = new QHBoxLayout(titleContainer);
+        tlay->setContentsMargins(8, 4, 8, 4);
+        tlay->setSpacing(8);
+
+        // logo
+        QLabel* logoLbl = new QLabel(titleContainer);
+        QPixmap iconPix(":/images/Frame_icon.png");
+        if (!iconPix.isNull()) {
+            logoLbl->setPixmap(iconPix.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            logoLbl->setFixedSize(32, 32);
+        }
+        logoLbl->setStyleSheet("background: transparent;");
+        tlay->addWidget(logoLbl);
+
+        // gradient text pixmap for main title
+        QString mainText = QString::fromUtf8("直播伴侣");
+        QFont tf = ui->label_title ? ui->label_title->font() : this->font();
+        tf.setPointSize(14);
+        tf.setBold(true);
+        QPainterPath path;
+        path.addText(0, 0, tf, mainText);
+        QRectF br = path.boundingRect();
+        QPixmap titlePix(int(br.width()) + 4, int(br.height()) + 4);
+        titlePix.fill(Qt::transparent);
+        {
+            QPainter p(&titlePix);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.translate(-br.left(), -br.top());
+            QLinearGradient lg(0, 0, br.width(), 0);
+            lg.setColorAt(0.0, QColor(255, 106, 106));
+            lg.setColorAt(1.0, QColor(74, 110, 240));
+            p.fillPath(path, QBrush(lg));
+        }
+        QLabel* titleLbl = new QLabel(titleContainer);
+        titleLbl->setPixmap(titlePix);
+        titleLbl->setFixedSize(titlePix.size());
+        titleLbl->setStyleSheet("background: transparent;");
+        tlay->addWidget(titleLbl);
+
+        // suffix
+        QLabel* suffix = new QLabel(QString::fromUtf8("·启点点"), titleContainer);
+        QFont suf = tf;
+        suf.setPointSize(11);
+        suf.setItalic(true);
+        suffix->setFont(suf);
+        suffix->setStyleSheet("color: rgba(255,255,255,0.95); background: transparent;");
+        tlay->addWidget(suffix);
+
+        titleContainer->setLayout(tlay);
+
+        // Insert into topBar layout replacing existing label_title
+        if (ui->topBar->layout()) {
+            QHBoxLayout* hl = qobject_cast<QHBoxLayout*>(ui->topBar->layout());
+            if (hl) {
+                // find index of existing label_title if present
+                int index = -1;
+                for (int i = 0; i < hl->count(); ++i) {
+                    QLayoutItem* it = hl->itemAt(i);
+                    if (!it) continue;
+                    if (it->widget() == ui->label_title) { index = i; break; }
+                }
+                if (index >= 0) {
+                    // remove old label_title widget from layout and hide it
+                    QWidget* old = ui->label_title;
+                    hl->removeWidget(old);
+                    old->hide();
+                    hl->insertWidget(index, titleContainer);
+                } else {
+                    hl->insertWidget(0, titleContainer);
+                }
+            }
+        }
+    }
+
+    // Make window frameless and use our custom topBar as title bar
+    setWindowFlag(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+    // connect window control buttons if present
+    if (ui->pushButton_minimize) {
+        connect(ui->pushButton_minimize, &QPushButton::clicked, this, &MainWindow::showMinimized);
+    }
+    if (ui->pushButton_maximize) {
+        connect(ui->pushButton_maximize, &QPushButton::clicked, this, [this]() {
+            // Top bar maximize should control the whole main window (not the stage).
+            if (isMaximized()) this->showNormal(); else this->showMaximized();
+        });
+    }
+    if (ui->pushButton_close) {
+        connect(ui->pushButton_close, &QPushButton::clicked, this, &MainWindow::close);
+    }
 
     preview_timer_ = new QTimer(this);
     connect(preview_timer_, &QTimer::timeout, this, &MainWindow::update_preview);
+
+    // Replace simple preview label with a styled stage container (visual placeholder)
+    if (ui->label_livePreview && ui->verticalLayout_liveArea) {
+        // We're going to create a fixed-size placeholder in the layout (to reserve space)
+        // and create the real stage container as a child of the liveArea so it can be moved.
+        QWidget* layoutPlaceholder = new QWidget(this);
+        layoutPlaceholder->setObjectName("stageLayoutPlaceholder");
+        layoutPlaceholder->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
+        // let the placeholder expand to fill available space (we'll fit canvas inside)
+        layoutPlaceholder->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+        QBoxLayout* vlay = qobject_cast<QBoxLayout*>(ui->verticalLayout_liveArea);
+        int insertIndex = -1;
+        if (vlay) {
+            for (int i = 0; i < vlay->count(); ++i) {
+                QLayoutItem* it = vlay->itemAt(i);
+                if (!it) continue;
+                if (it->widget() == ui->label_livePreview) { insertIndex = i; break; }
+            }
+            if (insertIndex >= 0) {
+                QWidget* old = ui->label_livePreview;
+                vlay->removeWidget(old);
+                old->hide();
+                vlay->insertWidget(insertIndex, layoutPlaceholder);
+            } else {
+                vlay->addWidget(layoutPlaceholder);
+            }
+        } else {
+            ui->verticalLayout_liveArea->addWidget(layoutPlaceholder);
+        }
+
+        // create stage container as a child of the layout placeholder so it follows layout sizing
+        QWidget* stageContainer = new QWidget(layoutPlaceholder);
+        stageContainer->setObjectName("stageContainer");
+        // match main canvas / central area background so placeholder doesn't look out of place
+        stageContainer->setStyleSheet(
+            "QWidget#stageContainer {"
+            "background-color: #1a1a1a;"
+            "border: 1px solid rgba(255,255,255,0.03);"
+            "border-radius: 12px;"
+            "}"
+        );
+        stageContainer->setAttribute(Qt::WA_StyledBackground, true);
+
+        QVBoxLayout* scLayout = new QVBoxLayout(stageContainer);
+        scLayout->setContentsMargins(0, 0, 0, 0);
+        scLayout->setSpacing(6);
+
+        // center placeholder icon and text
+        QLabel* placeholderIcon = new QLabel(stageContainer);
+        placeholderIcon->setText(QString::fromUtf8("✚"));
+        QFont iconFont = placeholderIcon->font();
+        iconFont.setPointSize(28);
+        placeholderIcon->setFont(iconFont);
+        placeholderIcon->setAlignment(Qt::AlignCenter);
+        placeholderIcon->setStyleSheet("color: rgba(255,255,255,0.18); background: transparent;");
+
+        QLabel* placeholderText = new QLabel(QString::fromUtf8("添加直播画面"), stageContainer);
+        QFont txtF = placeholderText->font();
+        txtF.setPointSize(14);
+        placeholderText->setFont(txtF);
+        placeholderText->setAlignment(Qt::AlignCenter);
+        placeholderText->setStyleSheet("color: #BFBFBF; background: transparent;");
+
+        scLayout->addStretch();
+        scLayout->addWidget(placeholderIcon);
+        scLayout->addWidget(placeholderText);
+        scLayout->addStretch();
+        stageContainer->setLayout(scLayout);
+
+        // position stageContainer centered within layoutPlaceholder
+        QRect lpRect = layoutPlaceholder->geometry();
+        QPoint topLeft = layoutPlaceholder->mapTo(ui->liveArea, QPoint(0,0));
+        // position stageContainer to exactly fill the layoutPlaceholder immediately
+        stageContainer->setGeometry(0, 0, layoutPlaceholder->width(), layoutPlaceholder->height());
+
+        // Save pointers for later updates
+        stagePlaceholderWidget_ = layoutPlaceholder;
+        stageContainer_ = stageContainer;
+        placeholderIcon_ = placeholderIcon;
+        placeholderText_ = placeholderText;
+
+        // Add an overlay button in the center to handle "add source" clicks
+        stageAddButton_ = new QPushButton(stageContainer_);
+        stageAddButton_->setText("");
+        stageAddButton_->setCursor(Qt::PointingHandCursor);
+        stageAddButton_->setFlat(true);
+        stageAddButton_->setStyleSheet(
+            "QPushButton { background: transparent; border: none; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.02); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.04); }"
+        );
+        stageAddButton_->setGeometry(stageContainer_->rect());
+        stageAddButton_->show();
+        stageAddButton_->raise();
+        // forward to the right-side add material logic so behavior is identical
+        if (ui->pushButton_addMaterial) {
+            connect(stageAddButton_, &QPushButton::clicked, this, [this]() {
+                ui->pushButton_addMaterial->click();
+            });
+        } else {
+            connect(stageAddButton_, &QPushButton::clicked, this, [this]() {
+                AddMaterialDialog dlg(this);
+                dlg.exec();
+            });
+        }
+
+        // No per-stage control buttons: stage is always filled and controlled by main window.
+
+        // install event filters so we can keep overlay geometry and aspect ratio in sync and support resizing
+        stageContainer_->installEventFilter(this);
+        if (stagePlaceholderWidget_) stagePlaceholderWidget_->installEventFilter(this);
+        if (ui && ui->liveArea) ui->liveArea->installEventFilter(this);
+        // set initial aspect height based on liveArea width
+        if (ui && ui->liveArea) {
+            // size will be managed by layouts; ensure stageContainer matches placeholder
+            stageContainer_->setGeometry(0, 0, stagePlaceholderWidget_->width(), stagePlaceholderWidget_->height());
+            stageAddButton_->setGeometry(stageContainer_->rect());
+            if (canvas_widget_) canvas_widget_->setGeometry(stageContainer_->rect());
+        }
+        // Initialize placeholder visibility
+        updateStagePlaceholderVisibility();
+    }
 
     setup_ui_connections();
     setup_scene_list();
@@ -66,6 +299,15 @@ MainWindow::MainWindow(QWidget *parent) :
 
 MainWindow::~MainWindow() {
     LOG_INFO("MainWindow destroyed");
+
+    // Stop timers
+    if (stats_update_timer_) {
+        stats_update_timer_->stop();
+    }
+    if (system_info_timer_) {
+        system_info_timer_->stop();
+    }
+
     delete ui;
 }
 
@@ -155,6 +397,8 @@ void MainWindow::build_scene_list() {
 
         listWidget_sceneItems_->setItemWidget(lw_item, row);
     }
+    // update placeholder visibility after rebuilding scene list
+    updateStagePlaceholderVisibility();
 }
 
 void MainWindow::on_scene_item_reordered() {
@@ -304,6 +548,18 @@ void MainWindow::initialize_modules() {
             .arg(mm, 2, 10, QChar('0'))
             .arg(ss, 2, 10, QChar('0'));
         if (live_duration_label_) live_duration_label_->setText(text);
+    });
+
+    // 统计信息更新定时器 (推流时每秒更新一次)
+    stats_update_timer_ = new QTimer(this);
+    connect(stats_update_timer_, &QTimer::timeout, [this]() {
+        update_streaming_stats();
+    });
+
+    // 系统信息更新定时器 (每2秒更新一次)
+    system_info_timer_ = new QTimer(this);
+    connect(system_info_timer_, &QTimer::timeout, [this]() {
+        update_system_info();
     });
 }
 
@@ -598,6 +854,38 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
                     if (screenSrc) {
                         LOG_INFO("[DIAG] 更新ScreenSource图像: " + source_id);
                         screenSrc->push_frame(frame.image);
+                        // First-frame sizing: if no transform set, fit to quarter canvas preserving aspect ratio
+                        if (scene_manager_ && scene_manager_->get_current_scene()) {
+                            auto scene = scene_manager_->get_current_scene();
+                            auto items = scene->get_all_scene_items();
+                            for (auto& it : items) {
+                                if (it && it->get_source_id() == source_id) {
+                                    Transform tr = it->get_transform();
+                                    if (tr.width == 0 && tr.height == 0) {
+                                        int canvas_w = canvas_widget_ ? canvas_widget_->width() : canvas_config_.get_width();
+                                        int canvas_h = canvas_widget_ ? canvas_widget_->height() : canvas_config_.get_height();
+                                        int max_w = canvas_w / 2;
+                                        int max_h = canvas_h / 2;
+                                        int src_w = frame.image.width();
+                                        int src_h = frame.image.height();
+                                        if (src_w > 0 && src_h > 0) {
+                                            double sx = static_cast<double>(max_w) / src_w;
+                                            double sy = static_cast<double>(max_h) / src_h;
+                                            double s = (sx < sy ? sx : sy);
+                                            int target_w = static_cast<int>(src_w * s);
+                                            int target_h = static_cast<int>(src_h * s);
+                                            int x = (canvas_w - target_w) / 2;
+                                            int y = (canvas_h - target_h) / 2;
+                                            Transform newTr(x, y, target_w, target_h, 0.0f, 1.0f);
+                                            scene->set_transform(it, newTr);
+                                            update_scene_items();
+                                            if (canvas_widget_) canvas_widget_->refresh();
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                         break;
                     }
 
@@ -606,6 +894,38 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
                     if (cameraSrc) {
                         LOG_INFO("[DIAG] 更新CameraSource图像: " + source_id);
                         cameraSrc->push_frame(frame.image);
+                        // If this is the first frame and the scene item has no size, fit it to 1/4 canvas preserving aspect ratio
+                        if (scene_manager_ && scene_manager_->get_current_scene()) {
+                            auto scene = scene_manager_->get_current_scene();
+                            auto items = scene->get_all_scene_items();
+                            for (auto& it : items) {
+                                if (it && it->get_source_id() == source_id) {
+                                    Transform tr = it->get_transform();
+                                    if (tr.width == 0 && tr.height == 0) {
+                                        int canvas_w = canvas_widget_ ? canvas_widget_->width() : canvas_config_.get_width();
+                                        int canvas_h = canvas_widget_ ? canvas_widget_->height() : canvas_config_.get_height();
+                                        int max_w = canvas_w / 2;
+                                        int max_h = canvas_h / 2;
+                                        int src_w = frame.image.width();
+                                        int src_h = frame.image.height();
+                                        if (src_w > 0 && src_h > 0) {
+                                            double sx = static_cast<double>(max_w) / src_w;
+                                            double sy = static_cast<double>(max_h) / src_h;
+                                            double s = (sx < sy ? sx : sy);
+                                            int target_w = static_cast<int>(src_w * s);
+                                            int target_h = static_cast<int>(src_h * s);
+                                            int x = (canvas_w - target_w) / 2;
+                                            int y = (canvas_h - target_h) / 2;
+                                            Transform newTr(x, y, target_w, target_h, 0.0f, 1.0f);
+                                            scene->set_transform(it, newTr);
+                                            update_scene_items();
+                                            if (canvas_widget_) canvas_widget_->refresh();
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                         break;
                     }
                 }
@@ -622,20 +942,31 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
     }
     LOG_INFO("采集源添加成功");
 
-    if (scene_manager_ && scene_manager_->get_current_scene()) {
-        LOG_INFO("将摄像头源添加到场景中");
-        auto scene = scene_manager_->get_current_scene();
-        auto camera_source = SourceFactory::create_camera_source(source_id, camera_name.toStdString());
-        LOG_INFO("初始化场景摄像头源");
-        camera_source->initialize();
-        LOG_INFO("启动场景摄像头源");
-        camera_source->start();
-        LOG_INFO("添加到场景");
-        scene->add_source(camera_source);
-        LOG_INFO("更新场景项并同步到Compositor");
-        update_scene_items();  // 先调用，确保compositor中有对应的图层
-        LOG_INFO("Added camera source to scene: " + camera_name.toStdString() + ", id=" + source_id);
-    }
+        if (scene_manager_ && scene_manager_->get_current_scene()) {
+            LOG_INFO("将摄像头源添加到场景中");
+            auto scene = scene_manager_->get_current_scene();
+            auto camera_source = SourceFactory::create_camera_source(source_id, camera_name.toStdString());
+            LOG_INFO("初始化场景摄像头源");
+            camera_source->initialize();
+            LOG_INFO("启动场景摄像头源");
+            camera_source->start();
+            LOG_INFO("添加到场景");
+            auto added_item = scene->add_source(camera_source);
+            // If we have a canvas size available, set the scene item's transform to fill the canvas
+            if (added_item) {
+                int canvas_w = canvas_widget_ ? canvas_widget_->width() : canvas_config_.get_width();
+                int canvas_h = canvas_widget_ ? canvas_widget_->height() : canvas_config_.get_height();
+                int w = canvas_w / 2;
+                int h = canvas_h / 2;
+                int x = (canvas_w - w) / 2;
+                int y = (canvas_h - h) / 2;
+                Transform tr(x, y, w, h, 0.0f, 1.0f);
+                scene->set_transform(added_item, tr);
+            }
+            LOG_INFO("更新场景项并同步到Compositor");
+            update_scene_items();  // 确保compositor中有对应的图层
+            LOG_INFO("Added camera source to scene: " + camera_name.toStdString() + ", id=" + source_id);
+        }
 
     // 最后启动摄像头源，确保此时compositor中已经有了对应的图层
     LOG_INFO("启动摄像头采集源: " + source_id);
@@ -771,7 +1102,17 @@ void MainWindow::show_screen_share_selector() {
                     if (screen_src) {
                         screen_src->initialize();
                         screen_src->start();
-                        scene->add_source(screen_src);
+                        auto added_item = scene->add_source(screen_src);
+                        if (added_item) {
+                            int canvas_w = canvas_widget_ ? canvas_widget_->width() : canvas_config_.get_width();
+                            int canvas_h = canvas_widget_ ? canvas_widget_->height() : canvas_config_.get_height();
+                            int w = canvas_w / 2;
+                            int h = canvas_h / 2;
+                            int x = (canvas_w - w) / 2;
+                            int y = (canvas_h - h) / 2;
+                            Transform tr(x, y, w, h, 0.0f, 1.0f);
+                            scene->set_transform(added_item, tr);
+                        }
                         update_scene_items();
                         LOG_INFO(std::string("Added ScreenSource to scene for preview: ") + source_id);
                     }
@@ -863,11 +1204,85 @@ void MainWindow::setup_canvas_widget() {
     connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_error,
             this, &MainWindow::on_streaming_error);
 
-    ui->verticalLayout_liveArea->removeWidget(ui->label_livePreview);
-    delete ui->label_livePreview;
-    ui->label_livePreview = nullptr;
+    // To avoid crashes from dangling event filters or transient stageContainer_, insert the canvas
+    // directly into the layout so it is managed by the UI layout system (stable and predictable).
+    if (ui->label_livePreview) {
+        ui->verticalLayout_liveArea->removeWidget(ui->label_livePreview);
+        delete ui->label_livePreview;
+        ui->label_livePreview = nullptr;
+    }
 
+    // If a stageContainer_ exists, remove it and its placeholder to avoid conflicting ownership.
+    if (stageContainer_) {
+        // remove event filters safely
+        stageContainer_->removeEventFilter(this);
+        if (stagePlaceholderWidget_) stagePlaceholderWidget_->removeEventFilter(this);
+        // detach widgets
+        stageContainer_->setParent(nullptr);
+        if (stagePlaceholderWidget_) {
+            stagePlaceholderWidget_->setParent(nullptr);
+            delete stagePlaceholderWidget_;
+            stagePlaceholderWidget_ = nullptr;
+        }
+        delete stageContainer_;
+        stageContainer_ = nullptr;
+        placeholderIcon_ = nullptr;
+        placeholderText_ = nullptr;
+        if (stageAddButton_) { delete stageAddButton_; stageAddButton_ = nullptr; }
+    }
+
+    canvas_widget_->setParent(ui->centralWidget);
+    canvas_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     ui->verticalLayout_liveArea->insertWidget(0, canvas_widget_);
+    canvas_widget_->installEventFilter(this); // Install event filter to handle resize events
+    canvas_widget_->show();
+    // create placeholder overlays as children of the canvas so they stay on top and move/resize with it
+    // Note: placeholderIcon_ (✚) is kept for backward compatibility but hidden, only + button is shown
+    if (!placeholderIcon_) {
+        placeholderIcon_ = new QLabel(canvas_widget_);
+        placeholderIcon_->setText(QString::fromUtf8("✚"));
+        QFont iconFont = placeholderIcon_->font();
+        iconFont.setPointSize(48);
+        placeholderIcon_->setFont(iconFont);
+        placeholderIcon_->setAlignment(Qt::AlignCenter);
+        placeholderIcon_->setStyleSheet("color: rgba(255,255,255,0.18); background: transparent;");
+        placeholderIcon_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        placeholderIcon_->hide(); // Hidden by default, only + button is shown
+    }
+    if (!placeholderText_) {
+        placeholderText_ = new QLabel(QString::fromUtf8("添加直播画面"), canvas_widget_);
+        QFont txtF = placeholderText_->font();
+        txtF.setPointSize(16);
+        placeholderText_->setFont(txtF);
+        placeholderText_->setAlignment(Qt::AlignCenter);
+        placeholderText_->setStyleSheet("color: #BFBFBF; background: transparent;");
+        placeholderText_->setAttribute(Qt::WA_TransparentForMouseEvents, true); // Label is not clickable
+        placeholderText_->show();
+    }
+    if (!stageAddButton_) {
+        stageAddButton_ = new QPushButton(QString::fromUtf8("+"), canvas_widget_);
+        stageAddButton_->setCursor(Qt::PointingHandCursor);
+        stageAddButton_->setFixedSize(140, 44);
+        stageAddButton_->setStyleSheet(
+            "QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #444, stop:1 #333); color: white; border-radius: 6px; font-size: 14px; }"
+            "QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #555, stop:1 #444); }"
+            "QPushButton:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #333, stop:1 #222); }"
+        );
+        // forward to the right-side add material logic so behavior is identical
+        if (ui->pushButton_addMaterial) {
+            connect(stageAddButton_, &QPushButton::clicked, this, [this]() {
+                ui->pushButton_addMaterial->click();
+            });
+        } else {
+            connect(stageAddButton_, &QPushButton::clicked, this, [this]() {
+                AddMaterialDialog dlg(this);
+                dlg.exec();
+            });
+        }
+        stageAddButton_->show();
+    }
+    // position overlays: + button above "添加直播画面" text
+    repositionPlaceholderOverlays();
 
     connect(canvas_widget_, &CanvasWidget::scene_item_selected, this, [this](std::shared_ptr<SceneItem> item) {
         LOG_INFO("Scene item selected: " + (item ? item->get_source_id() : "null"));
@@ -879,6 +1294,8 @@ void MainWindow::setup_canvas_widget() {
         });
 
     LOG_INFO("Canvas widget setup completed");
+    // After canvas inserted, update placeholder visibility
+    updateStagePlaceholderVisibility();
 }
 
 void MainWindow::update_preview() {
@@ -887,6 +1304,239 @@ void MainWindow::update_preview() {
     }
 
     // Camera frames are now driven by CaptureManager camera sources.
+}
+
+
+void MainWindow::update_streaming_stats() {
+    if (!stream_pusher_ || !stream_pusher_->is_pushing()) {
+        return;
+    }
+
+    auto stats = stream_pusher_->get_stats();
+
+    QString status_text = QString("码率: %1 kb/s | FPS: %2 | CPU: %3% | 内存: %4MB")
+        .arg(QString::number(stats.bandwidth_kbps, 'f', 1))
+        .arg(QString::number(stats.video_fps, 'f', 2))
+        .arg(QString::number(cached_cpu_usage_, 'f', 1))
+        .arg(QString::number(cached_memory_mb_, 'f', 1));
+
+    if (ui->label_statusInfo) {
+        ui->label_statusInfo->setText(status_text);
+        ui->label_statusInfo->setStyleSheet("font-size: 12px; color: #cccccc;");
+    }
+}
+
+void MainWindow::repositionPlaceholderOverlays() {
+    if (!canvas_widget_ || !placeholderText_ || !stageAddButton_) return;
+    
+    QRect canvasRect = canvas_widget_->rect();
+    int centerX = canvasRect.center().x();
+    int centerY = canvasRect.center().y();
+    
+    // Calculate text size
+    QFontMetrics fm(placeholderText_->font());
+    QRect textRect = fm.boundingRect(placeholderText_->text());
+    int textWidth = textRect.width();
+    int textHeight = textRect.height();
+    
+    // Button size
+    int buttonWidth = stageAddButton_->width();
+    int buttonHeight = stageAddButton_->height();
+    
+    // Spacing between button and text (20px)
+    int spacing = 20;
+    
+    // Position text at center
+    int textX = centerX - textWidth / 2;
+    int textY = centerY + textHeight / 2;
+    
+    // Position button above text
+    int buttonX = centerX - buttonWidth / 2;
+    int buttonY = centerY - textHeight / 2 - spacing - buttonHeight;
+    
+    // Set geometries
+    placeholderText_->setGeometry(textX, textY - textHeight, textWidth, textHeight);
+    stageAddButton_->setGeometry(buttonX, buttonY, buttonWidth, buttonHeight);
+}
+
+void MainWindow::updateStagePlaceholderVisibility() {
+    bool hasVideoSource = false;
+    if (scene_manager_ && scene_manager_->get_current_scene()) {
+        auto items = scene_manager_->get_current_scene()->get_all_scene_items();
+        hasVideoSource = !items.empty();
+    }
+    // do not treat presence of canvas_widget_ alone as content; rely on scene items
+    if (!canvas_widget_ || !placeholderText_ || !stageAddButton_) return;
+
+    if (hasVideoSource) {
+        if (placeholderIcon_) placeholderIcon_->hide();
+        placeholderText_->hide();
+        stageAddButton_->hide();
+    } else {
+        // position overlays relative to canvas
+        repositionPlaceholderOverlays();
+        if (placeholderIcon_) placeholderIcon_->hide(); // Hide the ✚ icon, only show + button
+        placeholderText_->show();
+        stageAddButton_->show();
+    }
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == stageContainer_) {
+        if (event->type() == QEvent::Resize) {
+            if (stageAddButton_ && stageContainer_) {
+                stageAddButton_->setGeometry(stageContainer_->rect());
+            }
+            if (canvas_widget_ && stageContainer_) {
+                canvas_widget_->setGeometry(stageContainer_->rect());
+            }
+            // reposition stage control buttons
+            if (stageBtnMax_ && stageBtnMin_ && stageBtnRestore_ && stageContainer_) {
+                stageBtnMax_->move(stageContainer_->width() - 26, 6);
+                stageBtnMin_->move(stageContainer_->width() - 52, 6);
+                stageBtnRestore_->move(stageContainer_->width() - 78, 6);
+                stageBtnMax_->raise(); stageBtnMin_->raise(); stageBtnRestore_->raise();
+            }
+            return false;
+        }
+
+        // no per-stage dragging (stage fills placeholder and is controlled by main window)
+    }
+    // handle window dragging via topBar (move the whole main window)
+    if (ui && watched == ui->topBar) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton) {
+                window_dragging_ = true;
+                window_drag_start_pos_ = me->globalPos() - this->frameGeometry().topLeft();
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseMove) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            if (window_dragging_) {
+                QPoint gp = me->globalPos();
+                this->move(gp - window_drag_start_pos_);
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseButtonRelease) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton && window_dragging_) {
+                window_dragging_ = false;
+                return true;
+            }
+        }
+    }
+    if (ui && watched == ui->liveArea && event->type() == QEvent::Resize) {
+        if (stageContainer_ && stagePlaceholderWidget_) {
+            // match the placeholder's geometry so stage fills the available area
+            QRect phGeom = stagePlaceholderWidget_->geometry();
+            stageContainer_->setGeometry(0, 0, phGeom.width(), phGeom.height());
+            if (canvas_widget_) canvas_widget_->setGeometry(stageContainer_->rect());
+        }
+        // Reposition placeholder overlays when liveArea resizes
+        repositionPlaceholderOverlays();
+        return false;
+    }
+    // Handle canvas widget resize to reposition placeholder overlays
+    if (watched == canvas_widget_ && event->type() == QEvent::Resize) {
+        repositionPlaceholderOverlays();
+        return false;
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::update_system_info() {
+    std::pair<double, double> system_info = get_system_info();
+    cached_cpu_usage_ = system_info.first;
+    cached_memory_mb_ = system_info.second;
+}
+
+void MainWindow::toggleStageMaximize() {
+    if (!stageContainer_ || !ui || !ui->liveArea) return;
+    if (!stage_maximized_) {
+        // if minimized, restore first
+        if (stage_minimized_ && stageRestoreButton_) {
+            stageRestoreButton_->click();
+        }
+        stage_normal_geometry_ = stageContainer_->geometry();
+        QRect targetLocal = ui->liveArea->rect();
+        targetLocal.adjust(6, 6, -6, -6);
+        if (targetLocal.width() < 100) targetLocal.setWidth(qMax(100, ui->liveArea->width() - 12));
+        if (targetLocal.height() < 60) targetLocal.setHeight(qMax(60, ui->liveArea->height() - 12));
+        stageContainer_->setGeometry(targetLocal);
+        stage_maximized_ = true;
+        stageBtnRestore_->setVisible(true);
+        if (stageBtnMax_) { stageBtnMax_->setText("⧉"); stageBtnMax_->setToolTip("还原"); }
+        if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("⧉"); ui->pushButton_maximize->setToolTip("还原"); }
+    } else {
+        // restore
+        stageContainer_->setGeometry(stage_normal_geometry_);
+        stage_maximized_ = false;
+        stageBtnRestore_->setVisible(false);
+        if (stageBtnMax_) { stageBtnMax_->setText("□"); stageBtnMax_->setToolTip("最大化"); }
+        if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("□"); ui->pushButton_maximize->setToolTip("最大化"); }
+    }
+}
+
+void MainWindow::restoreStage() {
+    if (!stageContainer_) return;
+    stageContainer_->setGeometry(stage_normal_geometry_);
+    stage_maximized_ = false;
+    stageBtnRestore_->setVisible(false);
+    if (stageBtnMax_) { stageBtnMax_->setText("□"); stageBtnMax_->setToolTip("最大化"); }
+    if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("□"); ui->pushButton_maximize->setToolTip("最大化"); }
+}
+
+std::pair<double, double> MainWindow::get_system_info() {
+    double cpu_usage = 0.0;
+    double memory_mb = 0.0;
+
+#ifdef Q_OS_WIN
+    // Use GetSystemTimes to compute CPU usage between samples.
+    FILETIME idleTime, kernelTime, userTime;
+    if (GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
+        auto filetime_to_uint64 = [](const FILETIME &ft) -> uint64_t {
+            return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        };
+
+        uint64_t idle = filetime_to_uint64(idleTime);
+        uint64_t kernel = filetime_to_uint64(kernelTime);
+        uint64_t user = filetime_to_uint64(userTime);
+
+        uint64_t sys = kernel + user;
+
+        if (first_cpu_sample_) {
+            prev_idle_ = idle;
+            prev_sys_ = sys;
+            first_cpu_sample_ = false;
+        } else {
+            uint64_t idle_delta = idle - prev_idle_;
+            uint64_t sys_delta = sys - prev_sys_;
+            if (sys_delta > 0) {
+                double usage = (1.0 - (static_cast<double>(idle_delta) / static_cast<double>(sys_delta))) * 100.0;
+                if (usage < 0.0) usage = 0.0;
+                if (usage > 100.0) usage = 100.0;
+                cpu_usage = usage;
+            }
+            prev_idle_ = idle;
+            prev_sys_ = sys;
+        }
+
+    }
+
+    // Memory using GlobalMemoryStatusEx
+    MEMORYSTATUSEX memx;
+    memx.dwLength = sizeof(MEMORYSTATUSEX);
+    if (GlobalMemoryStatusEx(&memx)) {
+        double total_mb = static_cast<double>(memx.ullTotalPhys) / (1024.0 * 1024.0);
+        double avail_mb = static_cast<double>(memx.ullAvailPhys) / (1024.0 * 1024.0);
+        memory_mb = total_mb - avail_mb;
+    }
+#endif
+
+    return {cpu_usage, memory_mb};
 }
 
 void MainWindow::encode_and_push() {
@@ -1235,15 +1885,35 @@ void MainWindow::on_streaming_started() {
     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
     if (live_duration_label_) live_duration_label_->setText("00:00:00");
     if (live_duration_timer_) live_duration_timer_->start(1000);
-    // 可以在这里更新UI状态，比如显示"正在推流"的状态
+
+    // 启动统计信息更新定时器
+    if (stats_update_timer_) {
+        stats_update_timer_->start(1000);
+    }
+
+    // 启动系统信息更新定时器
+    if (system_info_timer_) {
+        system_info_timer_->start(2000); // 每2秒更新一次
+        // 立即更新一次系统信息
+        update_system_info();
+        // 立即更新一次统计信息
+        update_streaming_stats();
+    }
 }
 
 void MainWindow::on_streaming_stopped() {
     LOG_INFO("推流状态：已停止");
     if (live_duration_timer_) live_duration_timer_->stop();
+    if (stats_update_timer_) stats_update_timer_->stop();
+    if (system_info_timer_) system_info_timer_->stop();
     streaming_start_time_ms_ = 0;
     if (live_duration_label_) live_duration_label_->setText("00:00:00");
-    // 可以在这里更新UI状态
+
+    // 恢复默认状态显示
+    if (ui->label_statusInfo) {
+        ui->label_statusInfo->setText("码率: 0kb/s | FPS: 0.00 | CPU: 0.0% | 内存: 0.0MB");
+        ui->label_statusInfo->setStyleSheet("font-size: 12px; color: #666666;");
+    }
 }
 
 void MainWindow::on_streaming_error(const QString& error) {
