@@ -83,7 +83,20 @@ std::shared_ptr<SceneItem> Scene::add_source(std::shared_ptr<Source> source) {
     auto item = std::make_shared<SceneItem>(source, default_transform);
     
     // 根据当前计数设置顺序（越大越靠上）
-    item->set_order(next_order_++);
+    // 特殊处理：如果是摄像头源，设置为最高order值
+    if (source->get_id().find("camera_") == 0) {
+        // 为摄像头设置最高的order值
+        int max_order = next_order_;
+        for (const auto& existing_item : scene_items_) {
+            if (existing_item->get_order() > max_order) {
+                max_order = existing_item->get_order();
+            }
+        }
+        item->set_order(max_order + 1);
+        next_order_ = max_order + 2;
+    } else {
+        item->set_order(next_order_++);
+    }
     
     // 追加到末尾
     scene_items_.push_back(item);
@@ -363,12 +376,31 @@ ErrorCode Scene::set_scene_item_order(std::shared_ptr<SceneItem> item, int new_o
 }
 
 void Scene::normalize_orders() {
-    // sort by order then reassign contiguous
-    std::sort(scene_items_.begin(), scene_items_.end(), [](const auto& a, const auto& b){ return a->get_order() < b->get_order();});
+    // 分离摄像头项和其他项
+    std::vector<std::shared_ptr<SceneItem>> camera_items;
+    std::vector<std::shared_ptr<SceneItem>> other_items;
+    
+    for (const auto& item : scene_items_) {
+        if (item->get_source_id().find("camera_") == 0) {
+            camera_items.push_back(item);
+        } else {
+            other_items.push_back(item);
+        }
+    }
+    
+    // 对其他项按order排序并重新分配连续的order值
+    std::sort(other_items.begin(), other_items.end(), [](const auto& a, const auto& b){ return a->get_order() < b->get_order();});
     int idx = 0;
-    for (auto& it : scene_items_) {
+    for (auto& it : other_items) {
         it->set_order(idx++);
     }
+    
+    // 对摄像头项按order排序并分配比其他项更高的order值
+    std::sort(camera_items.begin(), camera_items.end(), [](const auto& a, const auto& b){ return a->get_order() < b->get_order();});
+    for (auto& it : camera_items) {
+        it->set_order(idx++);
+    }
+    
     next_order_ = idx;
 }
 

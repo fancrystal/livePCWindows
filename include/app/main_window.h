@@ -135,7 +135,6 @@ private:
     QString rtmp_stream_key_;
 
     // Live duration display
-    QLabel* live_duration_label_ = nullptr;
     QTimer* live_duration_timer_ = nullptr;
     qint64 streaming_start_time_ms_ = 0;
 
@@ -149,8 +148,8 @@ private:
     uint64_t prev_sys_ = 0;
     bool first_cpu_sample_ = true;
 
-    // Audio status display
-    QLabel* audio_status_label_ = nullptr;
+    // Tech stats label (bottom bar)
+    QLabel* tech_stats_label_ = nullptr;
 
     // Audio control state
     bool microphone_enabled_ = true;

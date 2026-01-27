@@ -35,6 +35,7 @@
 #include <QTextStream>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QFile>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -61,16 +62,24 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow) {
     ui->setupUi(this);
 
+    // 加载QSS样式文件（仅应用于主窗口）
+    QFile qssFile(":/resources/live_companion_style.qss");
+    if (qssFile.open(QFile::ReadOnly | QFile::Text)) {
+        QTextStream stream(&qssFile);
+        QString qssContent = stream.readAll();
+        this->setStyleSheet(qssContent);
+        qssFile.close();
+        LOG_INFO("QSS stylesheet loaded for MainWindow");
+    } else {
+        LOG_WARNING("Failed to load QSS stylesheet: " + qssFile.errorString().toStdString());
+    }
+
     setWindowTitle("LiveAssistant");
     // Enhance top bar title: replace simple text with logo + gradient title + italic suffix
     if (ui->topBar) {
-        // style the topBar to match dark gradient header
-        ui->topBar->setStyleSheet("QWidget { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(28,18,20,220), stop:1 rgba(42,20,24,200)); border-bottom: 1px solid rgba(255,255,255,0.03); }");
-
         // create container
         QWidget* titleContainer = new QWidget(ui->topBar);
         titleContainer->setObjectName("titleContainer");
-        titleContainer->setStyleSheet("background: transparent;");
         QHBoxLayout* tlay = new QHBoxLayout(titleContainer);
         tlay->setContentsMargins(8, 4, 8, 4);
         tlay->setSpacing(8);
@@ -82,7 +91,6 @@ MainWindow::MainWindow(QWidget *parent) :
             logoLbl->setPixmap(iconPix.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
             logoLbl->setFixedSize(32, 32);
         }
-        logoLbl->setStyleSheet("background: transparent;");
         tlay->addWidget(logoLbl);
 
         // gradient text pixmap for main title
@@ -107,7 +115,6 @@ MainWindow::MainWindow(QWidget *parent) :
         QLabel* titleLbl = new QLabel(titleContainer);
         titleLbl->setPixmap(titlePix);
         titleLbl->setFixedSize(titlePix.size());
-        titleLbl->setStyleSheet("background: transparent;");
         tlay->addWidget(titleLbl);
 
         // suffix
@@ -116,7 +123,6 @@ MainWindow::MainWindow(QWidget *parent) :
         suf.setPointSize(11);
         suf.setItalic(true);
         suffix->setFont(suf);
-        suffix->setStyleSheet("color: rgba(255,255,255,0.95); background: transparent;");
         tlay->addWidget(suffix);
 
         titleContainer->setLayout(tlay);
@@ -148,6 +154,13 @@ MainWindow::MainWindow(QWidget *parent) :
     // Make window frameless and use our custom topBar as title bar
     setWindowFlag(Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
+    
+    // Install event filter on topBar to enable window dragging
+    if (ui->topBar) {
+        ui->topBar->installEventFilter(this);
+        ui->topBar->setAttribute(Qt::WA_Hover, true);
+    }
+    
     // connect window control buttons if present
     if (ui->pushButton_minimize) {
         connect(ui->pushButton_minimize, &QPushButton::clicked, this, &MainWindow::showMinimized);
@@ -198,15 +211,7 @@ MainWindow::MainWindow(QWidget *parent) :
 
         // create stage container as a child of the layout placeholder so it follows layout sizing
         QWidget* stageContainer = new QWidget(layoutPlaceholder);
-        stageContainer->setObjectName("stageContainer");
-        // match main canvas / central area background so placeholder doesn't look out of place
-        stageContainer->setStyleSheet(
-            "QWidget#stageContainer {"
-            "background-color: #1a1a1a;"
-            "border: 1px solid rgba(255,255,255,0.03);"
-            "border-radius: 12px;"
-            "}"
-        );
+        stageContainer->setObjectName("liveViewWidget");
         stageContainer->setAttribute(Qt::WA_StyledBackground, true);
 
         QVBoxLayout* scLayout = new QVBoxLayout(stageContainer);
@@ -216,18 +221,18 @@ MainWindow::MainWindow(QWidget *parent) :
         // center placeholder icon and text
         QLabel* placeholderIcon = new QLabel(stageContainer);
         placeholderIcon->setText(QString::fromUtf8("✚"));
+        placeholderIcon->setObjectName("labelAddLive");
         QFont iconFont = placeholderIcon->font();
-        iconFont.setPointSize(28);
+        iconFont.setPointSize(36);
         placeholderIcon->setFont(iconFont);
         placeholderIcon->setAlignment(Qt::AlignCenter);
-        placeholderIcon->setStyleSheet("color: rgba(255,255,255,0.18); background: transparent;");
 
         QLabel* placeholderText = new QLabel(QString::fromUtf8("添加直播画面"), stageContainer);
+        placeholderText->setObjectName("labelAddLive");
         QFont txtF = placeholderText->font();
-        txtF.setPointSize(14);
+        txtF.setPointSize(16);
         placeholderText->setFont(txtF);
         placeholderText->setAlignment(Qt::AlignCenter);
-        placeholderText->setStyleSheet("color: #BFBFBF; background: transparent;");
 
         scLayout->addStretch();
         scLayout->addWidget(placeholderIcon);
@@ -252,16 +257,12 @@ MainWindow::MainWindow(QWidget *parent) :
         stageAddButton_->setText("");
         stageAddButton_->setCursor(Qt::PointingHandCursor);
         stageAddButton_->setFlat(true);
-        stageAddButton_->setStyleSheet(
-            "QPushButton { background: transparent; border: none; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.02); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.04); }"
-        );
         stageAddButton_->setGeometry(stageContainer_->rect());
         stageAddButton_->show();
         stageAddButton_->raise();
         // forward to the right-side add material logic so behavior is identical
         if (ui->pushButton_addMaterial) {
+            ui->pushButton_addMaterial->setObjectName("btnAddMaterial");
             connect(stageAddButton_, &QPushButton::clicked, this, [this]() {
                 ui->pushButton_addMaterial->click();
             });
@@ -321,11 +322,6 @@ void MainWindow::setup_scene_list() {
     listWidget_sceneItems_->setSelectionMode(QAbstractItemView::SingleSelection);
     listWidget_sceneItems_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     listWidget_sceneItems_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    listWidget_sceneItems_->setStyleSheet(
-        "QListWidget { border: none; background: transparent; }\n"
-        "QListWidget::item { padding: 2px; }\n"
-        "QListWidget::item:selected { background: #2b2b2b; border-radius: 4px; }"
-    );
 
     if (ui && ui->verticalLayout_sceneItems) {
         ui->verticalLayout_sceneItems->addWidget(listWidget_sceneItems_);
@@ -347,9 +343,66 @@ void MainWindow::build_scene_list() {
     auto scene = scene_manager_->get_current_scene();
     auto scene_items = scene->get_all_scene_items();
 
-    const int total = static_cast<int>(scene_items.size());
+    // 先分离摄像头和其他场景项
+    std::vector<std::shared_ptr<SceneItem>> camera_items;
+    std::vector<std::shared_ptr<SceneItem>> other_items;
+    
+    for (const auto& item : scene_items) {
+        if (QString::fromStdString(item->get_source_id()).startsWith("camera_")) {
+            camera_items.push_back(item);
+        } else {
+            other_items.push_back(item);
+        }
+    }
+    
+    // 先添加摄像头项，确保它们在列表顶部
+    for (const auto& item : camera_items) {
+        auto* lw_item = new QListWidgetItem(listWidget_sceneItems_);
+        lw_item->setSizeHint(QSize(240, 34));
+        lw_item->setData(Qt::UserRole, QString::fromStdString(item->get_source_id()));
+
+        QString display_name = extract_source_name(item->get_source());
+        auto* row = new SceneItemRow(item, display_name, listWidget_sceneItems_);
+
+        const int row_index = listWidget_sceneItems_->row(lw_item);
+        row->set_move_up_enabled(false); // 摄像头项不能再往上移动
+
+        connect(row, &SceneItemRow::visibilityToggled, this, [this]() {
+            sync_scene_to_compositor();
+            if (canvas_widget_) canvas_widget_->refresh();
+        });
+
+        connect(row, &SceneItemRow::requestSetting, this, [this](std::shared_ptr<SceneItem> it) {
+            if (!scene_manager_ || !scene_manager_->get_current_scene()) return;
+            auto items = scene_manager_->get_current_scene()->get_all_scene_items();
+            for (int idx = 0; idx < static_cast<int>(items.size()); ++idx) {
+                if (items[idx] == it) {
+                    show_scene_item_settings(idx);
+                    return;
+                }
+            }
+        });
+
+        connect(row, &SceneItemRow::requestDelete, this, [this](std::shared_ptr<SceneItem> it) {
+            if (!scene_manager_ || !scene_manager_->get_current_scene()) return;
+            auto items = scene_manager_->get_current_scene()->get_all_scene_items();
+            for (int idx = 0; idx < static_cast<int>(items.size()); ++idx) {
+                if (items[idx] == it) {
+                    delete_scene_item(idx);
+                    return;
+                }
+            }
+        });
+
+        // 摄像头项不需要上移功能
+
+        listWidget_sceneItems_->setItemWidget(lw_item, row);
+    }
+    
+    // 再添加其他场景项
+    const int total = static_cast<int>(other_items.size());
     for (int i = total - 1; i >= 0; --i) {
-        auto item = scene_items[i];
+        auto item = other_items[i];
 
         auto* lw_item = new QListWidgetItem(listWidget_sceneItems_);
         lw_item->setSizeHint(QSize(240, 34));
@@ -359,7 +412,7 @@ void MainWindow::build_scene_list() {
         auto* row = new SceneItemRow(item, display_name, listWidget_sceneItems_);
 
         const int row_index = listWidget_sceneItems_->row(lw_item);
-        row->set_move_up_enabled(row_index > 0);
+        row->set_move_up_enabled(row_index > 0); // 其他项可以上移，但不能超过摄像头项
 
         connect(row, &SceneItemRow::visibilityToggled, this, [this]() {
             sync_scene_to_compositor();
@@ -392,6 +445,12 @@ void MainWindow::build_scene_list() {
             if (!listWidget_sceneItems_) return;
             int r = listWidget_sceneItems_->row(lw_item);
             if (r <= 0) return;
+            // 检查目标位置是否是摄像头项
+            auto* target_item = listWidget_sceneItems_->item(r - 1);
+            QString target_sid = target_item->data(Qt::UserRole).toString();
+            if (target_sid.startsWith("camera_")) {
+                return; // 不能移动到摄像头项上面
+            }
             listWidget_sceneItems_->model()->moveRow(QModelIndex(), r, QModelIndex(), r - 1);
         });
 
@@ -415,7 +474,13 @@ void MainWindow::on_scene_item_reordered() {
         auto items = scene->get_all_scene_items();
         for (auto& it : items) {
             if (QString::fromStdString(it->get_source_id()) == sid) {
-                it->set_order(order);
+                // 如果是摄像头源，保持其较高的order值
+                if (!sid.startsWith("camera_")) {
+                    it->set_order(order);
+                } else {
+                    // 摄像头源保持较高的order值
+                    it->set_order(9999);
+                }
                 break;
             }
         }
@@ -457,7 +522,7 @@ void MainWindow::initialize_modules() {
     // Default: start microphone capture when entering live room
     if (audio_engine_) {
         LOG_INFO("Starting audio capture by default for live room");
-        update_audio_status("🎤 初始化中...","orange");
+        update_audio_status("初始化中...","orange");
 
         // Try to start audio capture
         bool audio_started = false;
@@ -477,7 +542,7 @@ void MainWindow::initialize_modules() {
 
         if (!audio_started) {
             LOG_WARNING("AudioEngine::start_capture failed after " + std::to_string(retry_count) + " attempts");
-            update_audio_status("🎤 故障", "red");
+            update_audio_status("故障", "red");
             // enable silent audio fallback in encoder bridge
             if (encoder_bridge_) {
                 encoder_bridge_->set_audio_engine(audio_engine_);
@@ -486,7 +551,7 @@ void MainWindow::initialize_modules() {
             QMessageBox::warning(this, "麦克风故障",
                 "无法打开麦克风，程序将以静音推流作为回退。\n\n可能的原因：\n• 麦克风被其他程序占用\n• 音频设备驱动问题\n• 系统音频服务未运行\n\n请尝试：\n1. 检查麦克风是否被其他程序使用\n2. 重新启动应用程序\n3. 检查音频设备设置");
         } else {
-            update_audio_status("🎤 正常", "green");
+            update_audio_status("正常", "green");
             if (encoder_bridge_) {
                 encoder_bridge_->set_audio_engine(audio_engine_);
                 encoder_bridge_->set_silent_audio(false);
@@ -516,24 +581,10 @@ void MainWindow::initialize_modules() {
     encoding_timer_->start(33);
 
     streams_registered_ = false;
-    // Live duration label (added to status bar)
-    live_duration_label_ = new QLabel("00:00:00", this);
-    live_duration_label_->setMinimumWidth(100);
+    // 使用UI文件中定义的标签，不再手动创建
+    // 直播时长使用 ui->label_liveDuration
+    // 音频状态可以使用其他合适的位置或添加新标签
 
-    // Audio status indicator
-    audio_status_label_ = new QLabel("🎤 未初始化", this);
-    audio_status_label_->setMinimumWidth(120);
-    audio_status_label_->setStyleSheet("color: orange; font-weight: bold;");
-
-    if (ui->statusBar) {
-        // Ensure status bar is visible
-        ui->statusBar->setVisible(true);
-        ui->statusBar->addWidget(audio_status_label_);
-        ui->statusBar->addPermanentWidget(live_duration_label_);
-
-        // Force status bar update
-        ui->statusBar->update();
-    }
     live_duration_timer_ = new QTimer(this);
     connect(live_duration_timer_, &QTimer::timeout, this, [this]() {
         if (streaming_start_time_ms_ == 0) return;
@@ -547,7 +598,7 @@ void MainWindow::initialize_modules() {
             .arg(hh, 2, 10, QChar('0'))
             .arg(mm, 2, 10, QChar('0'))
             .arg(ss, 2, 10, QChar('0'));
-        if (live_duration_label_) live_duration_label_->setText(text);
+        if (ui->label_liveDuration) ui->label_liveDuration->setText(text);
     });
 
     // 统计信息更新定时器 (推流时每秒更新一次)
@@ -610,10 +661,7 @@ void MainWindow::setup_ui_connections() {
         }
     };
 
-    if (ui->pushButton_settings_topBar) {
-        connect(ui->pushButton_settings_topBar, &QPushButton::clicked, this, open_settings_dialog);
-    }
-
+    // Settings dialog open (top bar settings button removed)
     if (ui->pushButton_settings) {
         connect(ui->pushButton_settings, &QPushButton::clicked, this, open_settings_dialog);
     }
@@ -621,7 +669,7 @@ void MainWindow::setup_ui_connections() {
     // 状态标签初始化
     if (ui->label_status) {
         ui->label_status->setText("预览中");
-        ui->label_status->setStyleSheet("font-weight: bold; font-size: 14px; color: #00aa00;");
+        ui->label_status->setObjectName("labelPreviewStatus");
     }
 
     if (ui->pushButton_addMaterial) {
@@ -645,6 +693,7 @@ void MainWindow::setup_ui_connections() {
     }
 
     if (ui->pushButton_startLive) {
+        ui->pushButton_startLive->setObjectName("btnStartLive");
         connect(ui->pushButton_startLive, &QPushButton::clicked, this, [this]() {
             if (!encoder_bridge_) {
                 QMessageBox::warning(this, "错误", "推流系统未初始化");
@@ -657,7 +706,6 @@ void MainWindow::setup_ui_connections() {
                 ui->pushButton_startLive->setText("开始直播");
                 if (ui->label_status) {
                     ui->label_status->setText("推流结束");
-                    ui->label_status->setStyleSheet("font-weight: bold; font-size: 14px; color: #aa0000;");
                 }
                 QMessageBox::information(this, "提示", "推流已停止");
                 return;
@@ -678,7 +726,6 @@ void MainWindow::setup_ui_connections() {
                 ui->pushButton_startLive->setText("停止直播");
                 if (ui->label_status) {
                     ui->label_status->setText("正在推流");
-                    ui->label_status->setStyleSheet("font-weight: bold; font-size: 14px; color: #00aa00;");
                 }
                 QMessageBox::information(this, "成功", "推流已启动");
             } else {
@@ -954,14 +1001,19 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
             auto added_item = scene->add_source(camera_source);
             // If we have a canvas size available, set the scene item's transform to fill the canvas
             if (added_item) {
-                int canvas_w = canvas_widget_ ? canvas_widget_->width() : canvas_config_.get_width();
-                int canvas_h = canvas_widget_ ? canvas_widget_->height() : canvas_config_.get_height();
+                // 使用canvas_config_的逻辑尺寸，确保视频源初始尺寸合理
+                int canvas_w = canvas_config_.get_width(); // 默认1920
+                int canvas_h = canvas_config_.get_height(); // 默认1080
                 int w = canvas_w / 2;
                 int h = canvas_h / 2;
                 int x = (canvas_w - w) / 2;
                 int y = (canvas_h - h) / 2;
                 Transform tr(x, y, w, h, 0.0f, 1.0f);
                 scene->set_transform(added_item, tr);
+                
+                // 设置摄像头的order为最高，确保它永远在最上层
+                added_item->set_order(9999); // 设置一个很高的值
+                scene->normalize_orders();
             }
             LOG_INFO("更新场景项并同步到Compositor");
             update_scene_items();  // 确保compositor中有对应的图层
@@ -1104,15 +1156,41 @@ void MainWindow::show_screen_share_selector() {
                         screen_src->start();
                         auto added_item = scene->add_source(screen_src);
                         if (added_item) {
-                            int canvas_w = canvas_widget_ ? canvas_widget_->width() : canvas_config_.get_width();
-                            int canvas_h = canvas_widget_ ? canvas_widget_->height() : canvas_config_.get_height();
-                            int w = canvas_w / 2;
-                            int h = canvas_h / 2;
-                            int x = (canvas_w - w) / 2;
-                            int y = (canvas_h - h) / 2;
-                            Transform tr(x, y, w, h, 0.0f, 1.0f);
+                            // 使用canvas_config_的逻辑尺寸，让视频源自适应满画布
+                            int canvas_w = canvas_config_.get_width(); // 默认1920
+                            int canvas_h = canvas_config_.get_height(); // 默认1080
+                            
+                            // 假设视频源的原始宽高比（这里使用16:9作为默认值，实际应该从视频源获取）
+                            // 注意：实际应用中应该从视频源获取真实的宽高比
+                            int src_w = 1920; // 假设视频源宽度
+                            int src_h = 1080; // 假设视频源高度
+                            
+                            // 计算缩放比例，取较小值以保证完全显示
+                            double scale_w = static_cast<double>(canvas_w) / src_w;
+                            double scale_h = static_cast<double>(canvas_h) / src_h;
+                            double scale = (std::min)(scale_w, scale_h);
+                            
+                            // 计算缩放后的尺寸
+                            int target_w = static_cast<int>(src_w * scale);
+                            int target_h = static_cast<int>(src_h * scale);
+                            
+                            // 计算居中位置
+                            int x = (canvas_w - target_w) / 2;
+                            int y = (canvas_h - target_h) / 2;
+                            
+                            Transform tr(x, y, target_w, target_h, 0.0f, 1.0f);
                             scene->set_transform(added_item, tr);
                         }
+                        
+                        // 确保所有摄像头项仍然保持最高的order值
+                        auto items = scene->get_all_scene_items();
+                        for (auto& item : items) {
+                            if (QString::fromStdString(item->get_source_id()).startsWith("camera_")) {
+                                item->set_order(9999); // 保持摄像头的最高order值
+                            }
+                        }
+                        scene->normalize_orders();
+                        
                         update_scene_items();
                         LOG_INFO(std::string("Added ScreenSource to scene for preview: ") + source_id);
                     }
@@ -1172,7 +1250,7 @@ void MainWindow::on_camera_frame_ready() {
 }
 
 void MainWindow::update_status(const QString& message) {
-    ui->statusBar->showMessage(message);
+    // 状态栏已移除
 }
 
 void MainWindow::setup_canvas_widget() {
@@ -1320,9 +1398,9 @@ void MainWindow::update_streaming_stats() {
         .arg(QString::number(cached_cpu_usage_, 'f', 1))
         .arg(QString::number(cached_memory_mb_, 'f', 1));
 
-    if (ui->label_statusInfo) {
-        ui->label_statusInfo->setText(status_text);
-        ui->label_statusInfo->setStyleSheet("font-size: 12px; color: #cccccc;");
+    if (ui->label_techStats) {
+        ui->label_techStats->setText(status_text);
+        ui->label_techStats->setStyleSheet("font-size: 12px; color: #cccccc;");
     }
 }
 
@@ -1407,14 +1485,24 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         if (event->type() == QEvent::MouseButtonPress) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
             if (me->button() == Qt::LeftButton) {
+                // Check if click is on a button (don't drag if clicking buttons)
+                QWidget* child = ui->topBar->childAt(me->pos());
+                if (child && (qobject_cast<QPushButton*>(child) || child->parent() == ui->topBar)) {
+                    // Check if it's one of the window control buttons (top bar settings button removed)
+                    if (child == ui->pushButton_minimize || 
+                        child == ui->pushButton_maximize || 
+                        child == ui->pushButton_close) {
+                        return false; // Let the button handle the click
+                    }
+                }
                 window_dragging_ = true;
-                window_drag_start_pos_ = me->globalPos() - this->frameGeometry().topLeft();
+                window_drag_start_pos_ = me->globalPos() - this->pos();
                 return true;
             }
         }
         if (event->type() == QEvent::MouseMove) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
-            if (window_dragging_) {
+            if (window_dragging_ && (me->buttons() & Qt::LeftButton)) {
                 QPoint gp = me->globalPos();
                 this->move(gp - window_drag_start_pos_);
                 return true;
@@ -1749,12 +1837,9 @@ void MainWindow::sync_scene_to_compositor() {
 }
 
 void MainWindow::update_audio_status(const QString& text, const QString& color) {
-    if (audio_status_label_) {
-        audio_status_label_->setText(text);
-        if (!color.isEmpty()) {
-            audio_status_label_->setStyleSheet("color: " + color + ";");
-        }
-    }
+    // 不再使用手动创建的标签显示音频状态
+    // 可以在日志中记录音频状态
+    LOG_INFO("Audio status: " + text.toStdString() + " (color: " + color.toStdString() + ")");
 }
 
 void MainWindow::toggle_microphone() {
@@ -1781,10 +1866,10 @@ void MainWindow::set_microphone_volume(float volume) {
 
 void MainWindow::update_microphone_ui() {
     if (ui->pushButton_mic) {
-        ui->pushButton_mic->setText(microphone_enabled_ ? "🎤" : "🎤❌");
+        ui->pushButton_mic->setText("");
         ui->pushButton_mic->setStyleSheet(microphone_enabled_ ?
-            "border: none; background: transparent; font-size: 16px;" :
-            "border: none; background: transparent; font-size: 16px; color: #ff6666;");
+            "border: none; background: transparent;" :
+            "border: none; background: transparent; opacity: 0.5;");
     }
 
     if (ui->slider_mic && audio_engine_) {
@@ -1816,9 +1901,9 @@ void MainWindow::show_microphone_menu(const QPoint& pos) {
                 // Restart audio capture with new device
                 audio_engine_->stop_capture();
                 if (!audio_engine_->start_capture()) {
-                    update_audio_status("🎤 故障", "red");
+                    update_audio_status("故障", "red");
                 } else {
-                    update_audio_status("🎤 正常", "green");
+                    update_audio_status("正常", "green");
                 }
             }
         });
@@ -1851,10 +1936,10 @@ void MainWindow::set_speaker_volume(float volume) {
 
 void MainWindow::update_speaker_ui() {
     if (ui->pushButton_speaker) {
-        ui->pushButton_speaker->setText(speaker_enabled_ ? "🔊" : "🔇");
+        ui->pushButton_speaker->setText("");
         ui->pushButton_speaker->setStyleSheet(speaker_enabled_ ?
-            "border: none; background: transparent; font-size: 16px;" :
-            "border: none; background: transparent; font-size: 16px; color: #ff6666;");
+            "border: none; background: transparent;" :
+            "border: none; background: transparent; opacity: 0.5;");
     }
 
     if (ui->slider_speaker && audio_engine_) {
@@ -1883,7 +1968,7 @@ void MainWindow::show_speaker_menu(const QPoint& pos) {
 void MainWindow::on_streaming_started() {
     LOG_INFO("推流状态：已开始");
     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
-    if (live_duration_label_) live_duration_label_->setText("00:00:00");
+    if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
     if (live_duration_timer_) live_duration_timer_->start(1000);
 
     // 启动统计信息更新定时器
@@ -1907,12 +1992,12 @@ void MainWindow::on_streaming_stopped() {
     if (stats_update_timer_) stats_update_timer_->stop();
     if (system_info_timer_) system_info_timer_->stop();
     streaming_start_time_ms_ = 0;
-    if (live_duration_label_) live_duration_label_->setText("00:00:00");
+    if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
 
     // 恢复默认状态显示
-    if (ui->label_statusInfo) {
-        ui->label_statusInfo->setText("码率: 0kb/s | FPS: 0.00 | CPU: 0.0% | 内存: 0.0MB");
-        ui->label_statusInfo->setStyleSheet("font-size: 12px; color: #666666;");
+    if (ui->label_techStats) {
+        ui->label_techStats->setText("码率: 0kb/s | FPS: 0.00 | CPU: 0.0% | 内存: 0.0MB");
+        ui->label_techStats->setStyleSheet("font-size: 12px; color: #666666;");
     }
 }
 
