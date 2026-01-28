@@ -97,30 +97,30 @@
 								</widget>
 							</item>
 							<item>
-								<spacer name="horizontalSpacer_bottomControl">
-									<property name="orientation">
-										<enum>Qt::Horizontal</enum>
-									</property>
-									<property name="sizeHint" stdset="0">
-										<size>
-											<width>40</width>
-											<height>20</height>
-										</size>
-									</property>
-								</spacer>
+								<spacer name="horizontalSpacer_topBarRight">
+											<property name="orientation">
+												<enum>Qt::Horizontal</enum>
+											</property>
+											<property name="sizeHint" stdset="0">
+												<size>
+													<width>40</width>
+													<height>20</height>
+												</size>
+											</property>
+										</spacer>
 							</item>
 							<item>
-								<spacer name="horizontalSpacer_bottomControl">
-									<property name="orientation">
-										<enum>Qt::Horizontal</enum>
-									</property>
-									<property name="sizeHint" stdset="0">
-										<size>
-											<width>40</width>
-											<height>20</height>
-										</size>
-									</property>
-								</spacer>
+								<spacer name="horizontalSpacer_topBarMiddle">
+											<property name="orientation">
+												<enum>Qt::Horizontal</enum>
+											</property>
+											<property name="sizeHint" stdset="0">
+												<size>
+													<width>40</width>
+													<height>20</height>
+												</size>
+											</property>
+										</spacer>
 							</item>
 							<item>
 								<widget class="QPushButton" name="pushButton_minimize">
@@ -565,8 +565,8 @@
 											</property>
 											<property name="icon">
 												<iconset>
-													<normaloff>:/images/screencast.png</normaloff>
-													<normalon>:/images/screencast.png</normalon>
+													<normaloff>:/images/screentcast.png</normaloff>
+													<normalon>:/images/screentcast.png</normalon>
 												</iconset>
 											</property>
 											<property name="iconSize">

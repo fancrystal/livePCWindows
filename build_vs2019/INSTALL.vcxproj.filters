@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\work\project\LiveAssistant\build_vs2019\CMakeFiles\affae212aae7de375e6b85836da3206c\INSTALL_force.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{CC6DB454-18C4-3A9C-9405-2378F195F97E}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
