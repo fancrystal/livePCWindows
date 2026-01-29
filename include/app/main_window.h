@@ -5,12 +5,17 @@
 #include <QListWidget>
 #include <QStyle>
 #include <QTimer>
+#include <QSystemTrayIcon>
+#include <QMenu>
+#include <QAction>
 #include <memory>
 #include <qlabel.h>
 #include <QPointer>
 
 #include "common/media_clock.h"
 #include "common/config_manager.h"
+
+class ExitDialog;
 
 namespace Ui {
 class MainWindow;
@@ -30,6 +35,7 @@ class CompositorEncoderBridge;
 class CaptureManagerIface;
 class Source;
 class SceneItem;
+class SettingsPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -155,11 +161,34 @@ private:
     bool microphone_enabled_ = true;
     bool speaker_enabled_ = true;
 
+    // System tray
+    QSystemTrayIcon* system_tray_icon_ = nullptr;
+    QMenu* system_tray_menu_ = nullptr;
+    QAction* tray_action_show_ = nullptr;
+    QAction* tray_action_exit_ = nullptr;
+
+    // Exit dialog preference (0: ask, 1: minimize, 2: exit)
+    int exit_preference_ = 0;
+    bool is_exiting_ = false;
+
     // Initialization
     void initialize_modules();
     void setup_ui_connections();
     void update_status(const QString& message);
     void setup_canvas_widget();
+    void setupTitleBarButtons();
+
+    // System tray methods
+    void setupSystemTray();
+    void cleanupSystemTray();
+    void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
+    void onTrayShowAction();
+    void onTrayExitAction();
+
+    // Exit handling
+    void handleExit();
+    void loadExitPreference();
+    void saveExitPreference(int preference);
 
     // A-mode: Scene is authoritative; keep Compositor layers in sync with SceneItems.
     void sync_scene_to_compositor();
@@ -177,6 +206,9 @@ private:
     void show_scene_item_settings(int index);
     void delete_scene_item(int index);
 
+    // Apply SettingsPanel changes helper
+    void applySettingsPanelChanges(SettingsPanel& dlg);
+
     // Audio control methods
     void toggle_microphone();
     void set_microphone_volume(float volume);
@@ -190,6 +222,8 @@ private:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void changeEvent(QEvent* event) override; // 处理窗口状态变化
+    void closeEvent(QCloseEvent* event) override; // 处理窗口关闭事件
 
     // Scene items UI management
     void update_scene_items();

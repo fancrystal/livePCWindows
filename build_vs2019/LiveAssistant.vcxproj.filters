@@ -13,6 +13,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\draggable_list_item.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\exit_dialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\live_list_window.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -150,6 +153,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\draggable_list_item.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_list_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -258,6 +264,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_settings_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -274,6 +283,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_settings_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_exit_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_main_window.h">
@@ -294,6 +306,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_settings_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -312,6 +327,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_settings_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="D:\work\project\LiveAssistant\resources\qml.qrc" />
@@ -327,6 +345,7 @@
     <None Include="D:\work\project\LiveAssistant\src\app\camera_settings.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\screen_share.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\settings_dialog.ui" />
+    <None Include="D:\work\project\LiveAssistant\src\app\exit_dialog.ui" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_Debug.stamp" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_Release.stamp" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_MinSizeRel.stamp" />

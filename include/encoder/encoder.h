@@ -58,7 +58,10 @@ public:
     
     // Force the next video frame to be a keyframe (IDR)
     ErrorCode force_keyframe();
-    
+
+    // Reset encoder state for new streaming session
+    ErrorCode reset_audio_encoder();
+
 private:
     std::unique_ptr<VideoEncoder> video_encoder_;
     VideoEncoderConfig video_config_;

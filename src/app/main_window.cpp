@@ -3,6 +3,7 @@
 #include "app/screen_share.h"
 #include "app/screen_capture_selector.h"
 #include "app/settings_dialog.h"
+#include "app/exit_dialog.h"
 #include "ui_main_window.h"
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/source_factory.h"
@@ -36,6 +37,8 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QFile>
+#include <QCloseEvent>
+#include <QSettings>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -44,6 +47,7 @@
 #include <QStyle>
 #include <QAbstractItemModel>
 #include <QVariant>
+#include <QThread>
 
 #include <unordered_set>
 #include <algorithm>
@@ -172,7 +176,7 @@ MainWindow::MainWindow(QWidget *parent) :
         });
     }
     if (ui->pushButton_close) {
-        connect(ui->pushButton_close, &QPushButton::clicked, this, &MainWindow::close);
+        connect(ui->pushButton_close, &QPushButton::clicked, this, &MainWindow::handleExit);
     }
 
     preview_timer_ = new QTimer(this);
@@ -293,6 +297,12 @@ MainWindow::MainWindow(QWidget *parent) :
     setup_ui_connections();
     setup_scene_list();
 
+    // 加载退出偏好设置
+    loadExitPreference();
+
+    // 初始化系统托盘图标
+    setupSystemTray();
+
     update_status("Ready");
 
     LOG_INFO("MainWindow created");
@@ -300,6 +310,9 @@ MainWindow::MainWindow(QWidget *parent) :
 
 MainWindow::~MainWindow() {
     LOG_INFO("MainWindow destroyed");
+
+    // 清理系统托盘
+    cleanupSystemTray();
 
     // Stop timers
     if (stats_update_timer_) {
@@ -616,54 +629,43 @@ void MainWindow::initialize_modules() {
 
 void MainWindow::setup_ui_connections() {
     // Settings dialog open (both gears)
-    auto open_settings_dialog = [this]() {
+    auto open_settings_dialog = [this](SettingsTab defaultTab = SettingsTab::Video) {
         if (!encoder_ || !audio_engine_) {
             QMessageBox::warning(this, "错误", "编码器或音频模块未初始化");
             return;
         }
 
-        SettingsDialog dlg(this);
-        dlg.set_current_video_config(encoder_->get_video_config());
-        dlg.set_current_audio_config(encoder_->get_audio_config());
-        dlg.set_available_microphones(audio_engine_->get_available_microphones(), audio_engine_->get_selected_microphone_id());
+        SettingsPanel dlg(this, defaultTab);
+        
+        // 设置视频配置
+        dlg.set_video_config(encoder_->get_video_config());
+        
+        // 设置音频配置
+        dlg.set_audio_config(encoder_->get_audio_config());
+        
+        // 设置麦克风列表
+        dlg.set_available_microphones(audio_engine_->get_available_microphones(), 
+                                       audio_engine_->get_selected_microphone_id());
+        
+        // 设置扬声器列表
+        dlg.set_available_speakers(audio_engine_->get_available_speakers(),
+                                    audio_engine_->get_selected_speaker_id());
+        
+        // 设置摄像头列表
+        if (video_engine_) {
+            dlg.set_available_cameras(video_engine_->get_available_camera_choices());
+        }
 
         if (dlg.exec() == QDialog::Accepted) {
-            // Apply
-            auto new_v = dlg.get_video_config();
-            auto new_a = dlg.get_audio_config();
-            const std::string mic_id = dlg.get_selected_microphone_id();
-
-            // Reinit audio engine/encoder
-            audio_engine_->initialize(new_a.sample_rate, new_a.channels);
-            encoder_->reinitialize_audio_encoder(new_a);
-
-            // Reinit video encoder + bridge settings
-            encoder_->reinitialize_video_encoder(new_v);
-            if (encoder_bridge_) {
-                encoder_bridge_->set_resolution(new_v.width, new_v.height);
-                encoder_bridge_->set_fps(new_v.fps);
-            }
-
-            // Select microphone (phase1: mic only)
-            if (!mic_id.empty()) {
-                audio_engine_->select_microphone(mic_id);
-            }
-
-            // If pushing, require restart to keep header/codecpar consistent
-            if (stream_pusher_ && stream_pusher_->is_pushing()) {
-                QMessageBox::information(this, "提示", "参数已修改，将重启推流使其生效");
-                if (encoder_bridge_) {
-                    encoder_bridge_->stop();
-                }
-                stream_pusher_->stop();
-                streams_registered_ = false;
-            }
+            applySettingsPanelChanges(dlg);
         }
     };
 
     // Settings dialog open (top bar settings button removed)
     if (ui->pushButton_settings) {
-        connect(ui->pushButton_settings, &QPushButton::clicked, this, open_settings_dialog);
+        connect(ui->pushButton_settings, &QPushButton::clicked, this, [this, open_settings_dialog]() {
+            open_settings_dialog(SettingsTab::Video);
+        });
     }
 
     // 状态标签初始化
@@ -808,7 +810,7 @@ void MainWindow::show_camera_selector() {
     }
 
     CameraSettingsDialog dialog(this);
-    dialog.set_available_camera_choices(camera_choices);
+    dialog.set_available_cameras(camera_choices);
     dialog.set_resolution("640x360");
     dialog.set_fps(30);
     dialog.set_pixel_format("PIXEL_FORMAT_YUY2");
@@ -1216,33 +1218,11 @@ void MainWindow::on_select_screen_share(const QString& target_id, bool is_screen
     QString target_type = is_screen_mode ? "屏幕" : "窗口";
     std::string source_id = std::string("capture_") + target_id.toStdString();
 
+    // 只记录日志，不弹窗提示
     if (capture_manager_ && capture_manager_->has_source(source_id)) {
-        QMessageBox::information(this, "屏幕共享",
-            QString("已开始共享 %1 (ID: %2)\n"
-                    "帧率: %3 fps\n"
-                    "分辨率: %4\n"
-                    "捕获鼠标: %5\n"
-                    "捕获边框: %6")
-            .arg(target_type)
-            .arg(target_id)
-            .arg(fps)
-            .arg(resolution)
-            .arg(capture_cursor ? "是" : "否")
-            .arg(capture_border ? "是" : "否"));
+        LOG_INFO("Screen sharing already active for: " + target_id.toStdString());
     } else {
-        QMessageBox::information(this, "屏幕共享",
-            QString("已选择 %1 目标 (ID: %2)\n"
-                    "帧率: %3 fps\n"
-                    "分辨率: %4\n"
-                    "捕获鼠标: %5\n"
-                    "捕获边框: %6\n\n"
-                    "WGC 捕获功能正在开发中（系统将回退到兼容方案以继续预览）。")
-            .arg(target_type)
-            .arg(target_id)
-            .arg(fps)
-            .arg(resolution)
-            .arg(capture_cursor ? "是" : "否")
-            .arg(capture_border ? "是" : "否"));
+        LOG_INFO("Screen share target selected, WGC capture started for: " + target_id.toStdString());
     }
 }
 
@@ -1691,8 +1671,128 @@ void MainWindow::toggle_scene_item_visibility(int index) {
     if (canvas_widget_) canvas_widget_->refresh();
 }
 
-void MainWindow::show_scene_item_settings(int /*index*/) {
-    QMessageBox::information(this, "提示", "设置功能开发中...");
+void MainWindow::show_scene_item_settings(int index) {
+    if (!scene_manager_ || !scene_manager_->get_current_scene()) {
+        LOG_ERROR("Scene manager or current scene not initialized");
+        return;
+    }
+    
+    auto scene = scene_manager_->get_current_scene();
+    auto items = scene->get_all_scene_items();
+    if (index < 0 || index >= static_cast<int>(items.size())) {
+        return;
+    }
+    
+    auto item = items[index];
+    auto source = item->get_source();
+    if (!source) {
+        QMessageBox::information(this, "提示", "设置功能开发中...");
+        return;
+    }
+    
+    std::string source_id = source->get_id();
+    QString source_type = QString::fromStdString(source->get_metadata());
+    
+    // 检查是否是摄像头源
+    if (QString::fromStdString(source_id).startsWith("camera_")) {
+        // 打开设置面板并切换到摄像头页面
+        if (!encoder_ || !audio_engine_ || !video_engine_) {
+            QMessageBox::warning(this, "错误", "模块未初始化");
+            return;
+        }
+
+        SettingsPanel dlg(this, SettingsTab::Camera);
+        
+        // 设置视频配置
+        dlg.set_video_config(encoder_->get_video_config());
+        
+        // 设置音频配置
+        dlg.set_audio_config(encoder_->get_audio_config());
+        
+        // 设置麦克风列表
+        dlg.set_available_microphones(audio_engine_->get_available_microphones(), 
+                                       audio_engine_->get_selected_microphone_id());
+        
+        // 设置扬声器列表
+        dlg.set_available_speakers(audio_engine_->get_available_speakers(),
+                                    audio_engine_->get_selected_speaker_id());
+        
+        // 设置摄像头列表并选中当前摄像头
+        auto camera_choices = video_engine_->get_available_camera_choices();
+        dlg.set_available_cameras(camera_choices);
+        
+        // 获取当前摄像头配置
+        // 这里可以从source中获取当前的分辨率、帧率等配置
+        // 暂时使用默认值
+        dlg.set_camera_config(source_id, "1280x720", 30, false);
+        
+        if (dlg.exec() == QDialog::Accepted) {
+            // 应用通用设置
+            applySettingsPanelChanges(dlg);
+            
+            // 摄像头特定处理
+            const std::string camera_id = dlg.get_selected_camera_id();
+            
+            // 如果摄像头改变了，需要重新初始化摄像头
+            if (camera_id != source_id) {
+                // 提示用户需要重新添加摄像头
+                QMessageBox::information(this, "提示", 
+                    "摄像头已更改，需要重新添加摄像头。\n请删除当前摄像头后重新添加。");
+            }
+            
+            LOG_INFO("Camera settings updated for source: " + source_id);
+        }
+    } else {
+        // 非摄像头项，暂时显示开发中
+        QMessageBox::information(this, "提示", "设置功能开发中...");
+    }
+}
+
+void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
+    // Apply video settings
+    auto new_v = dlg.get_video_config();
+    
+    // Apply audio settings
+    auto new_a = dlg.get_audio_config();
+    new_a.bitrate = encoder_->get_audio_config().bitrate; // Keep bitrate from existing config
+    
+    const std::string mic_id = dlg.get_selected_microphone_id();
+    const std::string speaker_id = dlg.get_selected_speaker_id();
+    float mic_volume = dlg.get_microphone_volume();
+    float speaker_volume = dlg.get_speaker_volume();
+
+    // Reinit audio engine/encoder
+    audio_engine_->initialize(new_a.sample_rate, new_a.channels);
+    audio_engine_->set_microphone_volume(mic_volume);
+    audio_engine_->set_speaker_volume(speaker_volume);
+    encoder_->reinitialize_audio_encoder(new_a);
+
+    // Reinit video encoder + bridge settings
+    encoder_->reinitialize_video_encoder(new_v);
+    if (encoder_bridge_) {
+        encoder_bridge_->set_resolution(new_v.width, new_v.height);
+        encoder_bridge_->set_fps(new_v.fps);
+    }
+
+    // Select microphone
+    if (!mic_id.empty()) {
+        audio_engine_->select_microphone(mic_id);
+    }
+    
+    // Select speaker
+    if (!speaker_id.empty()) {
+        audio_engine_->select_speaker(speaker_id);
+    }
+
+    // If pushing, require restart to keep header/codecpar consistent
+    if (stream_pusher_ && stream_pusher_->is_pushing()) {
+        QMessageBox::information(this, "提示", "参数已修改，将重启推流使其生效");
+        if (encoder_bridge_) {
+            encoder_bridge_->stop();
+        }
+        stream_pusher_->stop();
+        streams_registered_ = false;
+    }
 }
 
 void MainWindow::delete_scene_item(int index) {
@@ -2038,6 +2138,244 @@ void MainWindow::set_canvas_config(const CanvasConfig& config) {
 
 const CanvasConfig& MainWindow::get_canvas_config() const {
     return canvas_config_;
+}
+
+void MainWindow::changeEvent(QEvent* event) {
+    QMainWindow::changeEvent(event);
+    
+    if (event->type() == QEvent::WindowStateChange) {
+        if (ui->pushButton_maximize) {
+            if (isMaximized()) {
+                ui->pushButton_maximize->setText("◱");
+                ui->pushButton_maximize->setProperty("maximized", true);
+            } else {
+                ui->pushButton_maximize->setText("⤡");
+                ui->pushButton_maximize->setProperty("maximized", false);
+            }
+            ui->pushButton_maximize->style()->unpolish(ui->pushButton_maximize);
+            ui->pushButton_maximize->style()->polish(ui->pushButton_maximize);
+        }
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    LOG_INFO("MainWindow close event triggered");
+    
+    // 如果已经在退出过程中，直接接受
+    if (is_exiting_) {
+        event->accept();
+        return;
+    }
+    
+    // 如果正在推流，提示用户
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        int ret = QMessageBox::question(this, "推流进行中",
+            "当前正在推流直播中，确定要退出吗？\n退出后将中断直播推流。",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ret == QMessageBox::No) {
+            event->ignore();
+            return;
+        }
+    }
+    
+    // 显示退出确认对话框
+    ExitDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        ExitDialog::Action action = dialog.getSelectedAction();
+        
+        // 如果用户选择了记住选择
+        if (dialog.shouldRememberChoice()) {
+            if (action == ExitDialog::Action::Minimize) {
+                saveExitPreference(1); // 记住最小化
+            } else {
+                saveExitPreference(2); // 记住退出
+            }
+        }
+        
+        if (action == ExitDialog::Action::Minimize) {
+            LOG_INFO("User chose to minimize to tray");
+            is_exiting_ = false;
+            event->ignore();
+            showMinimized();
+        } else {
+            LOG_INFO("User chose to exit");
+            is_exiting_ = true;
+            
+            // 停止所有定时器
+            if (live_duration_timer_) live_duration_timer_->stop();
+            if (stats_update_timer_) stats_update_timer_->stop();
+            if (system_info_timer_) system_info_timer_->stop();
+            if (encoding_timer_) encoding_timer_->stop();
+            
+            // 停止推流
+            if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+                encoder_bridge_->stop_streaming();
+            }
+            
+            // 清理资源并退出
+            cleanupSystemTray();
+            event->accept();
+            QMainWindow::close();
+        }
+    } else {
+        event->ignore();
+    }
+}
+
+void MainWindow::setupSystemTray() {
+    // 检查系统是否支持托盘图标
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        LOG_WARNING("System tray is not available on this system");
+        return;
+    }
+    
+    // 创建托盘图标菜单
+    system_tray_menu_ = new QMenu(this);
+    
+    // 显示窗口动作
+    tray_action_show_ = new QAction("显示窗口", this);
+    connect(tray_action_show_, &QAction::triggered, this, &MainWindow::onTrayShowAction);
+    system_tray_menu_->addAction(tray_action_show_);
+    
+    // 分隔符
+    system_tray_menu_->addSeparator();
+    
+    // 退出动作
+    tray_action_exit_ = new QAction("退出程序", this);
+    connect(tray_action_exit_, &QAction::triggered, this, &MainWindow::onTrayExitAction);
+    system_tray_menu_->addAction(tray_action_exit_);
+    
+    // 创建系统托盘图标
+    system_tray_icon_ = new QSystemTrayIcon(this);
+    
+    // 设置托盘图标
+    QIcon trayIcon(":/images/Frame_icon.png");
+    if (!trayIcon.isNull()) {
+        system_tray_icon_->setIcon(trayIcon);
+    } else {
+        // 使用默认图标
+        system_tray_icon_->setIcon(QIcon::fromTheme("application-default-icon"));
+    }
+    
+    system_tray_icon_->setToolTip("直播伴侣");
+    system_tray_icon_->setContextMenu(system_tray_menu_);
+    
+    // 连接托盘图标激活信号
+    connect(system_tray_icon_, &QSystemTrayIcon::activated,
+            this, &MainWindow::onTrayIconActivated);
+    
+    // 显示托盘图标
+    system_tray_icon_->show();
+    
+    LOG_INFO("System tray icon initialized");
+}
+
+void MainWindow::cleanupSystemTray() {
+    if (system_tray_icon_) {
+        system_tray_icon_->hide();
+        delete system_tray_icon_;
+        system_tray_icon_ = nullptr;
+    }
+    
+    if (system_tray_menu_) {
+        delete system_tray_menu_;
+        system_tray_menu_ = nullptr;
+    }
+    
+    tray_action_show_ = nullptr;
+    tray_action_exit_ = nullptr;
+}
+
+void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
+    switch (reason) {
+    case QSystemTrayIcon::Trigger:
+    case QSystemTrayIcon::DoubleClick:
+        // 双击或单击显示窗口
+        onTrayShowAction();
+        break;
+    case QSystemTrayIcon::MiddleClick:
+        // 中键点击最小化到托盘
+        showMinimized();
+        break;
+    default:
+        break;
+    }
+}
+
+void MainWindow::onTrayShowAction() {
+    showNormal();
+    activateWindow();
+    raise();
+    
+    // 确保窗口在最前端显示
+    setWindowFlags(windowFlags() & ~Qt::Tool);
+    show();
+}
+
+void MainWindow::onTrayExitAction() {
+    is_exiting_ = true;
+    
+    // 停止所有定时器
+    if (live_duration_timer_) live_duration_timer_->stop();
+    if (stats_update_timer_) stats_update_timer_->stop();
+    if (system_info_timer_) system_info_timer_->stop();
+    if (encoding_timer_) encoding_timer_->stop();
+    
+    // 停止推流
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        encoder_bridge_->stop_streaming();
+    }
+    
+    // 清理资源并退出
+    cleanupSystemTray();
+    QMainWindow::close();
+}
+
+void MainWindow::handleExit() {
+    // 根据退出偏好设置处理退出
+    if (exit_preference_ == 1) {
+        // 记住最小化
+        LOG_INFO("Exit preference: minimize to tray");
+        showMinimized();
+        return;
+    } else if (exit_preference_ == 2) {
+        // 记住退出 - 直接退出，不显示对话框
+        LOG_INFO("Exit preference: direct exit");
+        is_exiting_ = true;
+        
+        // 停止所有定时器
+        if (live_duration_timer_) live_duration_timer_->stop();
+        if (stats_update_timer_) stats_update_timer_->stop();
+        if (system_info_timer_) system_info_timer_->stop();
+        if (encoding_timer_) encoding_timer_->stop();
+        
+        // 停止推流
+        if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+            encoder_bridge_->stop_streaming();
+        }
+        
+        // 清理资源并退出
+        cleanupSystemTray();
+        close(); // 这会触发 closeEvent，但 is_exiting_ 为 true，所以会正常关闭
+        return;
+    }
+    
+    // 默认显示退出确认对话框 - closeEvent 会处理对话框
+    // 这里只需触发 closeEvent 即可
+    close();
+}
+
+void MainWindow::loadExitPreference() {
+    QSettings settings("LiveAssistant", "Settings");
+    exit_preference_ = settings.value("exitPreference", 0).toInt();
+    LOG_INFO("Loaded exit preference: " + std::to_string(exit_preference_));
+}
+
+void MainWindow::saveExitPreference(int preference) {
+    exit_preference_ = preference;
+    QSettings settings("LiveAssistant", "Settings");
+    settings.setValue("exitPreference", preference);
+    LOG_INFO("Saved exit preference: " + std::to_string(preference));
 }
 
 } // namespace live_assistant

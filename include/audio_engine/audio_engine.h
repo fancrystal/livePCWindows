@@ -41,7 +41,12 @@ public:
 
     std::vector<AudioDeviceInfo> get_available_microphones();
     bool select_microphone(const std::string& mic_id);
-    std::string get_selected_microphone_id() const;
+    std::string get_selected_microphone_id();
+
+    // Speaker device methods
+    std::vector<AudioDeviceInfo> get_available_speakers();
+    bool select_speaker(const std::string& speaker_id);
+    std::string get_selected_speaker_id();
 
     bool enable_noise_suppression(bool enable);
     bool enable_echo_cancellation(bool enable);
@@ -50,18 +55,18 @@ public:
 
     // Volume control (0.0 to 1.0)
     bool set_microphone_volume(float volume);
-    float get_microphone_volume() const;
+    float get_microphone_volume();
 
     // Mute/unmute
     bool set_microphone_mute(bool mute);
-    bool get_microphone_mute() const;
+    bool get_microphone_mute();
 
     // Speaker volume control (system level)
     bool set_speaker_volume(float volume);
-    float get_speaker_volume() const;
+    float get_speaker_volume();
 
     bool set_speaker_mute(bool mute);
-    bool get_speaker_mute() const;
+    bool get_speaker_mute();
 
     bool add_audio_source(std::shared_ptr<AudioEngine> source);
     bool remove_audio_source(std::shared_ptr<AudioEngine> source);
@@ -74,16 +79,17 @@ private:
     ErrorCode initialize_wasapi();
     void cleanup_wasapi();
 
-    int sample_rate_ = 48000;
-    int channels_ = 2;
+    int sample_rate_ = 0;
+    int channels_ = 0;
 
     bool is_capturing_ = false;
     std::string selected_microphone_id_;
+    std::string selected_speaker_id_;
 
     bool noise_suppression_enabled_ = false;
     bool echo_cancellation_enabled_ = false;
 
-    // Volume control
+    // Volume control (protected by state_mutex_)
     float microphone_volume_ = 1.0f;
     bool microphone_muted_ = false;
     float speaker_volume_ = 1.0f;
@@ -101,6 +107,9 @@ private:
     std::mutex frame_mutex_;
     std::condition_variable frame_cv_;
     std::queue<std::shared_ptr<AudioFrame>> frame_queue_;
+
+    // Protects state variables that may be accessed from multiple threads
+    std::mutex state_mutex_;
 
     std::vector<std::weak_ptr<AudioEngine>> audio_sources_;
     std::mutex sources_mutex_;

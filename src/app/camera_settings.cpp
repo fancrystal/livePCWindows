@@ -127,20 +127,7 @@ CameraSettingsDialog::CameraSettingsDialog(QWidget *parent) :
     ui->stackedWidget->setCurrentWidget(ui->page_basic);
 }
 
-void CameraSettingsDialog::set_available_cameras(const std::vector<std::string>& cameras) {
-    // Backward-compatible API: treat input as display names only.
-    ui->comboBox_camera->clear();
-
-    for (int i = 0; i < static_cast<int>(cameras.size()); ++i) {
-        ui->comboBox_camera->addItem(QString::fromStdString(cameras[i]), QString());
-    }
-
-    if (!cameras.empty()) {
-        ui->comboBox_camera->setCurrentIndex(0);
-    }
-}
-
-void CameraSettingsDialog::set_available_camera_choices(const std::vector<VideoEngine::CameraChoice>& cameras) {
+void CameraSettingsDialog::set_available_cameras(const std::vector<VideoEngine::CameraChoice>& cameras) {
     ui->comboBox_camera->clear();
     
     for (const auto& cam : cameras) {

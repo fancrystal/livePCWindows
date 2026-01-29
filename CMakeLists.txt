@@ -60,7 +60,7 @@ set(HTTP_SOURCES "src/http/network_manager.cpp")
 set(HTTP_HEADERS "include/http/network_manager.h")
 
 # UI files - let Qt handle them automatically
-set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui")
+set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui" "src/app/exit_dialog.ui")
 
 # Add QML and image resources (resources/qml.qrc)
 qt_add_resources(RCC_QML_SOURCES resources/qml.qrc)

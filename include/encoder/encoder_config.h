@@ -73,6 +73,10 @@ struct AudioEncoderConfig {
     int bitrate = 128000;  // 默认比特率 (128kbps)
     AudioEncodingMode mode = AudioEncodingMode::CBR;  // 默认使用CBR
     
+    // 音量控制 (0.0 - 1.0)
+    float mic_volume = 0.8f;  // 麦克风音量，默认80%
+    float speaker_volume = 0.8f;  // 扬声器音量，默认80%
+    
     // Opus特定参数
     int opus_complexity = 9;  // 默认复杂度 (0-10, 10为最高)
     int opus_frame_size = 20;  // 默认帧大小 (毫秒) (2.5, 5, 10, 20, 40, 60)

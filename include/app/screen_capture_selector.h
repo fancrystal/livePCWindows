@@ -1,18 +1,17 @@
 #pragma once
 
 #include <QDialog>
-#include <QListWidget>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QTimer>
+#include <QScrollArea>
+#include <QEvent>
 #include <vector>
 #include <memory>
 #include <chrono>
 #include <QImage>
-#include <QFutureWatcher>
-#include <QMutex>
 
 namespace live_assistant {
 
@@ -23,10 +22,7 @@ struct CaptureTarget {
     std::string id;           // Unique identifier (monitor device name or window handle)
     std::string name;         // Display name
     QPixmap thumbnail;        // Low-res thumbnail for list view
-    QPixmap hd_preview;       // High-res preview, generated on-demand
     QSize size;               // Original size
-    std::chrono::steady_clock::time_point last_update = std::chrono::steady_clock::now();
-    bool updating = false;
 };
 
 class ScreenCaptureSelector : public QDialog {
@@ -41,11 +37,8 @@ public:
 
 private slots:
     void refresh_targets();
-    void on_item_selection_changed();
     void on_ok_clicked();
     void on_cancel_clicked();
-    void update_thumbnails();
-    void start_async_thumbnail_update(int index);
 
 private:
     void setup_ui();
@@ -53,20 +46,21 @@ private:
     void enumerate_windows();
     void create_thumbnail_for_screen(CaptureTarget& target);
     void create_thumbnail_for_window(CaptureTarget& target);
+    QWidget* create_thumbnail_widget(const CaptureTarget& target, int width, int height);
     QPixmap create_window_thumbnail(HWND hwnd, int width, int height);
     QPixmap create_screen_thumbnail(const QString& device_name, int thumb_width, int thumb_height);
+    void on_thumbnail_clicked(int index);
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
-    QListWidget* list_widget_;
-    QLabel* preview_label_;
     QPushButton* ok_button_;
     QPushButton* cancel_button_;
     QPushButton* refresh_button_;
 
-    QTimer* update_timer_;
+    QWidget* thumbnail_container_;
+    QHBoxLayout* thumbnail_layout_;
 
     std::vector<CaptureTarget> targets_;
     CaptureTarget* selected_target_ = nullptr;
-    // No persistent watchers: async updates use detached std::thread and queued UI updates
 };
 
 } // namespace live_assistant

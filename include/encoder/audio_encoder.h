@@ -38,6 +38,9 @@ public:
 
     virtual ErrorCode set_bitrate(int bitrate) = 0;
     virtual int get_bitrate() const = 0;
+
+    // Reset encoder state (for new streaming session)
+    virtual ErrorCode reset() { return ErrorCode::SUCCESS; }
 };
 
 class OpusEncoder : public AudioEncoder {
@@ -93,11 +96,19 @@ public:
     // Flush internal encoder buffers and return remaining packets.
     ErrorCode flush(std::vector<EncodedPacketPtr>& packets);
 
+    // Reset encoder state (for new streaming session)
+    ErrorCode reset() override;
+
 private:
     ErrorCode send_frame_internal(const std::shared_ptr<AudioFrame>& frame);
     ErrorCode send_flush();
     ErrorCode receive_packets(std::vector<EncodedPacketPtr>& packets);
     ErrorCode ensure_swr();
+    void write_samples_to_frame(const std::vector<std::vector<float>>& pending,
+                                int samples_to_write,
+                                AVFrame* frame,
+                                int fmt,
+                                int channels);
 
     AudioEncoderConfig config_;
     bool initialized_ = false;

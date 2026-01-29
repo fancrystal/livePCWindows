@@ -15,16 +15,16 @@
 		</property>
 		<property name="styleSheet">
 			<string notr="true">
-				QMainWindow { background-color: #1a1a1a; color: #ffffff; }
-				QWidget { background-color: #1a1a1a; color: #ffffff; }
+				QMainWindow { background-image: url(:/images/main_wnd_bk.png); background-repeat: no-repeat; background-position: center; background-color: transparent; color: #ffffff; }
+				QWidget { background-color: transparent; color: #ffffff; }
 				QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 8px 16px; }
 				QPushButton:hover { background-color: #444444; }
 				QPushButton:pressed { background-color: #555555; }
 				QLineEdit { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; }
 				QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; }
-				QScrollArea { background-color: #222222; border: 1px solid #333333; }
+				QScrollArea { background-color: transparent; border: 1px solid #333333; }
 				QSlider::groove:horizontal { background-color: #333333; height: 6px; border-radius: 3px; }
-				QSlider::handle:horizontal { background-color: #007acc; width: 16px; height: 16px; border-radius: 8px; margin: -5px 0; }
+				QSlider::handle:horizontal { background-color: #007a	cc; width: 16px; height: 16px; border-radius: 8px; margin: -5px 0; }
 				QLabel { color: #ffffff; }
 			</string>
 		</property>
@@ -125,30 +125,30 @@
 							<item>
 								<widget class="QPushButton" name="pushButton_minimize">
 									<property name="text">
-										<string>—</string>
+										<string>─</string>
 									</property>
 									<property name="styleSheet">
-										<string notr="true">border: none; background: transparent; font-size: 16px;</string>
+										<string notr="true">border: none; background: transparent; font-size: 18px;</string>
 									</property>
 								</widget>
 							</item>
 							<item>
 								<widget class="QPushButton" name="pushButton_maximize">
 									<property name="text">
-										<string>□</string>
+										<string>⤡</string>
 									</property>
 									<property name="styleSheet">
-										<string notr="true">border: none; background: transparent; font-size: 16px;</string>
+										<string notr="true">border: none; background: transparent; font-size: 18px;</string>
 									</property>
 								</widget>
 							</item>
 							<item>
 								<widget class="QPushButton" name="pushButton_close">
 									<property name="text">
-										<string>×</string>
+										<string>✕</string>
 									</property>
 									<property name="styleSheet">
-										<string notr="true">border: none; background: transparent; font-size: 16px;</string>
+										<string notr="true">border: none; background: transparent; font-size: 18px;</string>
 									</property>
 								</widget>
 							</item>

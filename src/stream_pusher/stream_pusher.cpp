@@ -135,30 +135,26 @@ ErrorCode StreamPusher::push_packet(EncodedPacketPtr packet) {
         return ErrorCode::INVALID_STATE;
     }
 
-    Log::info("push_packet called, attempting to enqueue packet");
     if (!push_queue_.push(std::move(packet))) {
         Log::warn("Failed to push packet to queue, queue is full");
         return ErrorCode::QUEUE_FULL;
     }
 
-    Log::info("Packet enqueued successfully");
     return ErrorCode::SUCCESS;
 }
 
 void StreamPusher::push_thread_func() {
     Log::info("Push thread started");
-    
+
     EncodedPacketPtr packet;
-    
+
     while (!stop_thread_) {
         if (push_queue_.pop(packet, 100)) {
-            Log::info("Popped packet from queue, sending...");
             ErrorCode result = rtmp_pusher_.send_packet(packet);
-            Log::info("send_packet returned: " + std::to_string(static_cast<int>(result)));
 
             if (result != ErrorCode::SUCCESS) {
                 Log::error("Failed to send packet: " + std::to_string(static_cast<int>(result)));
-                
+
                 if (result == ErrorCode::NOT_CONNECTED) {
                     if (config_.auto_reconnect) {
                         ErrorCode reconnect_result = try_reconnect();
@@ -177,8 +173,10 @@ void StreamPusher::push_thread_func() {
                 }
             }
         }
+        // 避免CPU空转，短暂休眠
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    
+
     Log::info("Push thread exited");
 }
 

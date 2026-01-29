@@ -21,6 +21,7 @@ INCLUDEPATH += include
 SOURCES += \
     src/app/main.cpp \
     src/app/main_window.cpp \
+    src/app/exit_dialog.cpp \
     src/scene_manager/scene_manager.cpp \
     src/video_engine/video_engine.cpp \
     src/audio_engine/audio_engine.cpp \
@@ -29,6 +30,7 @@ SOURCES += \
 
 HEADERS += \
     include/app/main_window.h \
+    include/app/exit_dialog.h \
     include/scene_manager/scene_manager.h \
     include/video_engine/video_engine.h \
     include/audio_engine/audio_engine.h \
@@ -38,7 +40,8 @@ HEADERS += \
     include/common/error.h
 
 FORMS += \
-    src/app/main_window.ui
+    src/app/main_window.ui \
+    src/app/exit_dialog.ui
 
 # Add qml resources for the new QML login UI
 RESOURCES += \

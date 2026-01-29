@@ -121,8 +121,12 @@ ErrorCode RTMPPusher::open_output() {
     }
 
     std::string full_url = config_.server_url + "/" + config_.stream_key;
-    //test
-    full_url = "D://test.flv";
+
+    // 调试模式：可选择输出到本地文件进行测试
+    // 要测试本地文件，请取消下面一行的注释：
+    // full_url = "D:/test.flv";
+    // 正常推流时，请确保这一行被注释掉
+
     int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -130,11 +134,12 @@ ErrorCode RTMPPusher::open_output() {
         LOG_ERROR(std::string("Failed to open output URL: ") + full_url + ", error: " + errbuf);
         return ErrorCode::CONNECT_FAILED;
     }
-    
+
+    LOG_INFO(std::string("RTMP output opened: ") + full_url);
     connected_ = true;
     stats_.connected = true;
     stats_.reconnect_attempts++;
-    
+
     return ErrorCode::SUCCESS;
 }
 
@@ -245,7 +250,6 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         // If we were requested to force next keyframe, mark it
         if (force_next_keyframe_.exchange(false)) {
             avpkt->flags |= AV_PKT_FLAG_KEY;
-            LOG_INFO("RTMPPusher::send_packet - forcing this video packet as keyframe due to bridge request");
         }
 
         // Ensure we don't send non-key video frames before the first keyframe (to avoid corrupted first frame)

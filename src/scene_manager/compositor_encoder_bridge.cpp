@@ -152,15 +152,10 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     }
     // Ensure audio/video streams are registered before starting the pusher.
     if (encoder_) {
-        LOG_INFO("[BRIDGE] Registering audio/video streams with StreamPusher");
         AVCodecParameters* a_par = encoder_->get_audio_codec_parameters();
         AVRational a_tb = encoder_->get_audio_time_base();
         AVCodecParameters* v_par = encoder_->get_video_codec_parameters();
         AVRational v_tb = encoder_->get_video_time_base();
-
-        LOG_INFO(std::string("[BRIDGE] encoder_ present: ") + (encoder_ ? "yes" : "no"));
-        LOG_INFO(std::string("[BRIDGE] audio codec params: ") + (a_par ? "valid" : "null") +
-                 ", video codec params: " + (v_par ? "valid" : "null"));
 
         // If video codec params are null, attempt to fallback to software encoder and reinitialize.
         if (!v_par && encoder_) {
@@ -170,20 +165,9 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
             vc.hw_accel = HWAccelerationType::NONE;
             ErrorCode r = encoder_->reinitialize_video_encoder(vc);
             if (r == ErrorCode::SUCCESS) {
-                LOG_INFO("[BRIDGE] Reinitialized encoder to software, retrying codec parameter fetch");
                 v_par = encoder_->get_video_codec_parameters();
                 v_tb = encoder_->get_video_time_base();
-                LOG_INFO(std::string("[BRIDGE] audio codec params: ") + (a_par ? "valid" : "null") +
-                         ", video codec params (after fallback): " + (v_par ? "valid" : "null"));
-            } else {
-                LOG_ERROR("[BRIDGE] Failed to reinitialize encoder to software: " + std::to_string(static_cast<int>(r)));
             }
-        }
-        if (a_par) {
-            LOG_INFO(std::string("[BRIDGE] audio time_base: ") + std::to_string(a_tb.num) + "/" + std::to_string(a_tb.den));
-        }
-        if (v_par) {
-            LOG_INFO(std::string("[BRIDGE] video time_base: ") + std::to_string(v_tb.num) + "/" + std::to_string(v_tb.den));
         }
 
         if (!a_par || a_tb.den <= 0 || !v_par || v_tb.den <= 0) {
@@ -197,26 +181,21 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
         ErrorCode ra = stream_pusher_->register_audio_stream(a_par, a_tb);
         ErrorCode rv = stream_pusher_->register_video_stream(v_par, v_tb);
 
-        LOG_INFO("[BRIDGE] register_audio_stream result: " + std::to_string(static_cast<int>(ra)) +
-                 ", register_video_stream result: " + std::to_string(static_cast<int>(rv)));
-
         avcodec_parameters_free(&a_par);
         avcodec_parameters_free(&v_par);
 
         if (ra != ErrorCode::SUCCESS || rv != ErrorCode::SUCCESS) {
-            LOG_ERROR("[BRIDGE] Failed to register audio/video streams, audio_err=" + std::to_string(static_cast<int>(ra)) +
-                      ", video_err=" + std::to_string(static_cast<int>(rv)));
+            LOG_ERROR("[BRIDGE] Failed to register audio/video streams");
             emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(ErrorCode::INVALID_STATE)));
             return false;
         }
-    } else {
-        LOG_WARNING("[BRIDGE] Encoder not set, skipping stream registration (StreamPusher may fail if streams not registered)");
     }
 
     // Request encoder to emit a keyframe for the next encoded frame before starting push
     if (encoder_) {
-        ErrorCode fk = encoder_->force_keyframe();
-        LOG_INFO(std::string("[BRIDGE] Requested encoder to force next keyframe: ") + std::to_string(static_cast<int>(fk)));
+        encoder_->force_keyframe();
+        // Reset audio encoder to ensure PTS starts from 0 for proper A/V sync
+        encoder_->reset_audio_encoder();
     }
 
     ErrorCode start_result = stream_pusher_->start();
@@ -319,7 +298,6 @@ void CompositorEncoderBridge::encode_and_push_frame() {
         auto current_timestamp_ms = current_timestamp_us / 1000;
 
         // 编码视频帧
-        LOG_INFO("[BRIDGE] encode_and_push_frame start, ts_ms=" + std::to_string(current_timestamp_ms));
         auto video_frame = capture_compositor_frame();
         if (video_frame) {
             video_frame->timestamp = MediaTimestamp(current_timestamp_us);
@@ -327,33 +305,14 @@ void CompositorEncoderBridge::encode_and_push_frame() {
 
             std::vector<EncodedPacketPtr> video_packets;
             ErrorCode video_result = encoder_->encode_video_frame(video_frame, video_packets);
-            LOG_INFO("[BRIDGE] video encode result=" + std::to_string(static_cast<int>(video_result)) +
-                     ", packets=" + std::to_string(video_packets.size()));
 
             if (video_result == ErrorCode::SUCCESS && !video_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
                 for (auto& p : video_packets) {
                     if (!p) continue;
                     p->wallclock_us = current_timestamp_us;
-                    // diagnostic: log packet internals before pushing
-                    if (p->pkt) {
-                        LOG_INFO(std::string("[DIAG] Video packet prepared: size=") + std::to_string(p->pkt->size) +
-                                 ", pts=" + std::to_string(p->pts) + ", dts=" + std::to_string(p->dts) +
-                                 ", key=" + std::to_string(p->is_keyframe));
-                    } else {
-                        LOG_INFO("[DIAG] Video packet prepared: pkt=null");
-                    }
-                    // Also log whether we requested forced keyframe for this frame
-                    if (p->is_keyframe) {
-                        LOG_INFO("[DIAG] Video packet is keyframe");
-                    }
                     stream_pusher_->push_packet(p);
                 }
-                LOG_INFO("[STREAMING] Encoded and pushed video frame, packets: " + std::to_string(video_packets.size()));
-            } else if (video_result != ErrorCode::SUCCESS) {
-                LOG_WARNING("Failed to encode video frame: " + std::to_string(static_cast<int>(video_result)));
             }
-        } else {
-            LOG_WARNING("Failed to capture frame from compositor");
         }
 
         // 编码音频帧（优先使用音频引擎），若无可用帧则自动合成静音帧以保持A/V同步
@@ -369,7 +328,7 @@ void CompositorEncoderBridge::encode_and_push_frame() {
 
         if (!audio_frame) {
             // 自动生成静音帧以保持A/V同步
-            int sample_rate = 48000;
+            int sample_rate = 44100;
             int channels = 2;
             if (audio_engine_) {
                 sample_rate = audio_engine_->get_sample_rate();
@@ -379,12 +338,8 @@ void CompositorEncoderBridge::encode_and_push_frame() {
                 if (acfg.sample_rate > 0) sample_rate = acfg.sample_rate;
                 if (acfg.channels > 0) channels = acfg.channels;
             }
-            // 使用更大的缓冲区以减少静音帧的数量
-            int samples = 2048;  // 46ms at 44.1kHz, should match typical video frame interval
+            int samples = 2048;
             audio_frame = std::make_shared<AudioFrame>(sample_rate, channels, samples);
-            LOG_DEBUG("[STREAMING] Using synthetic silent audio frame for A/V sync: " +
-                     std::to_string(sample_rate) + "Hz, channels=" + std::to_string(channels) +
-                     ", samples=" + std::to_string(samples));
         }
 
         if (audio_frame) {
@@ -393,40 +348,6 @@ void CompositorEncoderBridge::encode_and_push_frame() {
 
             std::vector<EncodedPacketPtr> audio_packets;
             ErrorCode audio_result = encoder_->encode_audio_frame(audio_frame, audio_packets);
-            LOG_INFO("[BRIDGE] audio encode result=" + std::to_string(static_cast<int>(audio_result)) +
-                     ", packets=" + std::to_string(audio_packets.size()) +
-                     (using_real_audio ? " (real audio)" : " (silent audio)"));
-
-            // Diagnostic dump: save a few seconds of raw PCM before encoding to help debug distortions
-            if (using_real_audio && audio_frame->raw_data) {
-                static FILE* pcm_dump_fp = nullptr;
-                static size_t pcm_dump_written = 0;
-                const size_t dump_limit_bytes = 5 * 44100 * 2 * sizeof(int16_t); // 5 seconds @44.1k stereo int16
-                if (!pcm_dump_fp) {
-                    // Use absolute path inside project to avoid relative working-dir issues
-                    std::string path = "D:\\\\work\\\\project\\\\LiveAssistant\\\\build_vs2019\\\\audio_capture_dump.pcm";
-                    pcm_dump_fp = fopen(path.c_str(), "wb");
-                    if (!pcm_dump_fp) {
-                        LOG_WARNING(std::string("[DIAG] Failed to open PCM dump file: ") + path);
-                    } else {
-                        LOG_INFO(std::string("[DIAG] PCM dump file opened: ") + path);
-                    }
-                }
-                if (pcm_dump_fp && pcm_dump_written < dump_limit_bytes) {
-                    size_t frame_bytes = static_cast<size_t>(audio_frame->samples) * static_cast<size_t>(audio_frame->channels) * sizeof(int16_t);
-                    size_t to_write = frame_bytes;
-                    if (pcm_dump_written + to_write > dump_limit_bytes) {
-                        to_write = dump_limit_bytes - pcm_dump_written;
-                    }
-                    fwrite(audio_frame->raw_data, 1, to_write, pcm_dump_fp);
-                    pcm_dump_written += to_write;
-                    if (pcm_dump_written >= dump_limit_bytes) {
-                        LOG_INFO("[DIAG] PCM dump reached limit (" + std::to_string(pcm_dump_written) + " bytes)");
-                        fclose(pcm_dump_fp);
-                        pcm_dump_fp = nullptr;
-                    }
-                }
-            }
 
             if (audio_result == ErrorCode::SUCCESS && !audio_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
                 for (auto& p : audio_packets) {
@@ -434,15 +355,7 @@ void CompositorEncoderBridge::encode_and_push_frame() {
                     p->wallclock_us = current_timestamp_us;
                     stream_pusher_->push_packet(p);
                 }
-                LOG_INFO("[STREAMING] Encoded and pushed audio frame, packets: " + std::to_string(audio_packets.size()));
-            } else if (audio_result != ErrorCode::SUCCESS) {
-                LOG_WARNING("Failed to encode audio frame: " + std::to_string(static_cast<int>(audio_result)));
-            } else {
-                LOG_DEBUG("[STREAMING] audio packets empty after encode");
             }
-        } else {
-            // This should not happen with the new logic above
-            LOG_WARNING("[STREAMING] Unexpected: no audio frame available after automatic silent audio generation");
         }
 
     } catch (const std::exception& ex) {
@@ -459,9 +372,6 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
     if (img.isNull()) {
         return nullptr;
     }
-
-    LOG_INFO("[DIAG] capture_compositor_frame: rendered QImage size: " + std::to_string(img.width()) + "x" + std::to_string(img.height()) +
-             ", expected canvas: " + std::to_string(width_) + "x" + std::to_string(height_));
 
     // Convert composed RGBA image to NV12 for (future) HW-friendly pipeline.
     auto frame = std::make_shared<VideoFrame>();

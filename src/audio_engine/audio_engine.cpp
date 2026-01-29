@@ -22,18 +22,18 @@ AudioEngine::~AudioEngine() {
     LOG_INFO("AudioEngine destructor called");
 }
 
-bool AudioEngine::initialize(int sample_rate, int channels) {
+bool AudioEngine::initialize(int /*sample_rate*/, int /*channels*/) {
     if (is_capturing_) {
         stop_capture();
     }
     cleanup_wasapi();
 
-    sample_rate_ = sample_rate;
-    channels_ = channels;
+    // Always use device native format - user cannot override sample rate or channels
+    // The parameters are kept for API compatibility but are ignored
+    sample_rate_ = 0;  // Will be set by initialize_wasapi() from device format
+    channels_ = 0;
 
-    LOG_INFO("AudioEngine initialized with sample rate: " +
-             std::to_string(sample_rate) + "Hz, " +
-             std::to_string(channels) + " channels");
+    LOG_INFO("AudioEngine initializing - will use device native sample rate and channels");
 
 #ifdef _WIN32
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -76,14 +76,38 @@ bool AudioEngine::start_capture() {
     stop_capture_flag_ = false;
 
 #ifdef _WIN32
-    // Ensure WASAPI initialized before starting capture thread
+    // Check if we need to reinitialize for a different device
+    // Reinitialize if:
+    // 1. Device was never initialized
+    // 2. A specific microphone was selected after initialization
+    bool needs_reinit = false;
     if (!audio_client_ || !capture_client_) {
+        needs_reinit = true;
+    } else if (!selected_microphone_id_.empty() && selected_microphone_id_ != "default") {
+        // Check if current device matches selected device
+        // If device was selected but we never initialized with it, reinit
+        if (audio_device_) {
+            LPWSTR current_device_id = nullptr;
+            if (SUCCEEDED(audio_device_->GetId(&current_device_id))) {
+                std::wstring w_selected(selected_microphone_id_.begin(), selected_microphone_id_.end());
+                if (w_selected != current_device_id) {
+                    needs_reinit = true;
+                    LOG_INFO("Device changed, reinitializing WASAPI");
+                }
+                CoTaskMemFree(current_device_id);
+            }
+        }
+    }
+
+    if (needs_reinit) {
+        cleanup_wasapi();
         ErrorCode init_res = initialize_wasapi();
         if (init_res != ErrorCode::SUCCESS) {
-            LOG_ERROR("start_capture: WASAPI not initialized, aborting start_capture");
+            LOG_ERROR("start_capture: WASAPI reinitialization failed");
             return false;
         }
     }
+
     capture_thread_ = std::thread(&AudioEngine::capture_thread_func, this);
 #endif
 
@@ -195,9 +219,97 @@ bool AudioEngine::select_microphone(const std::string& mic_id) {
         LOG_ERROR("Invalid microphone ID: empty string");
         return false;
     }
-    selected_microphone_id_ = mic_id;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        selected_microphone_id_ = mic_id;
+    }
     LOG_INFO("Selected microphone ID: " + mic_id);
     return true;
+}
+
+std::vector<AudioEngine::AudioDeviceInfo> AudioEngine::get_available_speakers() {
+    std::vector<AudioDeviceInfo> speakers;
+
+#ifdef _WIN32
+    HRESULT hr = S_OK;
+    IMMDeviceEnumerator* pEnumerator = nullptr;
+    IMMDeviceCollection* pCollection = nullptr;
+
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
+    if (FAILED(hr)) {
+        LOG_ERROR("Failed to create device enumerator: " + std::to_string(hr));
+        return speakers;
+    }
+
+    hr = pEnumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &pCollection);
+    if (FAILED(hr)) {
+        LOG_ERROR("Failed to enumerate render endpoints: " + std::to_string(hr));
+        pEnumerator->Release();
+        return speakers;
+    }
+
+    UINT count = 0;
+    pCollection->GetCount(&count);
+
+    for (UINT i = 0; i < count; i++) {
+        IMMDevice* pDevice = nullptr;
+        if (FAILED(pCollection->Item(i, &pDevice))) continue;
+
+        LPWSTR pwszID = nullptr;
+        std::string id_str;
+        if (SUCCEEDED(pDevice->GetId(&pwszID))) {
+            id_str = wide_to_utf8(pwszID);
+            CoTaskMemFree(pwszID);
+        }
+
+        IPropertyStore* pProps = nullptr;
+        std::string name_str;
+        if (SUCCEEDED(pDevice->OpenPropertyStore(STGM_READ, &pProps))) {
+            PROPVARIANT varName;
+            PropVariantInit(&varName);
+            if (SUCCEEDED(pProps->GetValue(PKEY_Device_FriendlyName, &varName))) {
+                name_str = wide_to_utf8(varName.pwszVal);
+                PropVariantClear(&varName);
+            }
+            pProps->Release();
+        }
+
+        if (!id_str.empty() && !name_str.empty()) {
+            speakers.push_back({id_str, name_str});
+            LOG_INFO("Found speaker: " + name_str + " (ID: " + id_str + ")");
+        }
+
+        pDevice->Release();
+    }
+
+    pCollection->Release();
+    pEnumerator->Release();
+#endif
+
+    if (speakers.empty()) {
+        speakers.push_back({"default", "Default Speaker"});
+        LOG_WARNING("No speakers found, using fallback");
+    }
+
+    return speakers;
+}
+
+bool AudioEngine::select_speaker(const std::string& speaker_id) {
+    if (speaker_id.empty()) {
+        LOG_ERROR("Invalid speaker ID: empty string");
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        selected_speaker_id_ = speaker_id;
+    }
+    LOG_INFO("Selected speaker ID: " + speaker_id);
+    return true;
+}
+
+std::string AudioEngine::get_selected_speaker_id() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return selected_speaker_id_;
 }
 
 bool AudioEngine::enable_noise_suppression(bool enable) {
@@ -222,17 +334,20 @@ std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
         }
     }
 
+    // Get volume control state with proper locking
+    float volume = get_microphone_volume();
+    bool muted = get_microphone_mute();
+
     // Apply volume control and mute to the audio frame
     if (frame && frame->raw_data) {
-        if (microphone_muted_) {
+        if (muted) {
             // Fill with silence
             memset(frame->raw_data, 0, frame->samples * frame->channels * sizeof(int16_t));
-        } else if (microphone_volume_ < 1.0f) {
+        } else if (volume < 1.0f && volume > 0.0f) {
             // Apply volume scaling
-            float scale = microphone_volume_;
             int16_t* data = frame->raw_data;
             for (int i = 0; i < frame->samples * frame->channels; ++i) {
-                data[i] = static_cast<int16_t>(data[i] * scale);
+                data[i] = static_cast<int16_t>(data[i] * volume);
             }
         }
     }
@@ -250,8 +365,8 @@ std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
         if (get_frame_log_skips == 0) {
             LOG_INFO("AudioEngine::get_audio_frame returning frame: samples=" + std::to_string(frame->samples) +
                      ", channels=" + std::to_string(frame->channels) +
-                     ", muted=" + (microphone_muted_ ? "yes" : "no") +
-                     ", volume=" + std::to_string(microphone_volume_) +
+                     ", muted=" + (muted ? "yes" : "no") +
+                     ", volume=" + std::to_string(volume) +
                      ", all_zero=" + (all_zero ? "yes" : "no"));
         }
         get_frame_log_skips = (get_frame_log_skips + 1) % 20;
@@ -267,27 +382,40 @@ std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
 
 // Volume control implementation
 bool AudioEngine::set_microphone_volume(float volume) {
-    microphone_volume_ = (std::max)(0.0f, (std::min)(volume, 1.0f));
+    float clamped_volume = (std::max)(0.0f, (std::min)(volume, 1.0f));
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        microphone_volume_ = clamped_volume;
+    }
     LOG_INFO("Microphone volume set to: " + std::to_string(microphone_volume_));
     return true;
 }
 
-float AudioEngine::get_microphone_volume() const {
+float AudioEngine::get_microphone_volume() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return microphone_volume_;
 }
 
 bool AudioEngine::set_microphone_mute(bool mute) {
-    microphone_muted_ = mute;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        microphone_muted_ = mute;
+    }
     LOG_INFO(std::string("Microphone ") + (mute ? "muted" : "unmuted"));
     return true;
 }
 
-bool AudioEngine::get_microphone_mute() const {
+bool AudioEngine::get_microphone_mute() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return microphone_muted_;
 }
 
 bool AudioEngine::set_speaker_volume(float volume) {
-    speaker_volume_ = (std::max)(0.0f, (std::min)(volume, 1.0f));
+    float clamped_volume = (std::max)(0.0f, (std::min)(volume, 1.0f));
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        speaker_volume_ = clamped_volume;
+    }
     LOG_INFO("Speaker volume set to: " + std::to_string(speaker_volume_));
 
     // On Windows, we could adjust system speaker volume here
@@ -299,12 +427,16 @@ bool AudioEngine::set_speaker_volume(float volume) {
     return true;
 }
 
-float AudioEngine::get_speaker_volume() const {
+float AudioEngine::get_speaker_volume() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return speaker_volume_;
 }
 
 bool AudioEngine::set_speaker_mute(bool mute) {
-    speaker_muted_ = mute;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        speaker_muted_ = mute;
+    }
     LOG_INFO(std::string("Speaker ") + (mute ? "muted" : "unmuted"));
 
     // On Windows, we could mute/unmute system speaker here
@@ -316,7 +448,8 @@ bool AudioEngine::set_speaker_mute(bool mute) {
     return true;
 }
 
-bool AudioEngine::get_speaker_mute() const {
+bool AudioEngine::get_speaker_mute() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return speaker_muted_;
 }
 
@@ -350,7 +483,8 @@ int AudioEngine::get_channels() const {
     return channels_;
 }
 
-std::string AudioEngine::get_selected_microphone_id() const {
+std::string AudioEngine::get_selected_microphone_id(){
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return selected_microphone_id_;
 }
 
@@ -398,14 +532,16 @@ ErrorCode AudioEngine::initialize_wasapi() {
     }
     format_ = pWaveFormat;
 
-    // Use device mix format as-is to avoid unsupported-format errors.
-    // Update engine sample_rate_ / channels_ to match device if not explicitly configured.
+    // Always use device mix format to avoid unsupported-format errors.
+    // This ensures the audio engine runs at the device's native sample rate and channel count.
+    // Note: Users cannot override sample rate or channels anymore - device format is always used.
     if (pWaveFormat) {
-        if (sample_rate_ <= 0) sample_rate_ = pWaveFormat->nSamplesPerSec;
-        if (channels_ <= 0) channels_ = pWaveFormat->nChannels;
+        sample_rate_ = pWaveFormat->nSamplesPerSec;
+        channels_ = pWaveFormat->nChannels;
         LOG_INFO("Device mix format: sample_rate=" + std::to_string(pWaveFormat->nSamplesPerSec) +
                  ", channels=" + std::to_string(pWaveFormat->nChannels) +
-                 ", wFormatTag=" + std::to_string(pWaveFormat->wFormatTag));
+                 ", wFormatTag=" + std::to_string(pWaveFormat->wFormatTag) +
+                 " (using device native format)");
     }
 
     hr = audio_client_->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, pWaveFormat, nullptr);

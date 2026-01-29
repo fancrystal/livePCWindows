@@ -20,11 +20,8 @@ public:
     explicit CameraSettingsDialog(QWidget *parent = nullptr);
     ~CameraSettingsDialog();
 
-    // 设置可用摄像头列表（仅显示名；兼容接口）
-    void set_available_cameras(const std::vector<std::string>& cameras);
-
-    // 设置可用摄像头列表（显示名 + dshow device_name）
-    void set_available_camera_choices(const std::vector<VideoEngine::CameraChoice>& cameras);
+    // 设置可用摄像头列表
+    void set_available_cameras(const std::vector<VideoEngine::CameraChoice>& cameras);
     
     // 设置摄像头名称
     void set_camera_name(const std::string& name);

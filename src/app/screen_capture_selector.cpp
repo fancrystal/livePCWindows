@@ -2,29 +2,21 @@
 #include "common/log.h"
 #include <QApplication>
 #include <QScreen>
-#include <QListWidgetItem>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
-#include <QGroupBox>
 #include <QLabel>
 #include <QPushButton>
-#include <QTimer>
 #include <QPixmap>
 #include <QPainter>
-#include <QIcon>
 #include <QWindow>
+#include <QThread>
 #include <algorithm>
-#include <thread>
-#include <QMutexLocker>
-
-// Windows API headers for DWM
-#include <dwmapi.h>
 #include <windows.h>
-#include <wingdi.h>
+#include <dwmapi.h>
 
-#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 #undef min
 #undef max
@@ -79,164 +71,124 @@ ScreenCaptureSelector::ScreenCaptureSelector(QWidget *parent)
     : QDialog(parent)
     , selected_target_(nullptr) {
     setup_ui();
-
-    // Thumbnails are one-shot for now (no periodic refresh)
-    update_timer_ = nullptr;
-
-    // Initially refresh targets
     refresh_targets();
-
-    LOG_INFO("ScreenCaptureSelector created");
 }
 
 ScreenCaptureSelector::~ScreenCaptureSelector() {
-    if (update_timer_) {
-        update_timer_->stop();
-    }
-    LOG_INFO("ScreenCaptureSelector destroyed");
 }
 
 void ScreenCaptureSelector::setup_ui() {
     setWindowTitle("选择捕获目标");
-    setMinimumSize(800, 600);
+    setMinimumSize(900, 280);
+    setMaximumHeight(280);
     setStyleSheet(
         "QDialog { background-color: #1a1a1a; color: #ffffff; }"
         "QWidget { background-color: #1a1a1a; color: #ffffff; }"
-        "QListWidget { background-color: #2a2a2a; color: #ffffff; border: 1px solid #444444; }"
-        "QListWidget::item { padding: 5px; border-bottom: 1px solid #333333; }"
-        "QListWidget::item:selected { background-color: #444444; }"
         "QLabel { color: #ffffff; }"
         "QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 8px 16px; }"
         "QPushButton:hover { background-color: #444444; }"
         "QPushButton:pressed { background-color: #555555; }"
         "QPushButton:disabled { background-color: #222222; color: #666666; }"
-        "QGroupBox { color: #ffffff; border: 1px solid #333333; border-radius: 4px; margin-top: 10px; }"
-        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; }"
     );
 
-    auto* main_layout = new QHBoxLayout(this);
+    auto* main_layout = new QVBoxLayout(this);
+    main_layout->setContentsMargins(20, 15, 20, 15);
+    main_layout->setSpacing(12);
 
-    // Left panel - target list
-    auto* left_panel = new QWidget();
-    left_panel->setMinimumWidth(300);
-    left_panel->setMaximumWidth(400);
-    auto* left_layout = new QVBoxLayout(left_panel);
-
-    // Header with refresh button
+    // Header
     auto* header_layout = new QHBoxLayout();
-    auto* header_label = new QLabel("可捕获的目标:");
-    header_label->setStyleSheet("font-weight: bold; font-size: 14px;");
+    auto* title_label = new QLabel("选择要共享的屏幕或窗口");
+    title_label->setStyleSheet("font-weight: bold; font-size: 16px; color: #ffffff;");
+    header_layout->addWidget(title_label);
+    header_layout->addStretch();
+
     refresh_button_ = new QPushButton("刷新");
     refresh_button_->setMaximumWidth(80);
     connect(refresh_button_, &QPushButton::clicked, this, &ScreenCaptureSelector::refresh_targets);
-
-    header_layout->addWidget(header_label);
-    header_layout->addStretch();
     header_layout->addWidget(refresh_button_);
-    left_layout->addLayout(header_layout);
+    main_layout->addLayout(header_layout);
 
-    // List widget
-    list_widget_ = new QListWidget();
-    list_widget_->setIconSize(QSize(120, 80));
-    connect(list_widget_, &QListWidget::itemSelectionChanged, this, &ScreenCaptureSelector::on_item_selection_changed);
-    left_layout->addWidget(list_widget_);
+    // Scroll area for horizontal thumbnails
+    auto* scroll_area = new QScrollArea();
+    scroll_area->setWidgetResizable(true);
+    scroll_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll_area->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll_area->setFixedHeight(150);
+    scroll_area->setStyleSheet(
+        "QScrollArea { background-color: #1a1a1a; border: none; }"
+        "QScrollArea > QWidget > QWidget { background-color: #1a1a1a; }"
+        "QScrollBar:horizontal { background-color: #2a2a2a; height: 8px; border-radius: 4px; }"
+        "QScrollBar:horizontal::handle { background-color: #444444; border-radius: 4px; min-width: 20px; }"
+        "QScrollBar:horizontal::handle:hover { background-color: #555555; }"
+        "QScrollBar:horizontal::add-line { width: 0px; }"
+        "QScrollBar:horizontal::sub-line { width: 0px; }"
+    );
 
-    main_layout->addWidget(left_panel);
+    auto* scroll_content = new QWidget();
+    scroll_content->setStyleSheet("background-color: #1a1a1a;");
+    thumbnail_layout_ = new QHBoxLayout(scroll_content);
+    thumbnail_layout_->setContentsMargins(0, 0, 0, 0);
+    thumbnail_layout_->setSpacing(12);
 
-    // Right panel - preview
-    auto* right_panel = new QWidget();
-    right_panel->setMinimumWidth(400);
-    auto* right_layout = new QVBoxLayout(right_panel);
+    thumbnail_container_ = scroll_content;
+    scroll_area->setWidget(scroll_content);
+    main_layout->addWidget(scroll_area);
 
-    auto* preview_group = new QGroupBox("预览");
-    auto* preview_layout = new QVBoxLayout(preview_group);
-
-    preview_label_ = new QLabel("请选择一个捕获目标");
-    preview_label_->setMinimumSize(320, 240);
-    preview_label_->setAlignment(Qt::AlignCenter);
-    preview_label_->setStyleSheet("border: 2px dashed #444444; background-color: #2a2a2a;");
-    preview_layout->addWidget(preview_label_);
-
-    right_layout->addWidget(preview_group);
-    right_layout->addStretch();
-
-    // Buttons
+    // Bottom buttons
     auto* button_layout = new QHBoxLayout();
     button_layout->addStretch();
 
     ok_button_ = new QPushButton("确定");
     ok_button_->setEnabled(false);
+    ok_button_->setMinimumWidth(100);
     connect(ok_button_, &QPushButton::clicked, this, &ScreenCaptureSelector::on_ok_clicked);
 
     cancel_button_ = new QPushButton("取消");
+    cancel_button_->setMinimumWidth(100);
     connect(cancel_button_, &QPushButton::clicked, this, &ScreenCaptureSelector::on_cancel_clicked);
 
     button_layout->addWidget(ok_button_);
+    button_layout->addSpacing(15);
     button_layout->addWidget(cancel_button_);
-
-    right_layout->addLayout(button_layout);
-
-    main_layout->addWidget(right_panel);
+    main_layout->addLayout(button_layout);
 }
 
 void ScreenCaptureSelector::refresh_targets() {
-    LOG_INFO("Refreshing capture targets");
-
     targets_.clear();
-    list_widget_->clear();
+
+    // Clear existing thumbnail widgets
+    QLayoutItem* item;
+    while ((item = thumbnail_layout_->takeAt(0)) != nullptr) {
+        if (item->widget()) {
+            item->widget()->deleteLater();
+        }
+        delete item;
+    }
+
     selected_target_ = nullptr;
     ok_button_->setEnabled(false);
-    preview_label_->setText("请选择一个捕获目标");
 
     enumerate_screens();
     enumerate_windows();
 
-    // Populate list widget (store index in UserRole to avoid pointer instability)
+    // Create horizontal thumbnail items
+    const int thumb_width = 160;
+    const int thumb_height = 90;
+
     for (int i = 0; i < static_cast<int>(targets_.size()); ++i) {
         const auto& target = targets_[i];
-        auto* item = new QListWidgetItem();
 
-        // Create display text
-        QString display_text;
-        if (target.type == CaptureTarget::Type::SCREEN) {
-            display_text = QString("屏幕: %1 (%2x%3)")
-                .arg(QString::fromStdString(target.name))
-                .arg(target.size.width())
-                .arg(target.size.height());
-        } else {
-            display_text = QString("窗口: %1 (%2x%3)")
-                .arg(QString::fromStdString(target.name))
-                .arg(target.size.width())
-                .arg(target.size.height());
-        }
-
-        item->setText(display_text);
-        item->setIcon(QIcon(target.thumbnail));
-        item->setData(Qt::UserRole, i);
-
-        list_widget_->addItem(item);
-
-        // Diagnostic log
-        if (item->icon().isNull()) {
-            LOG_WARNING("Item icon is null for target: " + target.name);
-            if (target.thumbnail.isNull()) {
-                LOG_WARNING(" -> Reason: The source QPixmap thumbnail was null.");
-            }
-        }
+        // Create thumbnail widget
+        auto* thumb_widget = create_thumbnail_widget(target, thumb_width, thumb_height);
+        thumbnail_layout_->addWidget(thumb_widget);
     }
 
-    LOG_INFO("Found " + std::to_string(targets_.size()) + " capture targets");
-
-    // Force an immediate repaint of the list widget
-    list_widget_->update();
+    // Force layout update
+    thumbnail_container_->updateGeometry();
     QCoreApplication::processEvents();
-
-    // One-shot thumbnails: no async refresh is needed.
 }
 
 void ScreenCaptureSelector::enumerate_screens() {
-    LOG_INFO("Enumerating screens");
-
     // Get all screens
     const auto screens = QApplication::screens();
     for (int i = 0; i < screens.size(); ++i) {
@@ -247,17 +199,14 @@ void ScreenCaptureSelector::enumerate_screens() {
         target.name = screen->name().toStdString();
         target.size = screen->size();
 
-        // Create thumbnail for screen (assign into target)
+        // Create thumbnail for screen
         create_thumbnail_for_screen(target);
 
         targets_.push_back(std::move(target));
-        LOG_INFO("Found screen: " + targets_.back().name + " (" + std::to_string(targets_.back().size.width()) + "x" + std::to_string(targets_.back().size.height()) + ")");
     }
 }
 
 void ScreenCaptureSelector::enumerate_windows() {
-    LOG_INFO("Enumerating windows");
-
     struct Candidate {
         HWND hwnd = nullptr;
         std::string title;
@@ -303,28 +252,6 @@ void ScreenCaptureSelector::enumerate_windows() {
     }, reinterpret_cast<LPARAM>(&candidates));
 
     // Phase 2: capture thumbnails only for filtered candidates
-    auto is_preview_unavailable = [](const QPixmap& pm) -> bool {
-        if (pm.isNull()) return true;
-        QImage img = pm.toImage();
-        if (img.isNull() || img.width() == 0 || img.height() == 0) return true;
-        const int w = img.width();
-        const int h = img.height();
-        const int stepX = std::max(1, w / 10);
-        const int stepY = std::max(1, h / 10);
-        int samples = 0;
-        int darkCount = 0;
-        for (int y = stepY / 2; y < h; y += stepY) {
-            for (int x = stepX / 2; x < w; x += stepX) {
-                QColor c(img.pixel(x, y));
-                int lum = (c.red() * 299 + c.green() * 587 + c.blue() * 114) / 1000;
-                if (lum < 16) darkCount++;
-                samples++;
-            }
-        }
-        if (samples == 0) return true;
-        return (darkCount * 100 / samples) >= 95;
-    };
-
     for (const auto& c : candidates) {
         // Skip our own window
         if (c.hwnd == reinterpret_cast<HWND>(this->winId())) {
@@ -338,12 +265,8 @@ void ScreenCaptureSelector::enumerate_windows() {
         target.size = c.size;
 
         create_thumbnail_for_window(target);
-        if (is_preview_unavailable(target.thumbnail)) {
-            continue;
-        }
 
         targets_.push_back(std::move(target));
-        LOG_INFO("Found window: " + targets_.back().name + " (" + std::to_string(targets_.back().size.width()) + "x" + std::to_string(targets_.back().size.height()) + ")");
     }
 }
 
@@ -390,42 +313,127 @@ QPixmap ScreenCaptureSelector::create_screen_thumbnail(const QString& device_nam
 
 void ScreenCaptureSelector::create_thumbnail_for_screen(CaptureTarget& target) {
     // Create actual screen thumbnail
-    QPixmap thumbnail = create_screen_thumbnail(QString::fromStdString(target.id), list_widget_->iconSize().width(), list_widget_->iconSize().height());
-    
+    const int thumb_width = 160;
+    const int thumb_height = 90;
+    target.thumbnail = create_screen_thumbnail(QString::fromStdString(target.id), thumb_width, thumb_height);
+
     // If thumbnail is null or invalid, create a placeholder
-    if (thumbnail.isNull()) {
-        thumbnail = QPixmap(120, 80);
-        thumbnail.fill(QColor(64, 64, 128)); // Dark blue for screens
-        
-        QPainter painter(&thumbnail);
-        painter.setPen(Qt::white);
-        painter.setFont(QFont("Arial", 8));
-        painter.drawText(thumbnail.rect(), Qt::AlignCenter, 
-                        QString("屏幕\n%1x%2").arg(target.size.width()).arg(target.size.height()));
+    if (target.thumbnail.isNull()) {
+        target.thumbnail = QPixmap(thumb_width, thumb_height);
+        target.thumbnail.fill(QColor(64, 64, 128)); // Dark blue for screens
     }
-    
-    // Assign thumbnail into provided target
-    target.thumbnail = thumbnail;
 }
 
 void ScreenCaptureSelector::create_thumbnail_for_window(CaptureTarget& target) {
     // Try to create a real thumbnail using PrintWindow or DWM
     HWND hwnd = reinterpret_cast<HWND>(std::stoull(target.id));
-    QPixmap thumbnail = create_window_thumbnail(hwnd, list_widget_->iconSize().width(), list_widget_->iconSize().height());
+    const int thumb_width = 160;
+    const int thumb_height = 90;
+    target.thumbnail = create_window_thumbnail(hwnd, thumb_width, thumb_height);
 
     // If PrintWindow failed, create a placeholder
-    if (thumbnail.isNull()) {
-        thumbnail = QPixmap(120, 80);
-        thumbnail.fill(QColor(128, 64, 64)); // Dark red for windows
+    if (target.thumbnail.isNull()) {
+        target.thumbnail = QPixmap(thumb_width, thumb_height);
+        target.thumbnail.fill(QColor(128, 64, 64)); // Dark red for windows
+    }
+}
 
-        QPainter painter(&thumbnail);
-        painter.setPen(Qt::white);
-        painter.setFont(QFont("Arial", 7));
-        painter.drawText(thumbnail.rect(), Qt::AlignCenter, QString("窗口\n%1").arg(QString::fromStdString(target.name).left(10)));
+QWidget* ScreenCaptureSelector::create_thumbnail_widget(const CaptureTarget& target, int width, int height) {
+    auto* widget = new QWidget();
+    widget->setFixedSize(width + 20, height + 50);
+    widget->setCursor(Qt::PointingHandCursor);
+
+    auto* layout = new QVBoxLayout(widget);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+
+    // Thumbnail label
+    auto* thumb_label = new QLabel();
+    thumb_label->setFixedSize(width, height);
+    thumb_label->setScaledContents(true);
+    thumb_label->setStyleSheet("border: 2px solid #333333; border-radius: 6px;");
+
+    if (!target.thumbnail.isNull()) {
+        thumb_label->setPixmap(target.thumbnail);
+    } else {
+        thumb_label->setStyleSheet("background-color: #2a2a2a; border: 2px solid #333333; border-radius: 6px;");
     }
 
-    // Assign thumbnail into provided target
-    target.thumbnail = thumbnail;
+    layout->addWidget(thumb_label);
+
+    // Name label
+    auto* name_label = new QLabel();
+    name_label->setFixedSize(width, 40);
+    name_label->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+
+    QString name = QString::fromStdString(target.name);
+    if (name.length() > 15) {
+        name = name.left(12) + "...";
+    }
+
+    QString type_text = target.type == CaptureTarget::Type::SCREEN ? "屏幕" : "窗口";
+    QString size_text = QString("%1x%2").arg(target.size.width()).arg(target.size.height());
+    name_label->setText(QString("<span style='color: #aaaaaa; font-size: 11px;'>%1</span><br>"
+                                "<span style='color: #ffffff; font-size: 12px;'>%2</span>")
+                        .arg(type_text)
+                        .arg(name + " " + size_text));
+    name_label->setStyleSheet("background: transparent;");
+
+    layout->addWidget(name_label);
+
+    // Store target index for selection
+    int idx = &target - &targets_[0];
+    widget->setProperty("targetIndex", idx);
+
+    // Make widget clickable via event filter
+    widget->setAttribute(Qt::WA_Hover, true);
+    widget->installEventFilter(this);
+
+    return widget;
+}
+
+bool ScreenCaptureSelector::eventFilter(QObject* obj, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonPress) {
+        if (auto* widget = qobject_cast<QWidget*>(obj)) {
+            int idx = widget->property("targetIndex").toInt();
+            if (idx >= 0) {
+                on_thumbnail_clicked(idx);
+                return true;
+            }
+        }
+    }
+    return QObject::eventFilter(obj, event);
+}
+
+void ScreenCaptureSelector::on_thumbnail_clicked(int index) {
+    if (index < 0 || index >= static_cast<int>(targets_.size())) {
+        return;
+    }
+
+    selected_target_ = &targets_[index];
+    ok_button_->setEnabled(true);
+
+    // Update visual selection state
+    for (int i = 0; i < thumbnail_layout_->count(); ++i) {
+        auto* item = thumbnail_layout_->itemAt(i);
+        if (item && item->widget()) {
+            auto* widget = qobject_cast<QWidget*>(item->widget());
+            if (widget) {
+                int idx = widget->property("targetIndex").toInt();
+                bool is_selected = (idx == index);
+
+                // Update border style to indicate selection
+                auto* thumb_label = widget->findChild<QLabel*>();
+                if (thumb_label) {
+                    if (is_selected) {
+                        thumb_label->setStyleSheet("border: 3px solid #5096FF; border-radius: 6px;");
+                    } else {
+                        thumb_label->setStyleSheet("border: 2px solid #333333; border-radius: 6px;");
+                    }
+                }
+            }
+        }
+    }
 }
 
 QPixmap ScreenCaptureSelector::create_window_thumbnail(HWND hwnd, int width, int height) {
@@ -628,82 +636,14 @@ QPixmap ScreenCaptureSelector::create_window_thumbnail(HWND hwnd, int width, int
     return placeholder;
 }
 
-void ScreenCaptureSelector::on_item_selection_changed() {
-    auto* current_item = list_widget_->currentItem();
-    if (!current_item) {
-        selected_target_ = nullptr;
-        ok_button_->setEnabled(false);
-        preview_label_->setText("请选择一个捕获目标");
-        return;
-    }
-
-    int idx = current_item->data(Qt::UserRole).toInt();
-    if (idx >= 0 && idx < static_cast<int>(targets_.size())) {
-        selected_target_ = &targets_[idx];
-    } else {
-        selected_target_ = nullptr;
-    }
-    ok_button_->setEnabled(true);
-
-    if (selected_target_) {
-        // HD preview: capture on-demand at (or above) preview label resolution, cache it, then scale once.
-        QSize dstSize = preview_label_->size();
-        int capW = std::max(1, dstSize.width());
-        int capH = std::max(1, dstSize.height());
-
-        // Capture at 2x for better sharpness when downscaling
-        int captureW = capW * 2;
-        int captureH = capH * 2;
-
-        if (selected_target_->hd_preview.isNull()) {
-            if (selected_target_->type == CaptureTarget::Type::WINDOW) {
-                HWND hwnd = reinterpret_cast<HWND>(std::stoull(selected_target_->id));
-                selected_target_->hd_preview = create_window_thumbnail(hwnd, captureW, captureH);
-            } else {
-                selected_target_->hd_preview = create_screen_thumbnail(QString::fromStdString(selected_target_->id), captureW, captureH);
-            }
-        }
-
-        const QPixmap& src = selected_target_->hd_preview.isNull() ? selected_target_->thumbnail : selected_target_->hd_preview;
-        if (!src.isNull()) {
-            QPixmap scaled = src.scaled(dstSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            preview_label_->setPixmap(scaled);
-            preview_label_->setText("");
-        } else {
-            preview_label_->setPixmap(QPixmap());
-            preview_label_->setText("无法预览");
-        }
-
-        QString preview_text = QString("预览 - %1\n尺寸: %2x%3")
-            .arg(selected_target_->type == CaptureTarget::Type::SCREEN ? "屏幕" : "窗口")
-            .arg(selected_target_->size.width())
-            .arg(selected_target_->size.height());
-        preview_label_->setToolTip(preview_text);
-    }
-}
-
-void ScreenCaptureSelector::update_thumbnails() {
-    // This function is now disabled to ensure one-shot thumbnail capture.
-}
-
-// Start an async thumbnail update for index if not updating and cooldown passed
-void ScreenCaptureSelector::start_async_thumbnail_update(int index) {
-    // This function is now disabled to ensure one-shot thumbnail capture.
-    (void)index;
-}
-
-// Note: async thumbnail completion is handled inline via QMetaObject::invokeMethod in the worker thread.
-
 void ScreenCaptureSelector::on_ok_clicked() {
     if (selected_target_) {
-        LOG_INFO("Selected capture target: " + selected_target_->name);
         accept();
     }
 }
 
 void ScreenCaptureSelector::on_cancel_clicked() {
     selected_target_ = nullptr;
-    LOG_INFO("Capture target selection cancelled");
     reject();
 }
 

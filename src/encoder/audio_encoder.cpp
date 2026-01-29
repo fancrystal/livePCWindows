@@ -277,28 +277,30 @@ ErrorCode AACEncoder::send_frame_internal(const std::shared_ptr<AudioFrame>& in)
 
     const uint8_t* in_data[1] = {reinterpret_cast<const uint8_t*>(in->raw_data)};
 
-    const int frame_capacity = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : frame_->nb_samples;
-    frame_->nb_samples = frame_capacity;
+    // AAC frame size requirement
+    int required = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 0;
 
-    if (av_frame_make_writable(frame_) < 0) {
-        return ErrorCode::INIT_FAILED;
+    // Ensure pending buffer is initialized for correct channel count
+    int channels = config_.channels;
+    if (pending_planar_samples_.size() != static_cast<size_t>(channels)) {
+        pending_planar_samples_.assign(channels, std::vector<float>());
+        pending_samples_per_channel_ = 0;
     }
 
-    // Diagnostic: print first few input samples to help debugging (limited)
-    if (in->raw_data) {
-        int dbgN = std::min(8, in->samples * in->channels);
-        std::string s;
-        for (int i = 0; i < dbgN; ++i) {
-            s += std::to_string(in->raw_data[i]);
-            if (i + 1 < dbgN) s += ",";
-        }
-        LOG_DEBUG(std::string("AACEncoder::send_frame_internal input samples[0..") + std::to_string(dbgN-1) + "]=" + s);
-    }
+    // Allocate temporary buffer for swr_convert output
+    // Use codec's frame_size or input samples as buffer size
+    int out_buffer_size = (required > 0) ? required : in->samples;
+    std::vector<uint8_t> out_buffer(channels * out_buffer_size * sizeof(float));
 
+    // Convert input to codec format
+    uint8_t* out_ptrs[8] = {nullptr};  // Support up to 8 channels
+    for (int ch = 0; ch < channels && ch < 8; ++ch) {
+        out_ptrs[ch] = out_buffer.data() + ch * out_buffer_size * sizeof(float);
+    }
     int converted = swr_convert(
         swr_,
-        frame_->data,
-        frame_capacity,
+        out_ptrs,
+        out_buffer_size,
         in_data,
         in->samples);
 
@@ -309,130 +311,87 @@ ErrorCode AACEncoder::send_frame_internal(const std::shared_ptr<AudioFrame>& in)
         return ErrorCode::ENCODING_ERROR;
     }
 
-    // Append converted planar float samples into pending buffer
-    int channels = config_.channels;
-    int out_samples = converted; // per-channel samples
-    // Ensure pending structure initialized
-    if (pending_planar_samples_.size() != static_cast<size_t>(channels)) {
-        pending_planar_samples_.assign(channels, std::vector<float>());
-        pending_samples_per_channel_ = 0;
-    }
-
+    // Copy converted samples to pending buffer (planar float)
     AVSampleFormat out_fmt = codec_ctx_->sample_fmt;
+    int out_samples = converted;
+
     if (out_fmt == AV_SAMPLE_FMT_FLTP) {
+        // float planar: each channel is separate
         for (int ch = 0; ch < channels; ++ch) {
-            float* out_ptr = reinterpret_cast<float*>(frame_->data[ch]);
-            auto &vec = pending_planar_samples_[ch];
+            float* out_ptr = reinterpret_cast<float*>(out_buffer.data() + ch * out_buffer_size * sizeof(float));
+            auto& vec = pending_planar_samples_[ch];
             vec.insert(vec.end(), out_ptr, out_ptr + out_samples);
         }
     } else if (out_fmt == AV_SAMPLE_FMT_S16P) {
+        // int16 planar: each channel is separate
+        int16_t* out_ptr = reinterpret_cast<int16_t*>(out_buffer.data());
         for (int ch = 0; ch < channels; ++ch) {
-            int16_t* out_ptr = reinterpret_cast<int16_t*>(frame_->data[ch]);
-            auto &vec = pending_planar_samples_[ch];
+            auto& vec = pending_planar_samples_[ch];
             for (int i = 0; i < out_samples; ++i) {
-                vec.push_back(static_cast<float>(out_ptr[i]) / 32768.0f);
-            }
-        }
-    } else if (out_fmt == AV_SAMPLE_FMT_S16) {
-        // packed interleaved int16 in frame_->data[0]
-        int16_t* packed = reinterpret_cast<int16_t*>(frame_->data[0]);
-        for (int i = 0; i < out_samples; ++i) {
-            for (int ch = 0; ch < channels; ++ch) {
-                auto &vec = pending_planar_samples_[ch];
-                int16_t v = packed[i * channels + ch];
+                int16_t v = out_ptr[ch * out_buffer_size + i];
                 vec.push_back(static_cast<float>(v) / 32768.0f);
             }
         }
+    } else if (out_fmt == AV_SAMPLE_FMT_S16) {
+        // packed interleaved int16 in out_buffer
+        int16_t* packed = reinterpret_cast<int16_t*>(out_buffer.data());
+        for (int i = 0; i < out_samples; ++i) {
+            for (int ch = 0; ch < channels; ++ch) {
+                int16_t v = packed[i * channels + ch];
+                pending_planar_samples_[ch].push_back(static_cast<float>(v) / 32768.0f);
+            }
+        }
     } else {
-        // fallback: try to interpret as float planar
-        LOG_WARNING("AACEncoder::send_frame_internal unexpected out_fmt, assuming FLTP");
+        LOG_WARNING("AACEncoder: unsupported output format, attempting FLTP");
         for (int ch = 0; ch < channels; ++ch) {
-            float* out_ptr = reinterpret_cast<float*>(frame_->data[ch]);
-            auto &vec = pending_planar_samples_[ch];
+            float* out_ptr = reinterpret_cast<float*>(out_buffer.data() + ch * out_buffer_size * sizeof(float));
+            auto& vec = pending_planar_samples_[ch];
             vec.insert(vec.end(), out_ptr, out_ptr + out_samples);
         }
     }
+
     pending_samples_per_channel_ += out_samples;
 
-    int required = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 0;
+    // If codec doesn't require fixed frame_size, send what we have immediately
     if (required <= 0) {
-        // If codec doesn't require fixed frame_size, send what we have immediately.
-        frame_->nb_samples = out_samples;
-        frame_->pts = next_pts_;
-        next_pts_ += out_samples;
-        int send_ret = avcodec_send_frame(codec_ctx_, frame_);
-        if (send_ret < 0) {
-            char errbuf2[128] = {0};
-            av_strerror(send_ret, errbuf2, sizeof(errbuf2));
-            LOG_ERROR(std::string("avcodec_send_frame failed: ") + errbuf2 + " (ret=" + std::to_string(send_ret) + ")");
-            return ErrorCode::ENCODING_ERROR;
-        }
-        return ErrorCode::SUCCESS;
-    }
-
-    // While we have at least one full frame worth of samples, create and send frames
-    while (pending_samples_per_channel_ >= required) {
-        // prepare frame buffer
         if (av_frame_make_writable(frame_) < 0) {
             return ErrorCode::INIT_FAILED;
         }
 
-        // Write samples into frame_->data according to codec sample_fmt
-        AVSampleFormat out_fmt = codec_ctx_->sample_fmt;
+        frame_->nb_samples = out_samples;
+        frame_->pts = next_pts_;
+        next_pts_ += out_samples;
 
-        if (out_fmt == AV_SAMPLE_FMT_FLTP) {
-            // planar float
-            for (int ch = 0; ch < channels; ++ch) {
-                float* dst = reinterpret_cast<float*>(frame_->data[ch]);
-                auto &vec = pending_planar_samples_[ch];
-                for (int i = 0; i < required; ++i) {
-                    dst[i] = vec[i];
-                }
-                vec.erase(vec.begin(), vec.begin() + required);
-            }
-        } else if (out_fmt == AV_SAMPLE_FMT_S16P) {
-            // planar int16
-            for (int ch = 0; ch < channels; ++ch) {
-                int16_t* dst = reinterpret_cast<int16_t*>(frame_->data[ch]);
-                auto &vec = pending_planar_samples_[ch];
-                for (int i = 0; i < required; ++i) {
-                    float v = vec[i];
-                    int32_t iv = static_cast<int32_t>(std::round(v * 32767.0f));
-                    if (iv > 32767) iv = 32767;
-                    if (iv < -32768) iv = -32768;
-                    dst[i] = static_cast<int16_t>(iv);
-                }
-                vec.erase(vec.begin(), vec.begin() + required);
-            }
-        } else if (out_fmt == AV_SAMPLE_FMT_S16) {
-            // packed int16 interleaved in frame_->data[0]
-            int16_t* dst = reinterpret_cast<int16_t*>(frame_->data[0]);
-            for (int i = 0; i < required; ++i) {
-                for (int ch = 0; ch < channels; ++ch) {
-                    auto &vec = pending_planar_samples_[ch];
-                    float v = vec[i];
-                    int32_t iv = static_cast<int32_t>(std::round(v * 32767.0f));
-                    if (iv > 32767) iv = 32767;
-                    if (iv < -32768) iv = -32768;
-                    dst[i * channels + ch] = static_cast<int16_t>(iv);
-                }
-            }
-            for (int ch = 0; ch < channels; ++ch) {
-                auto &vec = pending_planar_samples_[ch];
-                vec.erase(vec.begin(), vec.begin() + required);
-            }
-        } else {
-            // fallback: try planar float write
-            LOG_WARNING("Unsupported codec sample_fmt in write-back, attempting FLTP write");
-            for (int ch = 0; ch < channels; ++ch) {
-                float* dst = reinterpret_cast<float*>(frame_->data[ch]);
-                auto &vec = pending_planar_samples_[ch];
-                for (int i = 0; i < required; ++i) dst[i] = vec[i];
-                vec.erase(vec.begin(), vec.begin() + required);
-            }
+        // Write pending samples back to frame
+        write_samples_to_frame(pending_planar_samples_, out_samples, frame_, static_cast<int>(out_fmt), channels);
+
+        int send_ret = avcodec_send_frame(codec_ctx_, frame_);
+        if (send_ret < 0) {
+            char errbuf2[128] = {0};
+            av_strerror(send_ret, errbuf2, sizeof(errbuf2));
+            LOG_ERROR(std::string("avcodec_send_frame failed: ") + errbuf2);
+            return ErrorCode::ENCODING_ERROR;
         }
 
-        // update counters and pts
+        // Clear pending buffer
+        for (auto& vec : pending_planar_samples_) {
+            vec.clear();
+        }
+        pending_samples_per_channel_ = 0;
+
+        return ErrorCode::SUCCESS;
+    }
+
+    // Send complete frames while we have enough samples
+    while (pending_samples_per_channel_ >= required) {
+        if (av_frame_make_writable(frame_) < 0) {
+            return ErrorCode::INIT_FAILED;
+        }
+
+        // Write required samples to frame and remove from pending buffer
+        write_samples_to_frame(pending_planar_samples_, required, frame_, static_cast<int>(out_fmt), channels);
+
+        // Update counters and pts
         frame_->nb_samples = required;
         frame_->pts = next_pts_;
         next_pts_ += required;
@@ -442,12 +401,63 @@ ErrorCode AACEncoder::send_frame_internal(const std::shared_ptr<AudioFrame>& in)
         if (send_ret < 0) {
             char errbuf2[128] = {0};
             av_strerror(send_ret, errbuf2, sizeof(errbuf2));
-            LOG_ERROR(std::string("avcodec_send_frame failed: ") + errbuf2 + " (ret=" + std::to_string(send_ret) + ")");
+            LOG_ERROR(std::string("avcodec_send_frame failed: ") + errbuf2);
             return ErrorCode::ENCODING_ERROR;
         }
     }
 
     return ErrorCode::SUCCESS;
+}
+
+// Helper function to write samples from pending buffer to frame
+void AACEncoder::write_samples_to_frame(const std::vector<std::vector<float>>& pending,
+                                         int samples_to_write,
+                                         AVFrame* frame,
+                                         int fmt,
+                                         int channels) {
+    AVSampleFormat sample_fmt = static_cast<AVSampleFormat>(fmt);
+    if (sample_fmt == AV_SAMPLE_FMT_FLTP) {
+        for (int ch = 0; ch < channels; ++ch) {
+            float* dst = reinterpret_cast<float*>(frame->data[ch]);
+            const auto& vec = pending[ch];
+            for (int i = 0; i < samples_to_write; ++i) {
+                dst[i] = vec[i];
+            }
+        }
+    } else if (sample_fmt == AV_SAMPLE_FMT_S16P) {
+        for (int ch = 0; ch < channels; ++ch) {
+            int16_t* dst = reinterpret_cast<int16_t*>(frame->data[ch]);
+            const auto& vec = pending[ch];
+            for (int i = 0; i < samples_to_write; ++i) {
+                float v = vec[i];
+                int32_t iv = static_cast<int32_t>(std::round(v * 32767.0f));
+                if (iv > 32767) iv = 32767;
+                if (iv < -32768) iv = -32768;
+                dst[i] = static_cast<int16_t>(iv);
+            }
+        }
+    } else if (sample_fmt == AV_SAMPLE_FMT_S16) {
+        int16_t* dst = reinterpret_cast<int16_t*>(frame->data[0]);
+        for (int i = 0; i < samples_to_write; ++i) {
+            for (int ch = 0; ch < channels; ++ch) {
+                const auto& vec = pending[ch];
+                float v = vec[i];
+                int32_t iv = static_cast<int32_t>(std::round(v * 32767.0f));
+                if (iv > 32767) iv = 32767;
+                if (iv < -32768) iv = -32768;
+                dst[i * channels + ch] = static_cast<int16_t>(iv);
+            }
+        }
+    } else {
+        // Fallback: assume planar float
+        for (int ch = 0; ch < channels; ++ch) {
+            float* dst = reinterpret_cast<float*>(frame->data[ch]);
+            const auto& vec = pending[ch];
+            for (int i = 0; i < samples_to_write; ++i) {
+                dst[i] = vec[i];
+            }
+        }
+    }
 }
 
 ErrorCode AACEncoder::send_flush() {
@@ -544,6 +554,21 @@ ErrorCode AACEncoder::set_bitrate(int bitrate) {
         codec_ctx_->bit_rate = bitrate;
     }
 
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode AACEncoder::reset() {
+    if (!initialized_) {
+        return ErrorCode::INIT_FAILED;
+    }
+
+    next_pts_ = 0;
+    pending_samples_per_channel_ = 0;
+    for (auto& vec : pending_planar_samples_) {
+        vec.clear();
+    }
+
+    LOG_INFO("AAC encoder reset for new streaming session");
     return ErrorCode::SUCCESS;
 }
 

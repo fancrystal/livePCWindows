@@ -243,4 +243,12 @@ ErrorCode Encoder::force_keyframe() {
     return video_encoder_->force_keyframe();
 }
 
+ErrorCode Encoder::reset_audio_encoder() {
+    if (!audio_encoder_initialized_ || !audio_encoder_) {
+        LOG_WARNING("reset_audio_encoder called but audio encoder not initialized");
+        return ErrorCode::INVALID_STATE;
+    }
+    return audio_encoder_->reset();
+}
+
 } // namespace live_assistant
