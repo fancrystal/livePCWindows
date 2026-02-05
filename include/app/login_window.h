@@ -4,10 +4,7 @@
 #include <QMainWindow>
 #include <QSettings>
 #include <QQuickWidget>
-
-namespace Ui {
-class LoginWindow;
-}
+#include <QThread>
 
 namespace live_assistant {
 
@@ -20,44 +17,60 @@ public:
 
 signals:
     void login_success();
-
-private slots:
-    void on_passwordLoginButton_clicked();
-    void on_verificationCodeLoginButton_clicked();
-    void on_loginButton_clicked();
-    void on_getVerificationCodeButton_clicked();
-    void on_agreementLabel_linkActivated(const QString &link);
+    void login_failed(const QString& errorMessage);
+    void login_status_changed(const QString& status);
+    void login_state_changed(bool isLoggingIn, const QString& errorMessage);
 
 public:
+    // QML调用方法
+    Q_INVOKABLE void qmlLogin(const QString& username, const QString& password);
+    Q_INVOKABLE void qmlSetStatus(const QString& status);
+    Q_INVOKABLE void qmlSetLoginFailed(const QString& errorMessage);
+    Q_INVOKABLE bool qmlHasSavedCredentials();
+    Q_INVOKABLE QString qmlGetSavedUsername();
+    Q_INVOKABLE QString qmlGetSavedPassword();
+
+    // 获取登录信息
     const QString& user_id() const { return user_id_; }
     const QString& token() const { return token_; }
+    const QString& getLoginKey() const { return login_key_; }
+    const QString& getLoginUrl() const { return login_url_; }
+    const QString& getApiKey() const { return api_key_; }
 
-    Q_INVOKABLE void qmlLogin(const QString& username, const QString& password);
+private slots:
+    void onLoginSuccess(const QString& userId, const QString& token, const QString& loginKey);
+    void onLoginFailed(const QString& errorMessage);
+    void cleanupLoginThread();
 
 private:
-    void load_login_info();
-    void save_login_info();
+    // 保存登录凭据
     void save_login_info_credentials(const QString& username, const QString& password, bool remember);
-    bool validate_login(const QString& username, const QString& password);
+
+    // 窗口拖拽支持
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
-    Ui::LoginWindow *ui;
-    bool is_password_login_;
+    // 登录信息
     QString user_id_;
     QString token_;
     QString login_key_;
     QString login_url_;
     QString api_key_;
-    QSettings settings_;
-    QQuickWidget* qmlWidget_;
-    // frameless window drag support
-    bool dragging_;
-    QPoint dragStartPos_;
 
-protected:
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
+    // QML部件
+    QQuickWidget* qmlWidget_;
+
+    // 登录线程
+    QThread* loginThread_ = nullptr;
+
+    // 设置
+    QSettings settings_;
+
+    // 窗口拖拽
+    bool dragging_ = false;
+    QPoint dragStartPos_;
 };
 
 } // namespace live_assistant

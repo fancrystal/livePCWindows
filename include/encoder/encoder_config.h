@@ -68,7 +68,7 @@ enum class HWAccelerationType {
 struct AudioEncoderConfig {
     // 基本参数
     AudioCodecType codec = AudioCodecType::AAC;  // 默认使用AAC以兼容
-    int sample_rate = 44100;  // 默认采样率 (44.1kHz)
+    int sample_rate = 48000;  // 默认采样率 (48kHz)
     int channels = 2;  // 默认立体声
     int bitrate = 128000;  // 默认比特率 (128kbps)
     AudioEncodingMode mode = AudioEncodingMode::CBR;  // 默认使用CBR

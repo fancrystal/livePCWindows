@@ -14,6 +14,8 @@
 
 #include "common/media_clock.h"
 #include "common/config_manager.h"
+#include "common/system_monitor.h"
+#include "http/live_item.h"
 
 class ExitDialog;
 
@@ -46,6 +48,12 @@ public:
 
     void set_live_id(const QString& live_id);
 
+    // 设置直播间凭证信息
+    void setCredentials(const QString& socketUrl, const QString& userId, const QString& token, const QString& liveurl, const QString& oncekey);
+
+    // 接收直播项（含插播文件）
+    void setLiveItem(const LiveItem& liveItem);
+
     // 推流目标（后续与直播间列表联通时由外部设置）
     void set_rtmp_target(const QString& server_url, const QString& stream_key);
 
@@ -74,7 +82,7 @@ private:
     void update_audio_status(const QString& text, const QString& color);
     void update_streaming_stats();
     void update_system_info();
-    std::pair<double, double> get_system_info();
+    void log_system_stats_periodically();  // 新增：定期打印系统统计日志
     QListWidget* listWidget_sceneItems_{nullptr};
 
     Ui::MainWindow *ui;
@@ -130,6 +138,16 @@ private:
     // Live ID
     QString live_id_;
 
+    // 直播间凭证信息
+    QString socket_url_;
+    QString user_id_;
+    QString token_;
+    QString live_url_;
+    QString once_key_;
+
+    // 当前直播项信息
+    LiveItem current_live_item_;
+
     // Camera related
     bool is_camera_preview_ = false;
 
@@ -147,15 +165,14 @@ private:
     // Statistics display
     QTimer* stats_update_timer_ = nullptr;
     QTimer* system_info_timer_ = nullptr;
-    double cached_cpu_usage_ = 0.0;
-    double cached_memory_mb_ = 0.0;
-    // CPU sampling state (windows)
-    uint64_t prev_idle_ = 0;
-    uint64_t prev_sys_ = 0;
-    bool first_cpu_sample_ = true;
+    // 系统监控日志打印定时器（每分钟打印一次）
+    QTimer* system_log_timer_ = nullptr;
 
     // Tech stats label (bottom bar)
     QLabel* tech_stats_label_ = nullptr;
+
+    // 系统监控日志打印计数器
+    int system_log_counter_ = 0;
 
     // Audio control state
     bool microphone_enabled_ = true;

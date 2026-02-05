@@ -1,6 +1,6 @@
 #include "http/download_manager.h"
-#include "client_service.h"
-#include "logger.h"
+#include "http/client_service.h"
+#include "common/log.h"
 #include <QThread>
 
 DownloadManager* DownloadManager::m_instance = nullptr;
@@ -33,7 +33,8 @@ void DownloadManager::enqueueDownload(InsertFileItem* fileItem, bool highPriorit
     } else {
         m_downloadQueue.enqueue(task);
     }
-    LOG_INFO("DownloadManager: Enqueue download:" + fileItem->fileName + "Priority:" + QString::number(highPriority));
+    LOG_INFO(QString("DownloadManager: Enqueue download:%1 Priority:%2")
+        .arg(fileItem->fileName).arg(highPriority).toStdString());
 }
 
 void DownloadManager::start()
@@ -84,7 +85,7 @@ void DownloadManager::processNextDownload()
     QFileInfo fileInfo(localFilePath);
     if (fileInfo.exists() && fileInfo.size() > 0) {
         // 文件已存在，直接标记为下载完成
-        LOG_INFO("DownloadManager: File already exists, skipping download:" + task.fileItem->fileName);
+        LOG_INFO(QString("DownloadManager: File already exists, skipping download:%1").arg(task.fileItem->fileName).toStdString());
         task.fileItem->status = InsertFileStatus::DOWNLOAD_COMPLETED;
         emit downloadStarted(fileId);
         emit downloadProgress(fileId, 100);
@@ -92,7 +93,7 @@ void DownloadManager::processNextDownload()
         return;
     }
 
-    LOG_INFO("DownloadManager: Processing download:" + task.fileItem->fileName + "FileID:" + fileId);
+    LOG_INFO(QString("DownloadManager: Processing download:%1 FileID:%2").arg(task.fileItem->fileName).arg(fileId).toStdString());
     emit downloadStarted(fileId);
 
     // 调用 ClientService 执行真正的下载（含进度回调）

@@ -4,6 +4,7 @@
 #include "app/screen_capture_selector.h"
 #include "app/settings_dialog.h"
 #include "app/exit_dialog.h"
+#include "http/live_item.h"
 #include "ui_main_window.h"
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/source_factory.h"
@@ -15,12 +16,12 @@
 #include "scene_manager/wgc_capture_stub.h"
 #include "scene_manager/capture_factory.h"
 #include "scene_manager/capture_manager_iface.h"
-#include "audio_engine/audio_engine.h"
 #include "encoder/encoder.h"
 #include "stream_pusher/stream_pusher.h"
 #include "common/log.h"
 #include "common/error.h"
 
+#include <QWindow>
 #include <QTimer>
 #include <QImage>
 #include <QPixmap>
@@ -305,6 +306,24 @@ MainWindow::MainWindow(QWidget *parent) :
 
     update_status("Ready");
 
+    // DPI 适配：监听屏幕 DPI 变化（当窗口在不同屏幕间移动时）
+    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
+        if (screen) {
+            // 当屏幕变化时，更新窗口的 DPI 缩放
+            LOG_INFO("Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
+            // 触发窗口更新以应用新的 DPI
+            this->updateGeometry();
+        }
+    });
+
+    // 监听当前屏幕的 DPI 变化
+    if (windowHandle() && windowHandle()->screen()) {
+        connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
+            LOG_INFO("DPI changed to: " + std::to_string(dpi));
+            this->updateGeometry();
+        });
+    }
+
     LOG_INFO("MainWindow created");
 }
 
@@ -518,6 +537,37 @@ void MainWindow::set_rtmp_target(const QString& server_url, const QString& strea
     rtmp_stream_key_ = stream_key;
 }
 
+void MainWindow::setCredentials(const QString& socketUrl, const QString& userId, const QString& token, const QString& liveurl, const QString& oncekey) {
+    socket_url_ = socketUrl;
+    user_id_ = userId;
+    token_ = token;
+    live_url_ = liveurl;
+    once_key_ = oncekey;
+
+    LOG_INFO(QString("Credentials set - userId: %1, liveUrl: %2, socketUrl: %3")
+        .arg(userId).arg(liveurl).arg(socketUrl).toStdString());
+}
+
+void MainWindow::setLiveItem(const LiveItem& liveItem) {
+    current_live_item_ = liveItem;
+
+    LOG_INFO(QString("LiveItem set - liveId: %1, title: %2, status: %3")
+        .arg(liveItem.liveId)
+        .arg(liveItem.title)
+        .arg(liveItem.status == LiveStatus::LIVE ? "直播中" :
+            liveItem.status == LiveStatus::PENDING ? "待开播" : "已结束")
+        .toStdString());
+
+    // 如果有推流地址，自动设置RTMP目标
+    if (!liveItem.pushUrl.isEmpty() && !liveItem.pushUrl[0].isEmpty()) {
+        QString rtmpUrl = liveItem.pushUrl[0];
+        // 解析RTMP地址（假设格式为 rtmp://server/app/stream_key）
+        LOG_INFO(QString("Auto-set RTMP URL from LiveItem: %1").arg(rtmpUrl).toStdString());
+        // 这里可以根据需要进一步解析 server_url 和 stream_key
+        rtmp_server_url_ = rtmpUrl;
+    }
+}
+
 void MainWindow::initialize_modules() {
     scene_manager_ = std::make_shared<SceneManager>();
     video_engine_ = std::make_shared<VideoEngine>();
@@ -531,7 +581,7 @@ void MainWindow::initialize_modules() {
     capture_manager_ = std::make_shared<CaptureManagerIface>();
 
     video_engine_->initialize(1920, 1080, 30);
-    audio_engine_->initialize(44100, 2);
+    audio_engine_->initialize(48000, 2);
     // Default: start microphone capture when entering live room
     if (audio_engine_) {
         LOG_INFO("Starting audio capture by default for live room");
@@ -583,10 +633,13 @@ void MainWindow::initialize_modules() {
     video_config.b_frames_enabled = false;
     encoder_->initialize_video_encoder(video_config);
 
+    // 使用音频引擎的实际采样率和声道数（设备原生格式）
     AudioEncoderConfig audio_config;
-    audio_config.sample_rate = 44100;
-    audio_config.channels = 2;
+    audio_config.sample_rate = audio_engine_->get_sample_rate();
+    audio_config.channels = audio_engine_->get_channels();
     audio_config.bitrate = 128000;
+    LOG_INFO("Audio encoder config: sample_rate=" + std::to_string(audio_config.sample_rate) +
+             ", channels=" + std::to_string(audio_config.channels));
     encoder_->initialize_audio_encoder(audio_config);
 
     encoding_timer_ = new QTimer(this);
@@ -624,6 +677,12 @@ void MainWindow::initialize_modules() {
     system_info_timer_ = new QTimer(this);
     connect(system_info_timer_, &QTimer::timeout, [this]() {
         update_system_info();
+    });
+
+    // 系统监控日志打印定时器 (每分钟打印一次)
+    system_log_timer_ = new QTimer(this);
+    connect(system_log_timer_, &QTimer::timeout, [this]() {
+        log_system_stats_periodically();
     });
 }
 
@@ -703,36 +762,85 @@ void MainWindow::setup_ui_connections() {
             }
 
             if (encoder_bridge_->is_streaming()) {
-                // 停止推流
-                encoder_bridge_->stop_streaming();
-                ui->pushButton_startLive->setText("开始直播");
-                if (ui->label_status) {
-                    ui->label_status->setText("推流结束");
+                // 停止推流 - 显示结束直播确认对话框
+                QMessageBox::StandardButton reply = QMessageBox::question(
+                    this,
+                    "结束直播",
+                    "确认结束直播么？",
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No  // 默认选择"否"
+                );
+
+                if (reply == QMessageBox::Yes) {
+                    // 用户确认结束直播
+                    encoder_bridge_->stop_streaming();
+                    ui->pushButton_startLive->setText("开始直播");
+                    if (ui->label_status) {
+                        ui->label_status->setText("推流结束");
+                    }
+                    // 停止计时器
+                    if (live_duration_timer_) {
+                        live_duration_timer_->stop();
+                        streaming_start_time_ms_ = 0;
+                        if (ui->label_liveDuration) {
+                            ui->label_liveDuration->setText("00:00:00");
+                        }
+                    }
+                    // 停止统计信息更新定时器
+                    if (stats_update_timer_) {
+                        stats_update_timer_->stop();
+                    }
+                    if (system_info_timer_) {
+                        system_info_timer_->stop();
+                    }
+                    LOG_INFO("直播已结束");
                 }
-                QMessageBox::information(this, "提示", "推流已停止");
+                // 如果用户选择"否"，什么都不做
                 return;
             }
 
+            // 开始推流 - 显示开始直播确认对话框
             LOG_INFO("[DIAG] 准备开始推流");
-            // 开始推流
-            bool ok;
-            QString url = QInputDialog::getText(this, "推流地址",
-                                      "请输入RTMP推流地址:",
-                                      QLineEdit::Normal,
-                                      "rtmp://47.92.156.37:1935/live/aaa", &ok);
-            if (!ok || url.isEmpty()) {
-                return;
-            }
+            QMessageBox::StandardButton reply = QMessageBox::question(
+                this,
+                "开始直播",
+                "确认开始直播么？",
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No  // 默认选择"否"
+            );
 
-            if (encoder_bridge_->start_streaming(url.toStdString())) {
-                ui->pushButton_startLive->setText("停止直播");
-                if (ui->label_status) {
-                    ui->label_status->setText("正在推流");
+            if (reply == QMessageBox::Yes) {
+                // 用户确认开始直播
+                QString url = rtmp_server_url_;
+                if (url.isEmpty()) {
+                    // 如果没有预设的推流地址，使用默认地址
+                    url = "rtmp://47.92.156.37:1935/live/aaa";
                 }
-                QMessageBox::information(this, "成功", "推流已启动");
-            } else {
-                QMessageBox::warning(this, "错误", "开始推流失败，请检查推流地址");
+
+                if (encoder_bridge_->start_streaming(url.toStdString())) {
+                    ui->pushButton_startLive->setText("停止直播");
+                    if (ui->label_status) {
+                        ui->label_status->setText("正在推流");
+                    }
+                    // 启动直播时长计时器
+                    streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
+                    if (live_duration_timer_) {
+                        live_duration_timer_->start(1000);
+                    }
+                    // 启动统计信息更新定时器
+                    if (stats_update_timer_) {
+                        stats_update_timer_->start(1000);
+                    }
+                    // 启动系统信息更新定时器
+                    if (system_info_timer_) {
+                        system_info_timer_->start(2000);
+                    }
+                    LOG_INFO("推流已启动: " + url.toStdString());
+                } else {
+                    QMessageBox::warning(this, "错误", "开始推流失败，请检查推流地址");
+                }
             }
+            // 如果用户选择"否"，什么都不做
         });
     }
 
@@ -1370,13 +1478,32 @@ void MainWindow::update_streaming_stats() {
         return;
     }
 
-    auto stats = stream_pusher_->get_stats();
+    // 注意：新的 RTMPPusherNew 使用信号驱动的统计更新（statisticsUpdated signal）
+    // 这里保留占位以防需要手动触发
 
-    QString status_text = QString("码率: %1 kb/s | FPS: %2 | CPU: %3% | 内存: %4MB")
-        .arg(QString::number(stats.bandwidth_kbps, 'f', 1))
-        .arg(QString::number(stats.video_fps, 'f', 2))
-        .arg(QString::number(cached_cpu_usage_, 'f', 1))
-        .arg(QString::number(cached_memory_mb_, 'f', 1));
+    // 使用新的 SystemMonitor 获取系统信息
+    const auto& sys_stats = system_monitor().get_cached_stats();
+    QString memory_text;
+    if (sys_stats.gpu_available) {
+        memory_text = QString("内存: %1GB/%2GB (%3%) | GPU: %4% (%5GB/%6GB)")
+            .arg(sys_stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.memory_usage_percent, 0, 'f', 0)
+            .arg(sys_stats.gpu_usage_percent, 0, 'f', 0)
+            .arg(sys_stats.gpu_memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.gpu_memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1);
+    } else {
+        memory_text = QString("内存: %1GB/%2GB (%3%)")
+            .arg(sys_stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.memory_usage_percent, 0, 'f', 0);
+    }
+
+    // 注意：新的 RTMPPusherNew 使用信号驱动的统计更新
+    // 这里显示简化状态（完整的统计由 statisticsUpdated 信号处理）
+    QString status_text = QString("状态: 推流中 | CPU: %1% | %2")
+        .arg(QString::number(sys_stats.cpu_usage_percent, 'f', 1))
+        .arg(memory_text);
 
     if (ui->label_techStats) {
         ui->label_techStats->setText(status_text);
@@ -1516,9 +1643,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::update_system_info() {
-    std::pair<double, double> system_info = get_system_info();
-    cached_cpu_usage_ = system_info.first;
-    cached_memory_mb_ = system_info.second;
+    // 使用新的 SystemMonitor 模块获取系统信息
+    system_monitor().update();
 }
 
 void MainWindow::toggleStageMaximize() {
@@ -1556,98 +1682,32 @@ void MainWindow::restoreStage() {
     if (stageBtnMax_) { stageBtnMax_->setText("□"); stageBtnMax_->setToolTip("最大化"); }
     if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("□"); ui->pushButton_maximize->setToolTip("最大化"); }
 }
+// 新增：定期打印系统统计日志（每分钟打印一次）
+void MainWindow::log_system_stats_periodically() {
+    const auto& stats = system_monitor().get_cached_stats();
 
-std::pair<double, double> MainWindow::get_system_info() {
-    double cpu_usage = 0.0;
-    double memory_mb = 0.0;
+    system_log_counter_++;
+    LOG_INFO("=== 系统资源监控 (" + std::to_string(system_log_counter_) + ") ===");
+    LOG_INFO("CPU 使用率: " + std::to_string(stats.cpu_usage_percent) + "%");
+    LOG_INFO("内存: " + std::to_string(stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0) +
+             "GB / " + std::to_string(stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0) +
+             "GB (" + std::to_string(stats.memory_usage_percent) + "%)");
 
-#ifdef Q_OS_WIN
-    // Use GetSystemTimes to compute CPU usage between samples.
-    FILETIME idleTime, kernelTime, userTime;
-    if (GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
-        auto filetime_to_uint64 = [](const FILETIME &ft) -> uint64_t {
-            return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
-        };
-
-        uint64_t idle = filetime_to_uint64(idleTime);
-        uint64_t kernel = filetime_to_uint64(kernelTime);
-        uint64_t user = filetime_to_uint64(userTime);
-
-        uint64_t sys = kernel + user;
-
-        if (first_cpu_sample_) {
-            prev_idle_ = idle;
-            prev_sys_ = sys;
-            first_cpu_sample_ = false;
-        } else {
-            uint64_t idle_delta = idle - prev_idle_;
-            uint64_t sys_delta = sys - prev_sys_;
-            if (sys_delta > 0) {
-                double usage = (1.0 - (static_cast<double>(idle_delta) / static_cast<double>(sys_delta))) * 100.0;
-                if (usage < 0.0) usage = 0.0;
-                if (usage > 100.0) usage = 100.0;
-                cpu_usage = usage;
-            }
-            prev_idle_ = idle;
-            prev_sys_ = sys;
-        }
-
+    if (stats.gpu_available) {
+        LOG_INFO("GPU 使用率: " + std::to_string(stats.gpu_usage_percent) + "%");
+        LOG_INFO("GPU 内存: " + std::to_string(stats.gpu_memory_used_bytes / 1024.0 / 1024.0 / 1024.0) +
+                 "GB / " + std::to_string(stats.gpu_memory_total_bytes / 1024.0 / 1024.0 / 1024.0) +
+                 "GB (" + std::to_string(stats.gpu_memory_usage_percent) + "%)");
+    } else {
+        LOG_INFO("GPU: N/A (无法获取 GPU 信息)");
     }
-
-    // Memory using GlobalMemoryStatusEx
-    MEMORYSTATUSEX memx;
-    memx.dwLength = sizeof(MEMORYSTATUSEX);
-    if (GlobalMemoryStatusEx(&memx)) {
-        double total_mb = static_cast<double>(memx.ullTotalPhys) / (1024.0 * 1024.0);
-        double avail_mb = static_cast<double>(memx.ullAvailPhys) / (1024.0 * 1024.0);
-        memory_mb = total_mb - avail_mb;
-    }
-#endif
-
-    return {cpu_usage, memory_mb};
+    LOG_INFO("====================================");
 }
 
 void MainWindow::encode_and_push() {
-    if (!stream_pusher_ || !stream_pusher_->is_pushing()) {
-        return;
-    }
-
-    // Video: pushed by CompositorEncoderBridge (scene output). Keep audio only here.
-
-    // Audio - Always generate audio frames to keep stream alive
-    auto audio_frame = audio_engine_->get_audio_frame();
-    if (!audio_frame) {
-        // Generate silent audio frame when no audio is available
-        int sample_rate = audio_engine_->get_sample_rate() > 0 ? audio_engine_->get_sample_rate() : 44100;
-        int channels = audio_engine_->get_channels() > 0 ? audio_engine_->get_channels() : 2;
-        int samples_per_frame = 1024; // Standard AAC frame size
-
-        audio_frame = std::make_shared<AudioFrame>(sample_rate, channels, samples_per_frame);
-        LOG_DEBUG("[MAIN] Generated silent audio frame: " + std::to_string(sample_rate) + "Hz, " +
-                 std::to_string(channels) + "ch, " + std::to_string(samples_per_frame) + " samples");
-    } else {
-        LOG_DEBUG("[MAIN] Got real audio frame: sample_rate=" + std::to_string(audio_frame->sample_rate) +
-                 ", channels=" + std::to_string(audio_frame->channels) + ", samples=" + std::to_string(audio_frame->samples));
-    }
-
-    // Set timestamps for audio frame (use elapsed time from streaming start)
-    auto current_timestamp_us = media_clock_.get_elapsed_time_us();
-    audio_frame->timestamp = MediaTimestamp(current_timestamp_us);
-    audio_frame->timestamp_ms = current_timestamp_us / 1000;
-
-    std::vector<EncodedPacketPtr> packets;
-    ErrorCode result = encoder_->encode_audio_frame(audio_frame, packets);
-    LOG_INFO("[MAIN] audio encode result=" + std::to_string(static_cast<int>(result)) +
-             ", packets=" + std::to_string(packets.size()));
-
-    if (result == ErrorCode::SUCCESS && !packets.empty()) {
-        for (auto& p : packets) {
-            if (!p) continue;
-            p->wallclock_us = current_timestamp_us;
-            ErrorCode push_ret = stream_pusher_->push_packet(p);
-            LOG_INFO("[MAIN] push_packet returned: " + std::to_string(static_cast<int>(push_ret)));
-        }
-    }
+    // NOTE: Audio encoding is now handled by CompositorEncoderBridge
+    // This timer callback is kept for future use if needed
+    // Audio encoding was removed to avoid double-encoding with CompositorEncoderBridge
 }
 
 void MainWindow::update_scene_items() {
@@ -2084,6 +2144,14 @@ void MainWindow::on_streaming_started() {
         // 立即更新一次统计信息
         update_streaming_stats();
     }
+
+    // 启动系统监控日志打印定时器 (每分钟打印一次)
+    if (system_log_timer_) {
+        system_log_timer_->start(60000); // 60000ms = 1分钟
+        system_log_counter_ = 0;
+        // 立即打印一次初始状态
+        log_system_stats_periodically();
+    }
 }
 
 void MainWindow::on_streaming_stopped() {
@@ -2091,6 +2159,7 @@ void MainWindow::on_streaming_stopped() {
     if (live_duration_timer_) live_duration_timer_->stop();
     if (stats_update_timer_) stats_update_timer_->stop();
     if (system_info_timer_) system_info_timer_->stop();
+    if (system_log_timer_) system_log_timer_->stop(); // 停止日志打印定时器
     streaming_start_time_ms_ = 0;
     if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
 

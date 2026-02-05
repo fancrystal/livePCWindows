@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+	<class>ExitDialog</class>
+	<widget class="QDialog" name="ExitDialog">
+		<property name="geometry">
+			<rect>
+				<x>0</x>
+				<y>0</y>
+				<width>320</width>
+				<height>220</height>
+			</rect>
+		</property>
+		<property name="windowTitle">
+			<string>退出提示</string>
+		</property>
+		<property name="styleSheet">
+			<string notr="true">QDialog { background-color: #282C34; border-radius: 8px; }
+QWidget { background-color: #282C34; color: #ffffff; }
+QLabel { background-color: transparent; color: #ffffff; }
+QRadioButton { background-color: transparent; color: #ffffff; font-size: 13px; spacing: 6px; }
+QRadioButton::indicator { width: 14px; height: 14px; border: 2px solid #555555; border-radius: 7px; background-color: transparent; }
+QRadioButton::indicator:hover { border-color: #4a6ef0; }
+QRadioButton::indicator:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
+QCheckBox { background-color: transparent; color: #888888; font-size: 12px; }
+QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #444444; border-radius: 3px; background-color: #2a2a2a; }
+QCheckBox::indicator:hover { border-color: #4a6ef0; }
+QCheckBox::indicator:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
+QPushButton { border-radius: 4px; font-size: 12px; }
+QPushButton#pushButton_cancel { background-color: #3a3f4a; color: #ffffff; min-width: 50px; min-height: 22px; border: none; }
+QPushButton#pushButton_cancel:hover { background-color: #4a5060; }
+QPushButton#pushButton_confirm { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #3a5fd0, stop:1 #2a4ec0); color: #ffffff; min-width: 50px; min-height: 22px; border: none; }
+QPushButton#pushButton_confirm:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #4a6ff0, stop:1 #3a5fe0); }</string>
+		</property>
+		<layout class="QVBoxLayout" name="verticalLayout">
+			<property name="spacing">
+				<number>12</number>
+			</property>
+			<property name="leftMargin">
+				<number>20</number>
+			</property>
+			<property name="topMargin">
+				<number>16</number>
+			</property>
+			<property name="rightMargin">
+				<number>20</number>
+			</property>
+			<property name="bottomMargin">
+				<number>12</number>
+			</property>
+			<item alignment="Qt::AlignHCenter">
+				<widget class="QLabel" name="label_title">
+					<property name="text">
+						<string>确认要退出直播伴侣吗？</string>
+					</property>
+					<property name="font">
+						<font pointSize="14" weight="bold"/>
+					</property>
+					<property name="alignment">
+						<set>Qt::AlignCenter</set>
+					</property>
+				</widget>
+			</item>
+			<item>
+				<layout class="QHBoxLayout" name="horizontalLayout_radio">
+					<property name="spacing">
+						<number>20</number>
+					</property>
+					<property name="leftMargin">
+						<number>0</number>
+					</property>
+					<property name="topMargin">
+						<number>0</number>
+					</property>
+					<property name="rightMargin">
+						<number>0</number>
+					</property>
+					<property name="bottomMargin">
+						<number>0</number>
+					</property>
+					<property name="alignment">
+						<set>Qt::AlignHCenter</set>
+					</property>
+					<item>
+						<widget class="QRadioButton" name="radioButton_exit">
+							<property name="text">
+								<string>直接退出</string>
+							</property>
+							<property name="checked">
+								<bool>false</bool>
+							</property>
+						</widget>
+					</item>
+					<item>
+						<widget class="QRadioButton" name="radioButton_minimize">
+							<property name="text">
+								<string>最小化至系统托盘</string>
+							</property>
+							<property name="checked">
+								<bool>true</bool>
+							</property>
+						</widget>
+					</item>
+				</layout>
+			</item>
+			<item alignment="Qt::AlignHCenter">
+				<widget class="QLabel" name="label_tip">
+					<property name="text">
+						<string>退出后推流将中断。如需继续直播，请选择最小化至系统托盘</string>
+					</property>
+					<property name="styleSheet">
+						<string notr="true">color: #666666; font-size: 11px;</string>
+					</property>
+					<property name="alignment">
+						<set>Qt::AlignCenter</set>
+					</property>
+				</widget>
+			</item>
+			<item>
+				<layout class="QHBoxLayout" name="horizontalLayout_bottom">
+					<property name="spacing">
+						<number>0</number>
+					</property>
+					<property name="leftMargin">
+						<number>0</number>
+					</property>
+					<property name="topMargin">
+						<number>0</number>
+					</property>
+					<property name="rightMargin">
+						<number>0</number>
+					</property>
+					<property name="bottomMargin">
+						<number>0</number>
+					</property>
+					<item alignment="Qt::AlignLeft|Qt::AlignVCenter">
+						<widget class="QCheckBox" name="checkBox_remember">
+							<property name="text">
+								<string>记住我的选择</string>
+							</property>
+						</widget>
+					</item>
+					<item>
+						<spacer name="horizontalSpacer_buttons">
+							<property name="orientation">
+								<enum>Qt::Horizontal</enum>
+							</property>
+							<property name="sizeHint" stdset="0">
+								<size>
+									<width>16</width>
+									<height>20</height>
+								</size>
+							</property>
+						</spacer>
+					</item>
+					<item>
+						<widget class="QPushButton" name="pushButton_cancel">
+							<property name="text">
+								<string>取消</string>
+							</property>
+						</widget>
+					</item>
+					<item>
+						<widget class="QPushButton" name="pushButton_confirm">
+							<property name="text">
+								<string>确认</string>
+							</property>
+						</widget>
+					</item>
+				</layout>
+			</item>
+		</layout>
+	</widget>
+	<resources/>
+	<connections/>
+</ui>

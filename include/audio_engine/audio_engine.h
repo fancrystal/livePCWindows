@@ -6,24 +6,23 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
-#include <thread>
 #include <atomic>
+
+#include <QObject>
+#include <QByteArray>
 
 #include "common/error.h"
 #include "common/media_clock.h"
-
-// Windows音频接口的前向声明
-struct IMMDeviceEnumerator;
-struct IMMDevice;
-struct IAudioClient;
-struct IAudioCaptureClient;
 
 namespace live_assistant {
 
 // 前向声明
 struct AudioFrame;
+class AudioCapturer;
 
-class AudioEngine {
+class AudioEngine : public QObject {
+    Q_OBJECT
+
 public:
     AudioEngine();
     ~AudioEngine();
@@ -35,7 +34,7 @@ public:
     bool stop_capture();
 
     struct AudioDeviceInfo {
-        std::string id;     // WASAPI endpoint id (UTF-8)
+        std::string id;     // Qt device id (UTF-8)
         std::string name;   // Friendly name (UTF-8)
     };
 
@@ -74,13 +73,19 @@ public:
     int get_sample_rate() const;
     int get_channels() const;
 
+signals:
+    // 发送原始音频数据（用于编码器）- 直接转发 QByteArray，不使用队列
+    void audio_data_ready(const QByteArray& data, int64_t timestamp);
+
+public slots:
+    // 处理 AudioCapturer 的数据捕获信号
+    void on_data_captured(QByteArray data, int64_t timestamp);
+
 private:
-    void capture_thread_func();
-    ErrorCode initialize_wasapi();
-    void cleanup_wasapi();
 
     int sample_rate_ = 0;
     int channels_ = 0;
+    int sample_size_ = 16;  // 16-bit PCM
 
     bool is_capturing_ = false;
     std::string selected_microphone_id_;
@@ -95,14 +100,8 @@ private:
     float speaker_volume_ = 1.0f;
     bool speaker_muted_ = false;
 
-    IMMDeviceEnumerator* enumerator_ = nullptr;
-    IMMDevice* audio_device_ = nullptr;
-    IAudioClient* audio_client_ = nullptr;
-    IAudioCaptureClient* capture_client_ = nullptr;
-    void* format_ = nullptr;
-
-    std::thread capture_thread_;
-    std::atomic<bool> stop_capture_flag_ = false;
+    // 音频捕获器（从原项目移植）
+    std::unique_ptr<AudioCapturer> audio_capturer_;
 
     std::mutex frame_mutex_;
     std::condition_variable frame_cv_;

@@ -1,0 +1,700 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+	<class>SettingsPanel</class>
+	<widget class="QDialog" name="SettingsPanel">
+		<property name="geometry">
+			<rect>
+				<x>0</x>
+				<y>0</y>
+				<width>720</width>
+				<height>520</height>
+			</rect>
+		</property>
+		<property name="windowTitle">
+			<string>设置</string>
+		</property>
+		<property name="styleSheet">
+			<string notr="true">QDialog { background-color: #2a2a2a; color: #ffffff; }
+QWidget { background-color: #2a2a2a; color: #ffffff; }
+QLabel { color: #ffffff; }
+QCheckBox { color: #ffffff; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #555555; border-radius: 3px; background-color: #333333; }
+QCheckBox::indicator:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
+QSpinBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 4px; }
+QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; min-width: 120px; }
+QComboBox::drop-down { width: 20px; border: none; }
+QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 8px 16px; min-width: 60px; }
+QPushButton:hover { background-color: #444444; }
+QPushButton:pressed { background-color: #555555; }
+QPushButton:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
+#navWidget { background-color: #222222; }
+#navWidget QPushButton { background-color: transparent; color: #cccccc; border: none; border-left: 3px solid transparent; text-align: left; padding: 12px 16px; font-size: 14px; }
+#navWidget QPushButton:hover { background-color: #333333; color: #ffffff; }
+#navWidget QPushButton:checked { background-color: #2a2a2a; color: #ffffff; border-left-color: #4a6ef0; }
+#contentWidget { background-color: #2a2a2a; }
+#contentWidget QLabel { font-size: 13px; }</string>
+		</property>
+		<layout class="QHBoxLayout" name="horizontalLayout_main">
+			<property name="spacing">
+				<number>0</number>
+			</property>
+			<property name="leftMargin">
+				<number>0</number>
+			</property>
+			<property name="topMargin">
+				<number>0</number>
+			</property>
+			<property name="rightMargin">
+				<number>0</number>
+			</property>
+			<property name="bottomMargin">
+				<number>0</number>
+			</property>
+			<item>
+				<widget class="QWidget" name="navWidget" native="true">
+					<property name="minimumSize">
+						<size>
+							<width>140</width>
+							<height>0</height>
+						</size>
+					</property>
+					<property name="maximumSize">
+						<size>
+							<width>160</width>
+							<height>16777215</height>
+						</size>
+					</property>
+					<layout class="QVBoxLayout" name="verticalLayout_nav">
+						<property name="spacing">
+							<number>0</number>
+						</property>
+						<property name="leftMargin">
+							<number>0</number>
+						</property>
+						<property name="topMargin">
+							<number>0</number>
+						</property>
+						<property name="rightMargin">
+							<number>0</number>
+						</property>
+						<property name="bottomMargin">
+							<number>0</number>
+						</property>
+						<item>
+							<widget class="QPushButton" name="pushButton_video">
+								<property name="text">
+									<string>视频</string>
+								</property>
+								<property name="checkable">
+									<bool>true</bool>
+								</property>
+								<property name="checked">
+									<bool>true</bool>
+								</property>
+							</widget>
+						</item>
+						<item>
+							<widget class="QPushButton" name="pushButton_audio">
+								<property name="text">
+									<string>音频</string>
+								</property>
+								<property name="checkable">
+									<bool>true</bool>
+								</property>
+							</widget>
+						</item>
+						<item>
+							<widget class="QPushButton" name="pushButton_camera">
+								<property name="text">
+									<string>摄像头</string>
+								</property>
+								<property name="checkable">
+									<bool>true</bool>
+								</property>
+							</widget>
+						</item>
+						<item>
+							<widget class="QPushButton" name="pushButton_background">
+								<property name="text">
+									<string>背景</string>
+								</property>
+								<property name="checkable">
+									<bool>true</bool>
+								</property>
+							</widget>
+						</item>
+						<item>
+							<spacer name="verticalSpacer_nav">
+								<property name="orientation">
+									<enum>Qt::Vertical</enum>
+								</property>
+								<property name="sizeHint" stdset="0">
+									<size>
+										<width>20</width>
+										<height>40</height>
+									</size>
+								</property>
+							</spacer>
+						</item>
+					</layout>
+				</widget>
+			</item>
+			<item>
+				<widget class="QWidget" name="contentWidget" native="true">
+					<layout class="QVBoxLayout" name="verticalLayout_content">
+						<property name="spacing">
+							<number>16</number>
+						</property>
+						<property name="leftMargin">
+							<number>24</number>
+						</property>
+						<property name="topMargin">
+							<number>20</number>
+						</property>
+						<property name="rightMargin">
+							<number>24</number>
+						</property>
+						<property name="bottomMargin">
+							<number>20</number>
+						</property>
+						<item>
+							<widget class="QWidget" name="page_video" native="true">
+								<layout class="QVBoxLayout" name="verticalLayout_video">
+									<property name="spacing">
+										<number>16</number>
+									</property>
+									<property name="leftMargin">
+										<number>0</number>
+									</property>
+									<property name="topMargin">
+										<number>0</number>
+									</property>
+									<property name="rightMargin">
+										<number>0</number>
+									</property>
+									<property name="bottomMargin">
+										<number>0</number>
+									</property>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_video">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_video">
+													<property name="text">
+														<string>分辨率</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_video"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_fps">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_fps">
+													<property name="text">
+														<string>帧率</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_fps"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_bitrate">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_bitrate">
+													<property name="text">
+														<string>码率</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QSpinBox" name="spinBox_bitrate">
+													<property name="minimum">
+														<number>200</number>
+													</property>
+													<property name="maximum">
+														<number>50000</number>
+													</property>
+													<property name="value">
+														<number>2500</number>
+													</property>
+													<property name="suffix">
+														<string> kbps</string>
+													</property>
+												</widget>
+											</item>
+										</layout>
+									</item>
+								</layout>
+							</widget>
+						</item>
+						<item>
+							<widget class="QWidget" name="page_audio" native="true">
+								<layout class="QVBoxLayout" name="verticalLayout_audio">
+									<property name="spacing">
+										<number>16</number>
+									</property>
+									<property name="leftMargin">
+										<number>0</number>
+									</property>
+									<property name="topMargin">
+										<number>0</number>
+									</property>
+									<property name="rightMargin">
+										<number>0</number>
+									</property>
+									<property name="bottomMargin">
+										<number>0</number>
+									</property>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_mic">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_mic">
+													<property name="text">
+														<string>麦克风</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_mic"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_micVolume">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_micVolume">
+													<property name="text">
+														<string>麦克风音量</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QSlider" name="slider_micVolume">
+													<property name="minimum">
+														<number>0</number>
+													</property>
+													<property name="maximum">
+														<number>100</number>
+													</property>
+													<property name="value">
+														<number>80</number>
+													</property>
+													<property name="orientation">
+														<enum>Qt::Horizontal</enum>
+													</property>
+													<property name="tickPosition">
+														<enum>QSlider::NoTicks</enum>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QLabel" name="label_micVolumeValue">
+													<property name="text">
+														<string>80%</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>40</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_speaker">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_speaker">
+													<property name="text">
+														<string>扬声器</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_speaker"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_speakerVolume">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_speakerVolume">
+													<property name="text">
+														<string>扬声器音量</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QSlider" name="slider_speakerVolume">
+													<property name="minimum">
+														<number>0</number>
+													</property>
+													<property name="maximum">
+														<number>100</number>
+													</property>
+													<property name="value">
+														<number>80</number>
+													</property>
+													<property name="orientation">
+														<enum>Qt::Horizontal</enum>
+													</property>
+													<property name="tickPosition">
+														<enum>QSlider::NoTicks</enum>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QLabel" name="label_speakerVolumeValue">
+													<property name="text">
+														<string>80%</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>40</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+										</layout>
+									</item>
+								</layout>
+							</widget>
+						</item>
+						<item>
+							<widget class="QWidget" name="page_camera" native="true">
+								<layout class="QVBoxLayout" name="verticalLayout_camera">
+									<property name="spacing">
+										<number>16</number>
+									</property>
+									<property name="leftMargin">
+										<number>0</number>
+									</property>
+									<property name="topMargin">
+										<number>0</number>
+									</property>
+									<property name="rightMargin">
+										<number>0</number>
+									</property>
+									<property name="bottomMargin">
+										<number>0</number>
+									</property>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_camera">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_camera">
+													<property name="text">
+														<string>摄像头</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_camera"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_camResolution">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_camResolution">
+													<property name="text">
+														<string>分辨率</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_camResolution"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_camFps">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_camFps">
+													<property name="text">
+														<string>帧率</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_camFps"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_mirror">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_mirror">
+													<property name="text">
+														<string>画面镜像</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QCheckBox" name="checkBox_mirror"/>
+											</item>
+										</layout>
+									</item>
+								</layout>
+							</widget>
+						</item>
+						<item>
+							<widget class="QWidget" name="page_background" native="true">
+								<layout class="QVBoxLayout" name="verticalLayout_background">
+									<property name="spacing">
+										<number>16</number>
+									</property>
+									<property name="leftMargin">
+										<number>0</number>
+									</property>
+									<property name="topMargin">
+										<number>0</number>
+									</property>
+									<property name="rightMargin">
+										<number>0</number>
+									</property>
+									<property name="bottomMargin">
+										<number>0</number>
+									</property>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_bgType">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_bgType">
+													<property name="text">
+														<string>背景类型</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_bgType"/>
+											</item>
+										</layout>
+									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_bgBlur">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_bgBlur">
+													<property name="text">
+														<string>背景模糊</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QSlider" name="slider_bgBlur">
+													<property name="minimum">
+														<number>0</number>
+													</property>
+													<property name="maximum">
+														<number>100</number>
+													</property>
+													<property name="value">
+														<number>0</number>
+													</property>
+													<property name="orientation">
+														<enum>Qt::Horizontal</enum>
+													</property>
+													<property name="tickPosition">
+														<enum>QSlider::NoTicks</enum>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QLabel" name="label_bgBlurValue">
+													<property name="text">
+														<string>0%</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>40</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+										</layout>
+									</item>
+								</layout>
+							</widget>
+						</item>
+						<item>
+							<spacer name="verticalSpacer_content">
+								<property name="orientation">
+									<enum>Qt::Vertical</enum>
+								</property>
+								<property name="sizeHint" stdset="0">
+									<size>
+										<width>20</width>
+										<height>20</height>
+									</size>
+								</property>
+							</spacer>
+						</item>
+						<item>
+							<layout class="QHBoxLayout" name="horizontalLayout_buttons">
+								<property name="spacing">
+									<number>12</number>
+								</property>
+								<item>
+									<spacer name="horizontalSpacer_buttons">
+										<property name="orientation">
+											<enum>Qt::Horizontal</enum>
+										</property>
+										<property name="sizeHint" stdset="0">
+											<size>
+												<width>40</width>
+												<height>20</height>
+											</size>
+										</property>
+									</spacer>
+								</item>
+								<item>
+									<widget class="QPushButton" name="pushButton_cancel">
+										<property name="text">
+											<string>取消</string>
+										</property>
+									</widget>
+								</item>
+								<item>
+									<widget class="QPushButton" name="pushButton_ok">
+										<property name="text">
+											<string>确定</string>
+										</property>
+										<property name="styleSheet">
+											<string notr="true">background-color: #4a6ef0; color: white; border: none;</string>
+										</property>
+									</widget>
+								</item>
+							</layout>
+						</item>
+					</layout>
+				</widget>
+			</item>
+		</layout>
+	</widget>
+	<resources/>
+	<connections/>
+</ui>

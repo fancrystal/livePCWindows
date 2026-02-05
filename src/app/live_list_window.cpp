@@ -1,6 +1,10 @@
 #include "app/live_list_window.h"
 #include "ui_live_list_window.h"
+#include "http/client_service.h"
+#include "http/live_item.h"
+#include "app/config.h"
 #include "common/log.h"
+#include<QWindow>
 #include <QJsonDocument>
 #include <QMessageBox>
 #include <QUrl>
@@ -10,31 +14,30 @@
 #include <QLabel>
 #include <QEvent>
 #include <QGraphicsDropShadowEffect>
-#include <QPushButton>
 #include <QMouseEvent>
 #include <QPoint>
 #include <QPainter>
 #include <QPainterPath>
+#include <QScreen>
 #include <QTextLayout>
 #include <QFontMetrics>
 #include <QLinearGradient>
-#include <QLabel>
 
 namespace live_assistant {
 
-LiveListWindow::LiveListWindow(QWidget *parent) :
+LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::LiveListWindow),
-    network_manager_(nullptr),
+    user_id_(user_id),
+    token_(token),
     current_page_(1),
-    total_pages_(5) {
+    total_pages_(5),
+    current_status_index_(0),
+    current_search_keyword_() {  // 初始化为空字符串
     ui->setupUi(this);
     
     // 初始化服务器地址
     server_address_ = "ws://localhost:8080";
-    
-    // 创建NetworkManager实例
-    network_manager_ = new NetworkManager(this);
     
     // 设置窗口标题
     setWindowTitle("启点点直播 - 直播列表");
@@ -54,6 +57,8 @@ LiveListWindow::LiveListWindow(QWidget *parent) :
         );
         ui->categoryComboBox->setStyleSheet(
             "QComboBox { background-color: rgba(255,255,255,0.04); color: #ffffff; border: 1px solid rgba(255,255,255,0.04); border-radius: 4px; padding: 4px; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background-color: rgba(40, 30, 50, 0.95); color: rgba(220, 200, 255, 0.9); selection-background-color: rgba(100, 80, 150, 0.6); selection-color: #ffffff; border: 1px solid rgba(100, 80, 150, 0.3); }"
         );
         // create button: gradient pill
         ui->createLiveButton->setStyleSheet(
@@ -202,8 +207,12 @@ LiveListWindow::LiveListWindow(QWidget *parent) :
     connect(ui->refreshButton, &QPushButton::clicked, this, &LiveListWindow::on_refreshButton_clicked);
     connect(ui->createLiveButton, &QPushButton::clicked, this, &LiveListWindow::on_createLiveButton_clicked);
     connect(ui->searchButton, &QPushButton::clicked, this, &LiveListWindow::on_searchButton_clicked);
+    // 搜索框回车键触发搜索
+    connect(ui->searchLineEdit, &QLineEdit::returnPressed, this, &LiveListWindow::on_searchButton_clicked);
     connect(ui->prevPageButton, &QPushButton::clicked, this, &LiveListWindow::on_prevPageButton_clicked);
     connect(ui->nextPageButton, &QPushButton::clicked, this, &LiveListWindow::on_nextPageButton_clicked);
+    connect(ui->categoryComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &LiveListWindow::on_categoryComboBox_currentIndexChanged);
     
     // 设置页按钮连接
     QList<QPushButton*> page_buttons = {
@@ -230,31 +239,27 @@ LiveListWindow::LiveListWindow(QWidget *parent) :
     
     LOG_INFO("LiveListWindow created");
 
+    // DPI 适配：监听屏幕 DPI 变化
+    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
+        if (screen) {
+            LOG_INFO("LiveListWindow: Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
+            this->updateGeometry();
+        }
+    });
+
+    if (windowHandle() && windowHandle()->screen()) {
+        connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
+            LOG_INFO("LiveListWindow: DPI changed to: " + std::to_string(dpi));
+            this->updateGeometry();
+        });
+    }
+
     // QML integration removed — keeping original QWidget-based UI
 }
 
 LiveListWindow::~LiveListWindow() {
     LOG_INFO("LiveListWindow destroyed");
     delete ui;
-}
-
-void LiveListWindow::set_user_info(const QString& user_id, const QString& token) {
-    user_id_ = user_id;
-    token_ = token;
-    
-    if (network_manager_) {
-        network_manager_->setCredentials(user_id_, token_);
-    }
-    
-    LOG_INFO("User info set: user_id=" + user_id_.toStdString());
-}
-
-void LiveListWindow::connect_to_server() {
-    if (network_manager_) {
-        network_manager_->setServerAddress(server_address_);
-        network_manager_->connectToServer();
-        LOG_INFO("Connecting to server: " + server_address_.toStdString());
-    }
 }
 
 void LiveListWindow::setup_live_list() {
@@ -276,7 +281,7 @@ void LiveListWindow::setup_live_list() {
     if (current_page_ < 1) current_page_ = 1;
     if (current_page_ > total_pages_) current_page_ = total_pages_;
     int start = (current_page_ - 1) * page_size;
-    int end = std::min(start + page_size, total_items);
+    int end = qMin(start + page_size, total_items);
 
     for (int idx = start; idx < end; ++idx) {
         int i = idx;
@@ -315,10 +320,28 @@ void LiveListWindow::setup_live_list() {
         // if live_list_ has data, use it
         QString titleText = QString("测试直播间%1").arg(i+1);
         QString metaText = QString("房间号: %1   %2").arg(100000 + i).arg("2026-01-04 14:00:00");
+        QString typeText = QString("类型: 未知");
+        QString countText = QString("预约: 0  观看: 0");
+
         if (i < live_list_.size()) {
             QJsonObject obj = live_list_.at(i).toObject();
             titleText = obj.value("name").toString();
             metaText = QString("房间号: %1   %2").arg(obj.value("id").toString()).arg(obj.value("startTime").toString());
+
+            // 直播类型
+            int roomType = obj.value("type").toString().toInt();
+            QString typeName;
+            switch (roomType) {
+            case 1: typeName = "横屏直播"; break;
+            case 2: typeName = "竖屏直播"; break;
+            default: typeName = "普通直播"; break;
+            }
+            typeText = QString("类型: %1").arg(typeName);
+
+            // 预约人数和观看人数
+            int reserveCount = obj.value("reserveCount").toInt();
+            int viewCount = obj.value("viewCount").toInt();
+            countText = QString("预约: %1  观看: %2").arg(reserveCount).arg(viewCount);
         }
 
         QLabel* title = new QLabel(card);
@@ -364,6 +387,16 @@ void LiveListWindow::setup_live_list() {
         meta->setStyleSheet("color: rgba(255,255,255,0.7); font-size: 11px;");
         vbox->addWidget(meta);
 
+        // 添加类型信息
+        QLabel* typeLabel = new QLabel(typeText, card);
+        typeLabel->setStyleSheet("color: rgba(255,255,255,0.6); font-size: 10px;");
+        vbox->addWidget(typeLabel);
+
+        // 添加预约和观看人数
+        QLabel* countLabel = new QLabel(countText, card);
+        countLabel->setStyleSheet("color: rgba(255,255,255,0.6); font-size: 10px;");
+        vbox->addWidget(countLabel);
+
         // Overlay transparent button to handle clicks
         QPushButton* overlay = new QPushButton(card);
         overlay->setFlat(true);
@@ -373,7 +406,8 @@ void LiveListWindow::setup_live_list() {
         );
         overlay->setGeometry(0, 0, card->width(), card->height());
         overlay->raise();
-        connect(overlay, &QPushButton::clicked, [this, i]() { on_live_item_clicked(i); });
+        // 按值捕获 idx 以避免循环变量问题
+        connect(overlay, &QPushButton::clicked, [this, idx]() { on_live_item_clicked(idx); });
 
         // small icon top-left
         QLabel* icon = new QLabel(card);
@@ -435,21 +469,75 @@ void LiveListWindow::setup_live_list() {
 }
 
 void LiveListWindow::load_live_list() {
-    // 从网络获取直播列表
-    // TODO: 实现与NetworkManager的交互获取直播列表
-    // 当前使用模拟数据
-    QJsonArray mock_live_list;
-    for (int i = 0; i < 20; ++i) {
-        QJsonObject live_info;
-        live_info["id"] = QString("live_%1").arg(i + 1);
-        live_info["name"] = QString("测试直播间%1").arg(i + 1);
-        live_info["status"] = "直播中";
-        live_info["startTime"] = "2026-01-04 14:00:00";
-        mock_live_list.append(live_info);
+    LOG_INFO("开始加载直播列表...");
+
+    // 清除搜索关键字和搜索框
+    current_search_keyword_.clear();
+    ui->searchLineEdit->clear();
+
+    // 获取服务器配置
+    QString liveUrl = ::ConfigManager::instance().getLiveUrl();
+
+    // 获取当前选中状态对应的roomState
+    int roomState = getCurrentRoomState();
+
+    // 使用 ClientService 获取直播列表
+    ClientService* client = ClientService::instance();
+    QList<LiveItem> liveList;
+    int totalCount = 0;
+    QString errMsg;
+
+    bool success = client->getLiveList(
+        liveUrl,
+        user_id_,
+        token_,
+        1,          // pageNum
+        100,        // pageSize
+        0,          // liveType: 0=全部
+        roomState,  // liveStreamStatus: 根据UI选择
+        1,          // reviewStatus: 1=审核通过
+        liveList,
+        totalCount,
+        errMsg
+    );
+
+    if (!success) {
+        LOG_WARNING(QString("获取直播列表失败: %1").arg(errMsg).toStdString());
+        QMessageBox::warning(this, "错误", QString("获取直播列表失败: %1").arg(errMsg));
+        return;
     }
-    
-    on_live_list_received(mock_live_list);
-    LOG_INFO("Live list loading...");
+
+    LOG_INFO(QString("成功获取直播列表: %1条记录").arg(liveList.size()).toStdString());
+
+    // 保存完整的 LiveItem 列表
+    full_live_items_ = liveList;
+
+    // 转换为QJsonArray格式
+    QJsonArray formattedList;
+    for (const LiveItem& item : liveList) {
+        QJsonObject formatted;
+        formatted["id"] = item.liveId;
+        formatted["name"] = item.title;
+        formatted["startTime"] = item.createTime.toString("yyyy-MM-dd HH:mm:ss");
+        formatted["type"] = item.type;
+
+        // 状态映射
+        QString statusText;
+        switch (item.status) {
+        case LiveStatus::PENDING: statusText = "待开播"; break;
+        case LiveStatus::LIVE: statusText = "直播中"; break;
+        case LiveStatus::ENDED: statusText = "已结束"; break;
+        default: statusText = "未知"; break;
+        }
+        formatted["status"] = statusText;
+
+        formatted["viewCount"] = item.viewCount;
+        formatted["reserveCount"] = item.reserveCount;
+
+        formattedList.append(formatted);
+    }
+
+    on_live_list_received(formattedList);
 }
 
 void LiveListWindow::add_live_item(const QJsonObject& live_info) {
@@ -462,20 +550,54 @@ void LiveListWindow::add_live_item(const QJsonObject& live_info) {
 }
 
 void LiveListWindow::on_live_item_clicked(int index) {
-    QString live_id = QString("live_%1").arg(index + 1);
-    LOG_INFO("Live item clicked: " + live_id.toStdString());
-    
-    // 发射直播选中信号
-    emit live_selected(live_id);
-    
-    // 关闭当前窗口
-    close();
+    // 检查索引是否有效
+    if (index < 0 || index >= live_list_.size()) {
+        LOG_WARNING("Invalid live item index: " + QString::number(index).toStdString());
+        return;
+    }
+
+    // 检查 LiveItem 索引是否有效
+    if (index < 0 || index >= current_live_items_.size()) {
+        LOG_WARNING("Invalid LiveItem index: " + QString::number(index).toStdString());
+        return;
+    }
+
+    // 从 live_list_ 中获取真实的直播间 ID
+    QJsonObject live_obj = live_list_.at(index).toObject();
+    QString live_id = live_obj.value("id").toString();
+
+    if (live_id.isEmpty()) {
+        LOG_WARNING("Live ID is empty for index: " + QString::number(index).toStdString());
+        return;
+    }
+
+    // 从 current_live_items_ 中获取对应的 LiveItem（索引对应）
+    const LiveItem& liveItem = current_live_items_[index];
+
+    LOG_INFO(QString("Live item clicked: index=%1, live_id=%2, title=%3")
+        .arg(index).arg(live_id).arg(liveItem.title).toStdString());
+
+    // 发射直播选中信号（传递真实的直播间ID和完整的LiveItem）
+    emit live_selected(live_id, liveItem);
+
+    // 隐藏当前窗口（而不是关闭，这样返回时可以快速显示）
+    hide();
 }
 
 void LiveListWindow::on_live_list_received(const QJsonArray& live_list) {
-    live_list_ = live_list;
+    full_live_list_ = live_list;  // 保存完整列表JSON
+
+    // 如果有搜索关键字，进行过滤；否则显示全部
+    if (!current_search_keyword_.isEmpty()) {
+        filter_live_list(current_search_keyword_);
+    } else {
+        live_list_ = full_live_list_;
+        current_live_items_ = full_live_items_;  // 同时更新LiveItem列表
+    }
+
+    current_page_ = 1;  // 重置到第一页
     setup_live_list();
-    LOG_INFO("Live list received: " + QString::number(live_list.size()).toStdString() + " items");
+    LOG_INFO("Live list received: " + QString::number(full_live_list_.size()).toStdString() + " items, displayed: " + QString::number(live_list_.size()).toStdString() + " items");
 }
 
 void LiveListWindow::on_refreshButton_clicked() {
@@ -493,7 +615,50 @@ void LiveListWindow::on_createLiveButton_clicked() {
 void LiveListWindow::on_searchButton_clicked() {
     QString search_text = ui->searchLineEdit->text().trimmed();
     LOG_INFO("Search button clicked: " + search_text.toStdString());
-    // TODO: 实现搜索功能
+
+    current_search_keyword_ = search_text;
+
+    if (search_text.isEmpty()) {
+        // 如果搜索框为空，显示完整列表
+        live_list_ = full_live_list_;
+    } else {
+        // 过滤列表
+        filter_live_list(search_text);
+    }
+
+    // 重置到第一页并更新显示
+    current_page_ = 1;
+    setup_live_list();
+    LOG_INFO(QString("Search completed. Found %1 items").arg(live_list_.size()).toStdString());
+}
+
+// 根据关键字过滤直播列表（不完全匹配）
+void LiveListWindow::filter_live_list(const QString& keyword) {
+    live_list_ = QJsonArray();
+    current_live_items_.clear();
+
+    // 同时过滤 LiveItem 列表
+    for (int i = 0; i < full_live_list_.size(); ++i) {
+        QJsonObject obj = full_live_list_.at(i).toObject();
+        QString name = obj.value("name").toString();
+        QString id = obj.value("id").toString();
+
+        // 不完全匹配：只要包含关键字即可
+        if (name.contains(keyword, Qt::CaseInsensitive) ||
+            id.contains(keyword, Qt::CaseInsensitive)) {
+            live_list_.append(obj);
+            // 同时保存对应的 LiveItem（确保索引对应）
+            if (i < full_live_items_.size()) {
+                current_live_items_.append(full_live_items_[i]);
+            }
+        }
+    }
+
+    LOG_INFO(QString("Filter by '%1': %2 -> %3 items")
+        .arg(keyword)
+        .arg(full_live_list_.size())
+        .arg(live_list_.size())
+        .toStdString());
 }
 
 void LiveListWindow::on_prevPageButton_clicked() {
@@ -660,6 +825,25 @@ bool LiveListWindow::eventFilter(QObject* watched, QEvent* event) {
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+// 根据当前选中状态返回对应的roomState值
+// 0=待开播, 1=直播中, 2=已结束
+int LiveListWindow::getCurrentRoomState() const {
+    // categoryComboBox 索引: 0=待开播(1), 1=直播中(2), 2=已结束(3)
+    return current_status_index_ + 1;
+}
+
+// 状态筛选下拉框切换
+void LiveListWindow::on_categoryComboBox_currentIndexChanged(int index) {
+    if (index < 0 || index > 2) return;
+    
+    current_status_index_ = index;
+    current_page_ = 1;  // 切换状态时重置到第一页
+    load_live_list();
+    
+    QString statusNames[] = {"待开播", "直播中", "已结束"};
+    LOG_INFO(QString("切换状态筛选: %1").arg(statusNames[index]).toStdString());
 }
 
 } // namespace live_assistant

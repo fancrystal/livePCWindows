@@ -1,6 +1,6 @@
 #ifndef DOWNLOADMANAGER_H
 #define DOWNLOADMANAGER_H
-#include "live_item.h"
+#include "app/live_item.h"
 #include <QObject>
 #include <QMutex>
 #include <QQueue>

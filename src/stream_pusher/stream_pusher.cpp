@@ -107,24 +107,55 @@ ErrorCode StreamPusher::start() {
 
 ErrorCode StreamPusher::stop() {
     Log::info("Stopping stream pusher");
-    
+
     if (state_ == StreamState::IDLE || state_ == StreamState::ERR) {
         return ErrorCode::SUCCESS;
     }
-    
+
     set_state(StreamState::STOPPING);
-    
+
+    // Signal the thread to stop
     stop_thread_ = true;
+
+    // Wait for queue to drain before forcing stop (graceful shutdown)
+    const int max_wait_ms = 2000;  // Wait up to 2 seconds
+    const int check_interval_ms = 50;
+    int total_waited = 0;
+
+    size_t initial_queue_size = push_queue_.size();
+    if (initial_queue_size > 0) {
+        Log::info("Waiting for queue to drain: " + std::to_string(initial_queue_size) + " packets remaining");
+    }
+
+    while (total_waited < max_wait_ms && !push_queue_.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(check_interval_ms));
+        total_waited += check_interval_ms;
+
+        // Log progress every 500ms
+        if (total_waited % 500 == 0) {
+            Log::info("Still waiting for queue: " + std::to_string(push_queue_.size()) + " packets remaining");
+        }
+    }
+
+    size_t final_queue_size = push_queue_.size();
+    if (final_queue_size > 0) {
+        Log::warn("Queue not fully drained, " + std::to_string(final_queue_size) + " packets will be discarded");
+    } else {
+        Log::info("Queue fully drained before stop");
+    }
+
+    // Now join the thread
     if (push_thread_.joinable()) {
         push_thread_.join();
     }
-    
+
     rtmp_pusher_.disconnect();
-    
+
+    // Clear any remaining packets in queue
     push_queue_.clear();
-    
+
     set_state(StreamState::IDLE);
-    
+
     Log::info("Stream pusher stopped successfully");
     return ErrorCode::SUCCESS;
 }
@@ -143,10 +174,17 @@ ErrorCode StreamPusher::push_packet(EncodedPacketPtr packet) {
     return ErrorCode::SUCCESS;
 }
 
+void StreamPusher::clear_queue() {
+    size_t cleared = push_queue_.size();
+    push_queue_.clear();
+    Log::info("Stream pusher queue cleared: " + std::to_string(cleared) + " packets discarded");
+}
+
 void StreamPusher::push_thread_func() {
     Log::info("Push thread started");
 
     EncodedPacketPtr packet;
+    auto last_reconnect_attempt = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
     while (!stop_thread_) {
         if (push_queue_.pop(packet, 100)) {
@@ -157,12 +195,29 @@ void StreamPusher::push_thread_func() {
 
                 if (result == ErrorCode::NOT_CONNECTED) {
                     if (config_.auto_reconnect) {
-                        ErrorCode reconnect_result = try_reconnect();
-                        if (reconnect_result != ErrorCode::SUCCESS) {
-                            Log::error("Failed to reconnect after multiple attempts");
-                            set_state(StreamState::ERR);
-                            break;
+                        // Non-blocking reconnection: only attempt once if enough time has passed
+                        auto now = std::chrono::steady_clock::now();
+                        auto time_since_last_attempt = std::chrono::duration_cast<std::chrono::seconds>(now - last_reconnect_attempt);
+
+                        if (time_since_last_attempt.count() >= config_.reconnect_interval_sec) {
+                            reconnect_attempts_++;
+                            last_reconnect_attempt = now;
+
+                            ErrorCode reconnect_result = rtmp_pusher_.connect_and_write_header();
+                            if (reconnect_result == ErrorCode::SUCCESS) {
+                                Log::info("Reconnected to RTMP server successfully");
+                                set_state(StreamState::PUSHING);
+                                // Retry sending the current packet after successful reconnection
+                                result = rtmp_pusher_.send_packet(packet);
+                                if (result != ErrorCode::SUCCESS) {
+                                    Log::warn("Failed to send packet immediately after reconnection");
+                                }
+                            } else {
+                                Log::error("Reconnect attempt failed, will retry later");
+                                // Don't break - continue processing packets
+                            }
                         }
+                        // else: too soon since last attempt, skip reconnection this time
                     } else {
                         Log::error("Connection lost and auto-reconnect disabled");
                         set_state(StreamState::ERR);
@@ -173,40 +228,19 @@ void StreamPusher::push_thread_func() {
                 }
             }
         }
-        // 避免CPU空转，短暂休眠
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // Note: No additional sleep needed here - push_queue_.pop() already handles
+        // waiting with 100ms timeout using condition variable, which is more efficient
     }
 
     Log::info("Push thread exited");
 }
 
+// Note: try_reconnect() has been replaced with non-blocking reconnection logic
+// directly in push_thread_func() to avoid blocking the push thread
 ErrorCode StreamPusher::try_reconnect() {
-    Log::info("Attempting to reconnect to RTMP server");
-    
-    int max_attempts = config_.max_reconnect_attempts;
-    int attempt = 0;
-    
-    while (attempt < max_attempts && !stop_thread_) {
-        attempt++;
-        reconnect_attempts_++;
-        
-        Log::info("Reconnect attempt " + std::to_string(attempt) + "/" + std::to_string(max_attempts));
-        
-        std::this_thread::sleep_for(std::chrono::seconds(config_.reconnect_interval_sec));
-        
-        ErrorCode result = rtmp_pusher_.connect_and_write_header();
-        if (result == ErrorCode::SUCCESS) {
-            Log::info("Reconnected to RTMP server successfully");
-            set_state(StreamState::PUSHING);
-            return ErrorCode::SUCCESS;
-        }
-        
-        Log::error("Reconnect attempt failed");
-        std::this_thread::sleep_for(std::chrono::seconds(config_.reconnect_interval_sec * attempt));
-    }
-    
-    Log::error("All reconnect attempts failed");
-    return ErrorCode::CONNECT_FAILED;
+    // This function is kept for potential future use but is not called anymore
+    // The new non-blocking reconnection logic is in push_thread_func()
+    return ErrorCode::FAILURE;
 }
 
 StreamState StreamPusher::get_state() const {

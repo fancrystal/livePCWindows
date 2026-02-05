@@ -8,10 +8,6 @@ std::unique_ptr<AudioEncoder> EncoderFactory::create_audio_encoder(const AudioEn
     std::unique_ptr<AudioEncoder> encoder;
     
     switch (config.codec) {
-        case AudioCodecType::OPUS:
-            LOG_INFO("Creating Opus encoder");
-            encoder = std::make_unique<OpusEncoder>();
-            break;
         case AudioCodecType::AAC:
             LOG_INFO("Creating AAC encoder");
             encoder = std::make_unique<AACEncoder>();

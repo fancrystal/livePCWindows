@@ -51,7 +51,7 @@
          </property>
          <item>
           <property name="text">
-           <string>所有</string>
+           <string>待开播</string>
           </property>
          </item>
          <item>
@@ -61,7 +61,7 @@
          </item>
          <item>
           <property name="text">
-           <string>预告</string>
+           <string>已结束</string>
           </property>
          </item>
         </widget>

@@ -4,65 +4,63 @@
 #include <QMainWindow>
 #include <QJsonArray>
 #include <QJsonObject>
-#include "http/network_manager.h"
+#include <QComboBox>
 #include <QPoint>
-
+#include "http/live_item.h"
 namespace Ui {
 class LiveListWindow;
 }
-
 namespace live_assistant {
+    class LiveListWindow : public QMainWindow {
+        Q_OBJECT
 
-class LiveListWindow : public QMainWindow {
-    Q_OBJECT
+    public:
+        explicit LiveListWindow(const QString& user_id = QString(), const QString& token = QString(), QWidget* parent = nullptr);
+        ~LiveListWindow();
 
-public:
-    explicit LiveListWindow(QWidget *parent = nullptr);
-    ~LiveListWindow();
+    public slots:
+        void on_live_item_clicked(int index);
+        void on_live_list_received(const QJsonArray& live_list);
 
-    void set_user_info(const QString& user_id, const QString& token);
-    void connect_to_server();
+    signals:
+        void live_selected(const QString& live_id, const LiveItem& liveItem);
 
-public slots:
-    void on_live_item_clicked(int index);
-    void on_live_list_received(const QJsonArray& live_list);
+    private slots:
+        void on_refreshButton_clicked();
+        void on_createLiveButton_clicked();
+        void on_searchButton_clicked();
+        void on_prevPageButton_clicked();
+        void on_nextPageButton_clicked();
+        void on_page_button_clicked();
+        void on_categoryComboBox_currentIndexChanged(int index);
 
-signals:
-    void live_selected(const QString& live_id);
+    private:
+        void setup_live_list();
+        void load_live_list();
+        void add_live_item(const QJsonObject& live_info);
+        void update_pagination();
+        int getCurrentRoomState() const;
+        void filter_live_list(const QString& keyword);  // 根据关键字过滤直播列表
 
-private slots:
-    void on_refreshButton_clicked();
-    void on_createLiveButton_clicked();
-    void on_searchButton_clicked();
-    void on_prevPageButton_clicked();
-    void on_nextPageButton_clicked();
-    void on_page_button_clicked();
+    protected:
+        bool eventFilter(QObject* watched, QEvent* event) override;
 
-private:
-    void setup_live_list();
-    void load_live_list();
-    void add_live_item(const QJsonObject& live_info);
-    void update_pagination();
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override;
-
-private:
-    Ui::LiveListWindow *ui;
-    NetworkManager* network_manager_;
-    QString user_id_;
-    QString token_;
-    QJsonArray live_list_;
-    int current_page_;
-    int total_pages_;
-    QString server_address_;
-    // frameless drag support
-    bool dragging_;
-    QPoint dragStartPos_;
-private slots:
-    // (QML integration removed)
-};
-
-} // namespace live_assistant
+    private:
+        Ui::LiveListWindow* ui;
+        QString user_id_;
+        QString token_;
+        QList<LiveItem> full_live_items_;   // 保存完整的LiveItem列表（未过滤）
+        QList<LiveItem> current_live_items_; // 当前显示的LiveItem列表（可能被搜索过滤）
+        QJsonArray full_live_list_;         // 保存完整的直播列表JSON（未过滤）
+        QJsonArray live_list_;              // 当前显示的直播列表（可能被搜索过滤）
+        int current_page_;
+        int total_pages_;
+        QString server_address_;
+        int current_status_index_;
+        QString current_search_keyword_;  // 当前搜索关键字
+        bool dragging_;
+        QPoint dragStartPos_;
+    };
+}
 
 #endif // LIVE_LIST_WINDOW_H

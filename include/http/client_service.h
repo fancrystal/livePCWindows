@@ -5,7 +5,7 @@
 #include <QMutex>
 #include <QList>
 #include "live_item.h"
-#include "http_client.h"
+#include "http/http_client.h"
 
 class ClientService
 {

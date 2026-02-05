@@ -64,6 +64,10 @@ signals:
 private slots:
     void on_compositor_frame_ready();
     void on_encode_timer();
+    // 处理音频引擎的原始数据（直接转发给编码器）
+    void on_audio_data_ready(const QByteArray& data, int64_t timestamp);
+    // 处理编码后的音频数据（推送到流）
+    void on_audio_encoded(const uint8_t* data, int size, int64_t timestamp);
 
 private:
     void encode_and_push_frame();
@@ -92,6 +96,10 @@ private:
     MediaClock media_clock_;
     bool silent_audio_enabled_ = false;
 
+    // 音频时间戳基准（用于将绝对时间戳转换为相对时间戳）
+    int64_t audio_timestamp_base_ = 0;
+    bool audio_timestamp_base_initialized_ = false;
+
     // 降级策略
     bool adaptive_quality_enabled_ = true;
     int min_fps_threshold_ = 20;
@@ -99,6 +107,15 @@ private:
     bool quality_degraded_ = false;
     int original_fps_ = 30;
     int degraded_fps_ = 15;
+
+    // SWS context cache for RGBA to NV12 conversion (cached for performance)
+    void* sws_context_ = nullptr;
+    int cached_width_ = 0;
+    int cached_height_ = 0;
+
+    // Helper method to get or create SWS context
+    void* get_or_create_sws_context(int src_width, int src_height);
+    void release_sws_context();
 };
 
 } // namespace live_assistant

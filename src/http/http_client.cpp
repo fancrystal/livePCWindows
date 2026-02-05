@@ -100,7 +100,6 @@ QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct cu
     CURLcode res = curl_easy_perform(curl);
 
     if(res != CURLE_OK) {
-        LOG_WARNING(QString("CURL request failed:") + curl_easy_strerror(res)+QString(" cert path: ")+caCertPath);
         return QJsonObject();
     }
 
@@ -175,7 +174,6 @@ bool HttpClient::downloadFile(const QString& url, const QString& saveAsFilePath,
     // 检查URL是否为空或格式不正确
     if (url.isEmpty() || !url.startsWith("http://") && !url.startsWith("https://")) {
         errMsg = QString("下载失败: URL格式错误或为空 (%1)").arg(url);
-        LOG_WARNING("无效的下载URL: " + url);
         return false;
     }
 
@@ -253,7 +251,6 @@ bool HttpClient::downloadFileWithProgress(const QString& url, const QString& sav
     // 检查URL是否为空或格式不正确
     if (url.isEmpty() || !url.startsWith("http://") && !url.startsWith("https://")) {
         errMsg = QString("下载失败: URL格式错误或为空 (%1)").arg(url);
-        LOG_WARNING("无效的下载URL: " + url);
         return false;
     }
 

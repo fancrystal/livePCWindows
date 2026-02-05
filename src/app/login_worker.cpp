@@ -1,0 +1,56 @@
+#include "app/login_worker.h"
+#include "app/login_service.h"
+#include "common/log.h"
+
+LoginWorker::LoginWorker(const QString& loginUrl, const QString& apiKey,
+                         const QString& username, const QString& password,
+                         QObject* parent)
+    : QObject(parent)
+    , loginUrl_(loginUrl)
+    , apiKey_(apiKey)
+    , username_(username)
+    , password_(password)
+    , settings_("LiveAssistant", "Login")
+{
+}
+
+LoginWorker::~LoginWorker()
+{
+}
+
+void LoginWorker::startLogin()
+{
+    QString errMessage;
+    QString userId;
+    QString token;
+
+    LOG_INFO(QString("后台线程开始登录: username=%1").arg(username_).toStdString());
+
+    // 调用登录API
+    LoginService* loginService = LoginService::instance();
+    bool success = loginService->login(loginUrl_, apiKey_, username_, password_, userId, token, errMessage);
+
+    if (success) {
+        // 获取一次性登录密钥
+        QString loginKey;
+        QString keyError;
+        if (loginService->genOnceLoginKey(loginUrl_, userId, token, loginKey, keyError)) {
+            LOG_INFO("后台线程获取登录密钥成功");
+        } else {
+            LOG_WARNING(QString("后台线程获取登录密钥失败: %1").arg(keyError).toStdString());
+        }
+
+        // 保存登录凭据
+        settings_.setValue("username", username_);
+        settings_.setValue("password", password_);
+        settings_.setValue("remember", true);
+        LOG_INFO("后台线程保存登录凭据成功");
+
+        LOG_INFO(QString("后台线程登录成功: userId=%1").arg(userId).toStdString());
+        emit loginSuccess(userId, token, loginKey);
+    } else {
+        QString errorMsg = errMessage.isEmpty() ? "用户名或密码错误" : errMessage;
+        LOG_WARNING(QString("后台线程登录失败: %1").arg(errorMsg).toStdString());
+        emit loginFailed(errorMsg);
+    }
+}

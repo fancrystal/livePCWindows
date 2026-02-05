@@ -10,7 +10,13 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_settings.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\config.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\draggable_list_item.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\encryption_utils.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\exit_dialog.cpp">
@@ -19,7 +25,13 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\live_list_window.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\login_service.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\login_window.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\login_worker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\main.cpp">
@@ -52,7 +64,16 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\media_clock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\common\system_monitor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\http\network_manager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\http\http_client.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\http\client_service.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\canvas.cpp">
@@ -106,6 +127,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\video_engine\video_engine.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\audio_capturer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\audio_engine.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -150,16 +174,31 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_settings.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\draggable_list_item.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\encryption_utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\exit_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_item.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_list_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\login_service.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\login_window.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\login_worker.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\main_window.h">
@@ -195,7 +234,16 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\module_lifecycle.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\common\system_monitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\http\network_manager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\http\http_client.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\http\client_service.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\canvas.h">
@@ -246,10 +294,46 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\wgc_capture_stub.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_main_window.h">
+    <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\audio_capturer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_login_window.h">
+    <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\audio_engine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\encoder\audio_encoder.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\encoder\encoder.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\encoder\encoder_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\encoder\encoder_factory.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\encoder\video_encoder.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\encoded_packet.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\media_packet.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\push_queue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\rtmp_pusher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\stream_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\stream_pusher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_live_list_window.h">
@@ -270,9 +354,6 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_login_window.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_live_list_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -291,9 +372,6 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_login_window.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_live_list_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -310,9 +388,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_main_window.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_login_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_live_list_window.h">
@@ -340,7 +415,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="D:\work\project\LiveAssistant\src\app\main_window.ui" />
-    <None Include="D:\work\project\LiveAssistant\src\app\login_window.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\live_list_window.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\camera_settings.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\screen_share.ui" />

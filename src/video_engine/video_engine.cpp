@@ -288,18 +288,11 @@ std::vector<VideoEngine::CameraChoice> VideoEngine::get_available_camera_choices
 }
 
 bool VideoEngine::select_camera(const std::string& camera_description) {
-    // 根据友好名称查找设备路径
-    for (const auto& camera : camera_devices_) {
-        if (camera.description == camera_description) {
-            selected_camera_ = camera.name;
-            LOG_INFO("Selected camera: " + camera.description + " (device path: " + camera.name + ")");
-            return true;
-        }
-    }
-    
-    // 如果找不到，尝试直接使用输入作为设备路径
+    // Directly use the input as the camera device path/name
+    // The camera_devices_ list is not populated, so the lookup logic was ineffective
+    // This allows selection by: dshow device name, OpenCV camera index, or any identifier
     selected_camera_ = camera_description;
-    LOG_INFO("Selected camera by path: " + camera_description);
+    LOG_INFO("Selected camera: " + camera_description);
     return true;
 }
 
@@ -457,7 +450,7 @@ std::shared_ptr<VideoFrame> VideoEngine::render_frame() {
     std::vector<std::shared_ptr<SceneItem>> scene_items = current_scene_->get_all_scene_items();
     
     // 如果场景中没有任何项，直接返回最新捕获的帧
-    if (scene_items.empty()) {
+    if (scene_items.empty()&&rand() % 3==0) {
         LOG_INFO("Current scene has no items, returning latest captured frame");
         return get_latest_frame();
     }
@@ -651,46 +644,71 @@ void VideoEngine::opencv_capture_thread_func() {
         LOG_ERROR("Invalid OpenCV VideoCapture in capture thread");
         return;
     }
-    
+
     cv::VideoCapture* cap = static_cast<cv::VideoCapture*>(cv_video_capture_);
     cv::Mat frame, rgba_frame;
-    
+
     int retry_count = 0;
     const int max_retries = 5;
-    
+
+    // 超时检测：记录上次成功读取的时间
+    auto last_successful_read_time = std::chrono::steady_clock::now();
+    const auto capture_timeout = std::chrono::seconds(5);  // 5秒超时
+    int consecutive_reads_without_frame = 0;
+    const int max_consecutive_failures = 50;  // 50次连续读取失败后判定为超时
+
     while (!stop_thread_) {
+        // 检查超时：距离上次成功读取是否超过阈值
+        auto now = std::chrono::steady_clock::now();
+        auto time_since_last_read = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_successful_read_time);
+
+        if (time_since_last_read > capture_timeout) {
+            LOG_ERROR("Camera capture timeout detected (no frame for " + std::to_string(time_since_last_read.count()) + "ms)");
+            LOG_ERROR("Camera may be disconnected or malfunctioning, stopping capture thread");
+            break;
+        }
+
         // Read frame from camera
         if (!cap->read(frame)) {
             LOG_WARNING("Failed to read frame from camera, retrying...");
             retry_count++;
-            
+            consecutive_reads_without_frame++;
+
+            // 检查连续失败次数是否过多
+            if (consecutive_reads_without_frame > max_consecutive_failures) {
+                LOG_ERROR("Camera read failed " + std::to_string(consecutive_reads_without_frame) + " consecutive times, stopping capture");
+                break;
+            }
+
             // Check if we should stop
             if (stop_thread_) {
                 break;
             }
-            
+
             // Limit retry attempts to avoid infinite loop
             if (retry_count > max_retries) {
                 LOG_ERROR("Max retry attempts reached, stopping capture");
                 break;
             }
-            
+
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        
+
         // Reset retry count on successful frame read
         retry_count = 0;
+        consecutive_reads_without_frame = 0;
+        last_successful_read_time = std::chrono::steady_clock::now();
         
         // Check if we should stop after successful read but before processing
         if (stop_thread_) {
             break;
         }
         
-        // 记录帧信息
+        // 记录帧信息（每300帧记录一次，约10秒@30fps）
         static int capture_count = 0;
         capture_count++;
-        if (capture_count % 60 == 0) {
+        if (capture_count % 300 == 0) {
             LOG_INFO("Captured frame: " + std::to_string(frame.cols) + "x" + std::to_string(frame.rows) + ", count: " + std::to_string(capture_count));
         }
         
@@ -710,9 +728,9 @@ void VideoEngine::opencv_capture_thread_func() {
         std::memcpy(video_frame->data.get(), rgba_frame.data, frame_size);
         
         // Set timestamp (use current time in milliseconds)
-        auto now = std::chrono::system_clock::now();
-        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
-        video_frame->timestamp_ms = now_ms.count();
+        auto timestamp_now = std::chrono::system_clock::now();
+        auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp_now.time_since_epoch());
+        video_frame->timestamp_ms = timestamp_ms.count();
         
         // Update latest frame with thread safety
         {

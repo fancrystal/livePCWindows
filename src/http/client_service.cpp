@@ -1,7 +1,7 @@
 #include "http/client_service.h"
-#include "../include/http_client.h"
-#include "../include/encryption_utils.h"
-#include "../include/logger.h"
+#include "http/http_client.h"
+#include "app/encryption_utils.h"
+#include "common/log.h"
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -45,11 +45,11 @@ bool ClientService::login(const QString &logUrl,  const QString &key, const QStr
     if(response["code"].toInt() == 200) {
         token = response["data"].toObject()["token"].toString();
         userID = response["data"].toObject()["userId"].toString();
-        LOG_INFO("Login succeed, token:" + token + ",userID: " + userID);
+        LOG_INFO(QString("Login succeed, token:%1, userID: %2").arg(token).arg(userID).toStdString());
         return true;
     }
 
-    LOG_WARNING("Login failed:" + response["msg"].toString());
+    LOG_WARNING(QString("Login failed:%1").arg(response["msg"].toString()).toStdString());
     return false;
 }
 
@@ -139,7 +139,7 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
     // 发送POST请求
     QString url = QString("%1/livesaas/ListActivityAPI").arg(sassUrl);
     HttpClient* client = HttpClient::instance();
-    
+    LOG_DEBUG(QString("获取直播列表请求URL: %1").arg(url).toStdString());
     // 为这个请求创建独立的headers
     struct curl_slist* headers = client->createHeaders();
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
@@ -149,10 +149,12 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
     QJsonObject response = client->post(url, reqData, headers);
     client->freeHeaders(headers);
 
+    QJsonDocument doc(response);
+    LOG_DEBUG(QString("获取直播列表响应: %1").arg(QString(doc.toJson(QJsonDocument::Compact))).toStdString());
     // 解析响应状态
     if (response["code"].toInt() != 200) {
         errMessage = response["msg"].toString();
-        LOG_WARNING("获取直播列表失败: " + errMessage);
+        LOG_WARNING(QString("获取直播列表失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
@@ -207,7 +209,7 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     // 解析响应状态
     if (response["code"].toInt() != 200) {
         errMessage = response["msg"].toString();
-        LOG_WARNING("获取插播视频列表失败: " + errMessage);
+        LOG_WARNING(QString("获取插播视频列表失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
@@ -307,13 +309,13 @@ bool ClientService::getInsertFile(const QString& sassUrl, const QString& userId,
     // 解析响应状态
     if (response["code"].toInt() != 200) {
         errMessage = response["msg"].toString();
-        LOG_WARNING("获取插播视频详情失败: " + errMessage);
+        LOG_WARNING(QString("获取插播视频详情失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
     // 解析插播视频详情数据
     QJsonObject dataJson = response["data"].toObject();
-    parseInsertFile(dataJson, fileItem);
+    parseInsertFileJson(dataJson, fileItem);
     return true;
 }
 
@@ -332,7 +334,7 @@ void ClientService::parseLiveListJson(const QJsonObject& json, QList<LiveItem>& 
         liveItem.createTime = QDateTime::fromString(recordJson["createTime"].toString(), Qt::ISODate);
         liveItem.startTime = QDateTime::fromString(recordJson["liveStartTime"].toString(), Qt::ISODate);
         liveItem.endTime = QDateTime::fromString(recordJson["liveEndTime"].toString(), Qt::ISODate);
-        liveItem.type = QString::number(recordJson["roomType"].toInt());
+        liveItem.type = recordJson["roomType"].toString();
 
         // 推流地址
         if (recordJson.contains("pushStreamNameUrl") && recordJson["pushStreamNameUrl"].isString()) {
@@ -392,11 +394,11 @@ bool ClientService::genOnceLoginKey(const QString& baseUrl, const QString& userI
     if (response["code"].toInt() == 200) {
         // 从响应数据中获取一次性登录密钥
         loginKey = response["data"].toString();
-        LOG_INFO("Generate once login key succeed, key:" + loginKey);
+        LOG_INFO(QString("Generate once login key succeed, key:%1").arg(loginKey).toStdString());
         return true;
     }
     
     errMessage = response["msg"].toString();
-    LOG_WARNING("Generate once login key failed:" + errMessage);
+    LOG_WARNING(QString("Generate once login key failed:%1").arg(errMessage).toStdString());
     return false;
 }

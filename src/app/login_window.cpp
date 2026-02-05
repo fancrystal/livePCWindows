@@ -1,352 +1,213 @@
 #include "app/login_window.h"
-#include "ui_login_window.h"
 #include "common/log.h"
+#include "app/config.h"
+#include "app/login_service.h"
+#include "app/login_worker.h"
+#include "http/http_client.h"
 
-#include <QMessageBox>
-#include <QRegularExpression>
-#include <QSettings>
+#include <QQuickItem>
 #include <QQuickWidget>
 #include <QQmlContext>
 #include <QQmlError>
 #include <QUrl>
 #include <QMouseEvent>
-#include <QPoint>
-
+#include <QTimer>
+#include <QScreen>
 namespace live_assistant {
 
 LoginWindow::LoginWindow(QWidget *parent) :
     QMainWindow(parent),
-    ui(new Ui::LoginWindow),
-    is_password_login_(true),
     settings_("LiveAssistant", "Login") {
-    ui->setupUi(this);
     
-    // 设置窗口标题
+    // 设置窗口属性
     setWindowTitle("启点点直播 - 登录");
-    
-    // Hide status bar from the .ui which has a white background strip
-    if (ui->statusbar) {
-        ui->statusbar->hide();
-    }
-    
-    // 初始化登录URL和API密钥
-    login_url_ = "http://api.example.com";
-    api_key_ = "your_api_key";
-    
-    // 默认勾选已阅读并同意和记住密码
-    ui->agreementCheckBox->setChecked(true);
-    ui->rememberPasswordCheckBox->setChecked(true);
-    
-    // 加载保存的登录信息
-    load_login_info();
-    
-    // 初始化为密码登录模式
-    on_passwordLoginButton_clicked();
-    
-    LOG_INFO("LoginWindow created");
-    
-    // Create QML-based login UI and embed it into this window.
-    // If QML fails to load, the original UI (from ui file) remains as fallback.
-    // Make window frameless and support translucent background for rounded corners
     setWindowFlag(Qt::FramelessWindowHint, true);
     setAttribute(Qt::WA_TranslucentBackground, true);
-
-    dragging_ = false;
-
+    setMinimumSize(800, 500);
+    resize(1024, 640);
+    
+    // 初始化CURL库
+    HttpClient::globalInit();
+    
+    // 加载服务器配置
+    ConfigManager::instance().loadConfig();
+    
+    // 获取登录URL和加密密钥
+    login_url_ = ConfigManager::instance().getLoginUrl();
+    api_key_ = ConfigManager::instance().getEncryptionKey();
+    
+    LOG_INFO("LoginWindow created, loginUrl: " + login_url_.toStdString());
+    
+    // 创建QML登录界面
     qmlWidget_ = new QQuickWidget(this);
     qmlWidget_->setResizeMode(QQuickWidget::SizeRootObjectToView);
-    // Make QQuickWidget background transparent so underlying window chrome doesn't show a white strip
     qmlWidget_->setClearColor(Qt::transparent);
     qmlWidget_->rootContext()->setContextProperty("loginWindow", this);
-
-    // Force QML widget to be the central widget immediately to hide the original UI.
+    
+    // 设置QML为中央部件
     setCentralWidget(qmlWidget_);
-
+    
+    // 加载QML登录界面
     qmlWidget_->setSource(QUrl("qrc:/qml/Login.qml"));
+    
     if (qmlWidget_->status() == QQuickWidget::Error) {
-        LOG_INFO("QML Login failed to load, dumping errors");
         const QList<QQmlError> errs = qmlWidget_->errors();
         for (const QQmlError &e : errs) {
-            LOG_INFO(std::string("QML Error: ") + e.toString().toStdString());
+            LOG_WARNING(std::string("QML Error: ") + e.toString().toStdString());
         }
-
-#ifdef HAVE_QT_GRAPHICALEFFECTS
-        LOG_INFO("GraphicalEffects expected but QML load failed; keeping central widget but content may be empty");
-#else
-        LOG_INFO("GraphicalEffects not available or QML failed; attempting to load basic QML fallback");
-        qmlWidget_->setSource(QUrl("qrc:/qml/Login_basic.qml"));
-        if (qmlWidget_->status() == QQuickWidget::Error) {
-            LOG_INFO("Basic QML fallback also failed; keeping central widget but content may be empty");
-            const QList<QQmlError> errs2 = qmlWidget_->errors();
-            for (const QQmlError &e : errs2) {
-                LOG_INFO(std::string("QML Basic Error: ") + e.toString().toStdString());
-            }
-        } else {
-            LOG_INFO("Loaded basic QML fallback successfully");
-        }
-#endif
     } else {
         LOG_INFO("QML Login loaded successfully");
+    }
+
+    // DPI 适配：监听屏幕 DPI 变化
+    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
+        if (screen) {
+            LOG_INFO("LoginWindow: Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
+            this->updateGeometry();
+        }
+    });
+
+    if (windowHandle() && windowHandle()->screen()) {
+        connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
+            LOG_INFO("LoginWindow: DPI changed to: " + std::to_string(dpi));
+            this->updateGeometry();
+        });
     }
 }
 
 LoginWindow::~LoginWindow() {
     LOG_INFO("LoginWindow destroyed");
-    delete ui;
+    cleanupLoginThread();
 }
 
-void LoginWindow::on_passwordLoginButton_clicked() {
-    // 切换到密码登录模式
-    is_password_login_ = true;
-    ui->passwordLoginButton->setStyleSheet(
-        "QPushButton {\n"
-        "    background-color: transparent;\n"
-        "    color: #1a1a1a;\n"
-        "    border: none;\n"
-        "    border-bottom: 2px solid #4CAF50;\n"
-        "    padding: 8px 16px;\n"
-        "    font-size: 14px;\n"
-        "    font-weight: bold;\n"
-        "}\n"
-        "QPushButton:hover {\n"
-        "    color: #4CAF50;\n"
-        "}");
-    
-    ui->verificationCodeLoginButton->setStyleSheet(
-        "QPushButton {\n"
-        "    background-color: transparent;\n"
-        "    color: #666666;\n"
-        "    border: none;\n"
-        "    border-bottom: 2px solid transparent;\n"
-        "    padding: 8px 16px;\n"
-        "    font-size: 14px;\n"
-        "    font-weight: bold;\n"
-        "}\n"
-        "QPushButton:hover {\n"
-        "    color: #4CAF50;\n"
-        "    border-bottom: 2px solid #4CAF50;\n"
-        "}");
-    
-    // 显示密码输入框，隐藏验证码输入框
-    ui->passwordLineEdit->show();
-    ui->verificationCodeLineEdit->hide();
-    ui->getVerificationCodeButton->hide();
-    
-    // 保存当前用户名，避免切换模式时丢失
-    QString current_username = ui->accountLineEdit->text().trimmed();
-    
-    ui->accountLineEdit->setPlaceholderText("请输入账号名/账号ID");
-    ui->passwordLineEdit->setPlaceholderText("请输入登录密码");
-    
-    // 恢复用户名和密码（如果有保存）
-    if (!current_username.isEmpty()) {
-        ui->accountLineEdit->setText(current_username);
-    }
-    
-    // 重新加载保存的密码
-    QString password = settings_.value("password").toString();
-    bool remember = settings_.value("remember", false).toBool();
-    if (remember) {
-        ui->passwordLineEdit->setText(password);
-        ui->rememberPasswordCheckBox->setChecked(true);
-    }
-    
-    LOG_INFO("Switched to password login mode");
-}
-
-void LoginWindow::on_verificationCodeLoginButton_clicked() {
-    // 切换到验证码登录模式
-    is_password_login_ = false;
-    ui->verificationCodeLoginButton->setStyleSheet(
-        "QPushButton {\n"
-        "    background-color: transparent;\n"
-        "    color: #1a1a1a;\n"
-        "    border: none;\n"
-        "    border-bottom: 2px solid #4CAF50;\n"
-        "    padding: 8px 16px;\n"
-        "    font-size: 14px;\n"
-        "    font-weight: bold;\n"
-        "}\n"
-        "QPushButton:hover {\n"
-        "    color: #4CAF50;\n"
-        "}");
-    
-    ui->passwordLoginButton->setStyleSheet(
-        "QPushButton {\n"
-        "    background-color: transparent;\n"
-        "    color: #666666;\n"
-        "    border: none;\n"
-        "    border-bottom: 2px solid transparent;\n"
-        "    padding: 8px 16px;\n"
-        "    font-size: 14px;\n"
-        "    font-weight: bold;\n"
-        "}\n"
-        "QPushButton:hover {\n"
-        "    color: #4CAF50;\n"
-        "    border-bottom: 2px solid #4CAF50;\n"
-        "}");
-    
-    // 隐藏密码输入框，显示验证码输入框
-    ui->passwordLineEdit->hide();
-    ui->verificationCodeLineEdit->show();
-    ui->getVerificationCodeButton->show();
-    
-    // 保存当前用户名，避免切换模式时丢失
-    QString current_username = ui->accountLineEdit->text().trimmed();
-    
-    ui->accountLineEdit->setPlaceholderText("请输入手机号");
-    
-    // 恢复用户名（如果有）
-    if (!current_username.isEmpty()) {
-        ui->accountLineEdit->setText(current_username);
-    }
-    
-    LOG_INFO("Switched to verification code login mode");
-}
-
-void LoginWindow::load_login_info() {
-    // 从QSettings中加载登录信息
-    QString username = settings_.value("username").toString();
-    QString password = settings_.value("password").toString();
-    bool remember = settings_.value("remember", false).toBool();
-    
-    // 设置UI控件
-    ui->accountLineEdit->setText(username);
-    if (remember) {
-        ui->passwordLineEdit->setText(password);
-        ui->rememberPasswordCheckBox->setChecked(true);
-    }
-    
-    LOG_INFO("Loaded login info: username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
-}
-
-void LoginWindow::save_login_info() {
-    // 保存登录信息到QSettings
-    QString username = ui->accountLineEdit->text().trimmed();
-    QString password = ui->passwordLineEdit->text();
-    bool remember = ui->rememberPasswordCheckBox->isChecked();
-    
-    settings_.setValue("username", username);
-    if (remember) {
-        settings_.setValue("password", password);
-    } else {
-        settings_.remove("password");
-    }
-    settings_.setValue("remember", remember);
-    
-    LOG_INFO("Saved login info: username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
-}
-
-void LoginWindow::save_login_info_credentials(const QString& username, const QString& password, bool remember) {
-    // Save credentials directly to QSettings without accessing UI widgets.
-    settings_.setValue("username", username);
-    if (remember) {
-        settings_.setValue("password", password);
-    } else {
-        settings_.remove("password");
-    }
-    settings_.setValue("remember", remember);
-    LOG_INFO("Saved login info (credentials API): username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
-}
-
-bool LoginWindow::validate_login(const QString& username, const QString& password) {
-    // 暂时使用模拟登录逻辑，因为HTTP模块还未完全集成
-    LOG_INFO("模拟登录验证: username=" + username.toStdString() + ", password=" + password.toStdString());
-    
-    // 模拟登录成功
-    user_id_ = "test_user_id";
-    token_ = "test_token";
-    login_key_ = "test_login_key";
-    
-    return true;
-}
-
-void LoginWindow::on_loginButton_clicked() {
-    // 验证输入
-    QString username = ui->accountLineEdit->text().trimmed();
-    QString password = ui->passwordLineEdit->text();
-    
-    if (username.isEmpty() || password.isEmpty()) {
-        ui->statusLabel->setText("用户名和密码不能为空");
-        return;
-    }
-    
-    if (!ui->agreementCheckBox->isChecked()) {
-        ui->statusLabel->setText("请阅读并同意服务条款和隐私协议");
-        return;
-    }
-    
-    // 验证登录信息
-    if (validate_login(username, password)) {
-        // 保存登录信息
-        save_login_info();
-        
-        // 登录成功
-        LOG_INFO("Login successful: " + username.toStdString());
-        
-        // 发射登录成功信号
-        emit login_success();
-        
-        // 关闭登录窗口
-        close();
-    } else {
-        ui->statusLabel->setText("用户名或密码错误");
-        ui->passwordLineEdit->clear();
-    }
-}
-
-void LoginWindow::on_getVerificationCodeButton_clicked() {
-    QString account = ui->accountLineEdit->text().trimmed();
-    
-    // 验证码登录模式下，只需要验证手机号
-    if (account.isEmpty()) {
-        QMessageBox::warning(this, "提示", "请输入手机号");
-        return;
-    }
-    
-    // 验证手机号格式
-    QRegularExpression phone_regex("^1[3-9]\\d{9}$");
-    if (!phone_regex.match(account).hasMatch()) {
-        QMessageBox::warning(this, "提示", "请输入有效的手机号");
-        return;
-    }
-    
-    // 模拟发送验证码
-    LOG_INFO("Verification code sent to: " + account.toStdString());
-    QMessageBox::information(this, "提示", "验证码已发送，请注意查收");
-}
-
-void LoginWindow::on_agreementLabel_linkActivated(const QString &link) {
-    // 处理服务条款和隐私协议的点击事件
-    QMessageBox::information(this, "提示", "服务条款和隐私协议");
-    LOG_INFO("Agreement link clicked");
-}
+// ========== QML调用方法 ==========
 
 void LoginWindow::qmlLogin(const QString& username, const QString& password) {
-    // Simulate login when called from QML (no validation).
     LOG_INFO("qmlLogin called: username=" + username.toStdString());
-    // Do NOT modify QWidget UI pointers here — they may be deleted when we replaced the central widget.
-    // Keep simulated login purely internal.
 
-    // Set simulated user info
-    user_id_ = username.isEmpty() ? "admin" : username;
-    token_ = "qml_simulated_token";
-    login_key_ = "qml_simulated_key";
+    // 注意：QML端已经做了格式验证，这里只做基本的参数检查
+    if (username.isEmpty() || password.isEmpty()) {
+        emit login_failed("参数错误");
+        return;
+    }
 
-    // Save directly to settings without touching QWidget UI pointers
-    save_login_info_credentials(user_id_, password, true);
-
-    emit login_success();
-    close();
+    emit login_status_changed("正在登录...");
+    
+    LOG_INFO("创建登录线程...");
+    
+    // 清理之前的登录线程
+    cleanupLoginThread();
+    
+    // 创建后台线程执行登录
+    loginThread_ = new QThread(this);
+    LoginWorker* worker = new LoginWorker(login_url_, api_key_, username, password);
+    worker->moveToThread(loginThread_);
+    
+    // 连接信号槽 - 注意连接顺序，先处理结果再删除worker
+    connect(loginThread_, &QThread::started, worker, &LoginWorker::startLogin);
+    connect(worker, &LoginWorker::loginSuccess, this, &LoginWindow::onLoginSuccess);
+    connect(worker, &LoginWorker::loginFailed, this, &LoginWindow::onLoginFailed);
+    connect(loginThread_, &QThread::finished, worker, &QObject::deleteLater);  // 线程结束时删除worker
+    connect(loginThread_, &QThread::finished, loginThread_, &QThread::deleteLater);
+    connect(loginThread_, &QThread::finished, this, &LoginWindow::cleanupLoginThread);
+    
+    LOG_INFO("启动登录线程...");
+    // 启动线程
+    loginThread_->start();
 }
+
+void LoginWindow::onLoginSuccess(const QString& userId, const QString& token, const QString& loginKey) {
+    LOG_INFO(QString("收到登录成功信号: userId=%1").arg(userId).toStdString());
+    
+    user_id_ = userId;
+    token_ = token;
+    login_key_ = loginKey;
+    
+    emit login_status_changed("登录成功！");
+    emit login_success();
+    
+    // 延迟关闭
+    QTimer::singleShot(500, this, [this]() {
+        close();
+    });
+}
+
+void LoginWindow::onLoginFailed(const QString& errorMessage) {
+    LOG_INFO(QString("C++ onLoginFailed: %1").arg(errorMessage).toStdString());
+    emit login_failed(errorMessage);
+
+    // 使用QTimer::singleShot确保在主线程中执行
+    QTimer::singleShot(0, this, [this, errorMessage]() {
+        QObject* rootObj = qobject_cast<QObject*>(qmlWidget_->rootObject());
+        if (rootObj) {
+            LOG_INFO(QString("Setting QML properties directly").toStdString());
+            rootObj->setProperty("isLoggingIn", false);
+            rootObj->setProperty("loginError", errorMessage);
+
+            // 直接设置statusText的属性
+            QObject* statusText = rootObj->findChild<QObject*>("statusText");
+            if (statusText) {
+                statusText->setProperty("text", errorMessage);
+                statusText->setProperty("color", "#ff6b6b");
+                LOG_INFO("Directly updated statusText");
+            }
+        }
+    });
+}
+
+void LoginWindow::cleanupLoginThread() {
+    if (loginThread_ && loginThread_->isRunning()) {
+        loginThread_->quit();
+        if (!loginThread_->wait(1000)) {
+            loginThread_->terminate();
+            loginThread_->wait();
+        }
+    }
+    loginThread_ = nullptr;
+}
+
+bool LoginWindow::qmlHasSavedCredentials() {
+    return settings_.value("remember", false).toBool() && 
+           !settings_.value("username").toString().isEmpty();
+}
+
+QString LoginWindow::qmlGetSavedUsername() {
+    return settings_.value("username").toString();
+}
+
+QString LoginWindow::qmlGetSavedPassword() {
+    return settings_.value("password").toString();
+}
+
+void LoginWindow::qmlSetStatus(const QString& status) {
+    emit login_status_changed(status);
+}
+
+void LoginWindow::qmlSetLoginFailed(const QString& errorMessage) {
+    LOG_INFO(QString("qmlSetLoginFailed called: %1").arg(errorMessage).toStdString());
+    emit login_failed(errorMessage);
+}
+
+// ========== 内部方法 ==========
+
+void LoginWindow::save_login_info_credentials(const QString& username, const QString& password, bool remember) {
+    settings_.setValue("username", username);
+    if (remember) {
+        settings_.setValue("password", password);
+    } else {
+        settings_.remove("password");
+    }
+    settings_.setValue("remember", remember);
+    LOG_INFO("Saved login credentials: username=" + username.toStdString());
+}
+
+// ========== 窗口拖拽支持 ==========
 
 void LoginWindow::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         dragging_ = true;
         dragStartPos_ = event->globalPos() - frameGeometry().topLeft();
         event->accept();
-    } else {
-        QMainWindow::mousePressEvent(event);
     }
 }
 
@@ -354,8 +215,6 @@ void LoginWindow::mouseMoveEvent(QMouseEvent* event) {
     if (dragging_ && (event->buttons() & Qt::LeftButton)) {
         move(event->globalPos() - dragStartPos_);
         event->accept();
-    } else {
-        QMainWindow::mouseMoveEvent(event);
     }
 }
 
@@ -363,8 +222,6 @@ void LoginWindow::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         dragging_ = false;
         event->accept();
-    } else {
-        QMainWindow::mouseReleaseEvent(event);
     }
 }
 

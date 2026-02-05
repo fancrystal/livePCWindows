@@ -23,8 +23,8 @@ if(WIN32)
     add_definitions(-DCPPWINRT_VERSION="2.0.230207.1")
 endif()
 
-# Find Qt dependencies (add Qml/Quick for QML login)
-find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets GraphicalEffects)
+# Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture)
+find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia)
 qt_standard_project_setup()
 
 # Third-party library paths
@@ -43,7 +43,14 @@ include_directories(${LIBCURL_DIR}/include)  # libcurl include directory
 # Source files
 file(GLOB_RECURSE APP_SOURCES "src/app/*.cpp")
 file(GLOB_RECURSE APP_HEADERS "include/app/*.h")
-list(APPEND APP_SOURCES src/app/add_material_dialog.cpp src/app/scene_item_row.cpp)
+list(APPEND APP_SOURCES 
+    src/app/add_material_dialog.cpp 
+    src/app/scene_item_row.cpp
+    src/app/login_worker.cpp
+    src/app/config.cpp
+    src/app/encryption_utils.cpp
+    src/app/login_service.cpp
+)
 file(GLOB_RECURSE COMMON_SOURCES "src/common/*.cpp")
 file(GLOB_RECURSE COMMON_HEADERS "include/common/*.h")
 file(GLOB_RECURSE SCENE_MANAGER_SOURCES
@@ -52,15 +59,26 @@ file(GLOB_RECURSE SCENE_MANAGER_SOURCES
 file(GLOB_RECURSE SCENE_MANAGER_HEADERS "include/scene_manager/*.h")
 file(GLOB_RECURSE VIDEO_ENGINE_SOURCES "src/video_engine/*.cpp")
 file(GLOB_RECURSE AUDIO_ENGINE_SOURCES "src/audio_engine/*.cpp")
+file(GLOB_RECURSE AUDIO_ENGINE_HEADERS "include/audio_engine/*.h")
 file(GLOB_RECURSE ENCODER_SOURCES "src/encoder/*.cpp")
+file(GLOB_RECURSE ENCODER_HEADERS "include/encoder/*.h")
 file(GLOB_RECURSE STREAM_PUSHER_SOURCES "src/stream_pusher/*.cpp")
+file(GLOB_RECURSE STREAM_PUSHER_HEADERS "include/stream_pusher/*.h")
 
-# Only include network_manager.cpp from HTTP module
-set(HTTP_SOURCES "src/http/network_manager.cpp")
-set(HTTP_HEADERS "include/http/network_manager.h")
+# HTTP module sources
+set(HTTP_SOURCES 
+    "src/http/network_manager.cpp"
+    "src/http/http_client.cpp"
+    "src/http/client_service.cpp"
+)
+set(HTTP_HEADERS 
+    "include/http/network_manager.h"
+    "include/http/http_client.h"
+    "include/http/client_service.h"
+)
 
 # UI files - let Qt handle them automatically
-set(APP_UIS "src/app/main_window.ui" "src/app/login_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui" "src/app/exit_dialog.ui")
+set(APP_UIS "src/app/main_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui" "src/app/exit_dialog.ui")
 
 # Add QML and image resources (resources/qml.qrc)
 qt_add_resources(RCC_QML_SOURCES resources/qml.qrc)
@@ -82,19 +100,23 @@ set(ALL_HEADERS
     ${COMMON_HEADERS}
     ${HTTP_HEADERS}
     ${SCENE_MANAGER_HEADERS}
+    ${AUDIO_ENGINE_HEADERS}
+    ${ENCODER_HEADERS}
+    ${STREAM_PUSHER_HEADERS}
 )
 
 # Create executable with AUTOMOC enabled (handles Q_OBJECT automatically)
 qt_add_executable(LiveAssistant ${ALL_SOURCES} ${ALL_HEADERS} ${APP_UIS})
 
 # Link libraries
-target_link_libraries(LiveAssistant PRIVATE 
-    Qt6::Core 
-    Qt6::Widgets 
+target_link_libraries(LiveAssistant PRIVATE
+    Qt6::Core
+    Qt6::Widgets
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickWidgets
     Qt6::WebSockets
+    Qt6::Multimedia
     # FFmpeg libraries
     ${FFMPEG_DIR}/lib/x64/avformat.lib
     ${FFMPEG_DIR}/lib/x64/avcodec.lib
@@ -136,6 +158,7 @@ set_target_properties(LiveAssistant PROPERTIES
     AUTOUIC ON
     AUTORCC ON
     WIN32_EXECUTABLE ON
+    MANIFEST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/app.manifest"
 )
 
 # Copy Qt DLLs to output directory (for Windows)
@@ -166,6 +189,30 @@ if(WIN32)
         $<$<CONFIG:Release>:${OPENCV_DIR}/lib/x64/opencv_world4110.dll>
         $<TARGET_FILE_DIR:LiveAssistant>
         COMMENT "Copying OpenCV DLLs to output directory"
+    )
+    
+    # Copy libcurl DLLs to output directory
+    add_custom_command(
+        TARGET LiveAssistant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${LIBCURL_DIR}/lib/x64/libcurl.dll
+        $<TARGET_FILE_DIR:LiveAssistant>
+        COMMENT "Copying libcurl DLL to output directory"
+    )
+    
+    # Copy cacert.pem to output directory
+    add_custom_command(
+        TARGET LiveAssistant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+        $<TARGET_FILE_DIR:LiveAssistant>/resources/
+        COMMENT "Creating resources directory"
+    )
+    add_custom_command(
+        TARGET LiveAssistant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/resources/cacert.pem
+        $<TARGET_FILE_DIR:LiveAssistant>/resources/
+        COMMENT "Copying cacert.pem to output directory"
     )
 endif()
 

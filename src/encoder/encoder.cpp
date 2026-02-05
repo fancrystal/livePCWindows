@@ -251,4 +251,8 @@ ErrorCode Encoder::reset_audio_encoder() {
     return audio_encoder_->reset();
 }
 
+AudioEncoder* Encoder::get_audio_encoder() const {
+    return audio_encoder_.get();
+}
+
 } // namespace live_assistant

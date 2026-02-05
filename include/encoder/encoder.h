@@ -62,6 +62,9 @@ public:
     // Reset encoder state for new streaming session
     ErrorCode reset_audio_encoder();
 
+    // 获取音频编码器（用于直接连接信号）
+    AudioEncoder* get_audio_encoder() const;
+
 private:
     std::unique_ptr<VideoEncoder> video_encoder_;
     VideoEncoderConfig video_config_;

@@ -87,6 +87,18 @@ ErrorCode RTMPPusher::register_audio_stream(AVCodecParameters* codecpar, AVRatio
         return ErrorCode::INIT_FAILED;
     }
 
+    // Log audio codec parameters for debugging
+    LOG_INFO("[RTMP] Registered audio stream:");
+    LOG_INFO("  - codec_id: " + std::to_string(audio_stream_->codecpar->codec_id));
+    //LOG_INFO("  - channels: " + std::to_string(audio_stream_->codecpar->channels));
+    LOG_INFO("  - sample_rate: " + std::to_string(audio_stream_->codecpar->sample_rate));
+    LOG_INFO("  - bit_rate: " + std::to_string(audio_stream_->codecpar->bit_rate));
+    LOG_INFO("  - extradata_size: " + std::to_string(audio_stream_->codecpar->extradata_size));
+    if (audio_stream_->codecpar->extradata_size > 0) {
+        LOG_INFO("  - extradata[0]: 0x" + std::to_string(static_cast<int>(audio_stream_->codecpar->extradata[0])));
+    }
+    LOG_INFO("  - time_base: " + std::to_string(time_base.num) + "/" + std::to_string(time_base.den));
+
     audio_stream_->time_base = time_base;
     return ErrorCode::SUCCESS;
 }
@@ -124,8 +136,8 @@ ErrorCode RTMPPusher::open_output() {
 
     // 调试模式：可选择输出到本地文件进行测试
     // 要测试本地文件，请取消下面一行的注释：
-    // full_url = "D:/test.flv";
-    // 正常推流时，请确保这一行被注释掉
+    full_url = "D:/test.flv";
+    // 正常推流时，请确保这一行被注释掉+
 
     int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
     if (ret < 0) {
@@ -206,16 +218,42 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     }
 
     if (!packet->pkt) {
+        LOG_ERROR("RTMPPusher::send_packet - CRITICAL: packet->pkt is null!");
         return ErrorCode::INVALID_PARAM;
     }
 
     AVPacket* avpkt = packet->pkt.get();
+
+    // CRITICAL: Log the packet state BEFORE any operation
+    LOG_DEBUG("[RTMP] send_packet AUDIO: pkt->pts=" + std::to_string(avpkt->pts) +
+              ", pkt->size=" + std::to_string(avpkt->size) +
+              ", pkt->data[0]=" + std::to_string(avpkt->data ? avpkt->data[0] : -1) +
+              ", pkt->stream_index=" + std::to_string(avpkt->stream_index));
 
     // Basic sanity checks for packet data
     if (!avpkt->data || avpkt->size <= 0) {
         LOG_WARNING("RTMPPusher::send_packet - invalid packet data (data=null or size<=0), dropping packet");
         return ErrorCode::INVALID_PARAM;
     }
+
+    // CRITICAL: Clone the packet IMMEDIATELY to avoid race conditions with other threads
+    // The encoder may reuse or modify the original packet while we're trying to send it
+    AVPacket* cloned_pkt = av_packet_clone(avpkt);
+    if (!cloned_pkt) {
+        LOG_ERROR("RTMPPusher::send_packet - CRITICAL: failed to clone packet, cannot send");
+        return ErrorCode::SEND_FAILED;
+    }
+    
+    LOG_DEBUG("[RTMP] Clone SUCCESS: orig_size=" + std::to_string(avpkt->size) +
+              ", cloned_size=" + std::to_string(cloned_pkt->size) +
+              ", orig_pts=" + std::to_string(avpkt->pts) +
+              ", cloned_pts=" + std::to_string(cloned_pkt->pts));
+    
+    AVPacket* write_pkt = cloned_pkt;
+    AVPacket* pkt_to_free = cloned_pkt;
+
+    // Now use the cloned packet for all operations
+    avpkt = cloned_pkt;
 
     // Determine target stream and its time_base
     AVStream* st = nullptr;
@@ -224,6 +262,18 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             return ErrorCode::INVALID_STATE;
         }
         st = audio_stream_;
+        
+        // Log audio packet details for debugging
+        static int audio_packet_count = 0;
+        audio_packet_count++;
+        if (audio_packet_count % 50 == 0) {
+            LOG_INFO("[RTMP] Audio packet #" + std::to_string(audio_packet_count) + 
+                     ": pts=" + std::to_string(packet->pts) + 
+                     ", duration=" + std::to_string(packet->duration) +
+                     ", size=" + std::to_string(packet->pkt ? packet->pkt->size : 0) +
+                     ", stream_time_base=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den));
+        }
+        
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.audio_packets_sent++;
@@ -253,7 +303,8 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         }
 
         // Ensure we don't send non-key video frames before the first keyframe (to avoid corrupted first frame)
-        if (!have_sent_first_key_) {
+        // Only applies to VIDEO packets, not AUDIO packets
+        if (packet->type == MediaType::VIDEO && !have_sent_first_key_) {
             if (!(avpkt->flags & AV_PKT_FLAG_KEY)) {
                 LOG_WARNING("RTMPPusher::send_packet - dropping initial non-key video packet to wait for first keyframe, size=" + std::to_string(avpkt->size));
                 return ErrorCode::SUCCESS; // drop silently
@@ -265,22 +316,27 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     avpkt->stream_index = st->index;
 
+    // Debug: Log the time_base we're working with
+    std::string media_type_str = (packet->type == MediaType::AUDIO) ? "AUDIO" : "VIDEO";
+    LOG_DEBUG("[RTMP] send_packet: type=" + media_type_str +
+              ", pts=" + std::to_string(packet->pts) +
+              ", encoder_tb=" + std::to_string(packet->encoder_time_base.num) + "/" + std::to_string(packet->encoder_time_base.den) +
+              ", stream_tb=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den));
+
     // Set packet timestamps in encoder time_base then rescale into stream time_base
+    // Note: We're modifying the cloned packet, not the original
     avpkt->pts = packet->pts;
     avpkt->dts = packet->dts;
     avpkt->duration = packet->duration;
 
     if (packet->encoder_time_base.num > 0 && packet->encoder_time_base.den > 0) {
+        int64_t old_pts = avpkt->pts;
         av_packet_rescale_ts(avpkt, packet->encoder_time_base, st->time_base);
+        LOG_DEBUG("[RTMP] After rescale: pts " + std::to_string(old_pts) + " -> " + std::to_string(avpkt->pts));
     }
 
-    // Clone the packet to ensure we have our own copy with refcounted buffers
-    AVPacket* write_pkt = av_packet_clone(avpkt);
-    if (!write_pkt) {
-        LOG_ERROR("RTMPPusher::send_packet - failed to clone packet, using original (risky)");
-        write_pkt = avpkt;
-    }
-    AVPacket* pkt_to_free = (write_pkt != avpkt) ? write_pkt : nullptr;
+    // Note: Packet was already cloned at the beginning of this function
+    // write_pkt and pkt_to_free are already set
 
     // For video packets, check if we need fragmentation (only for AVCC format)
     bool fragmented = false;
@@ -351,15 +407,43 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     // Send the original packet if not fragmented or fragmentation failed
     if (!fragmented) {
+        LOG_DEBUG("[RTMP] Before write: pts=" + std::to_string(write_pkt->pts) +
+                  ", dts=" + std::to_string(write_pkt->dts) +
+                  ", size=" + std::to_string(write_pkt->size) +
+                  ", duration=" + std::to_string(write_pkt->duration) +
+                  ", stream_index=" + std::to_string(write_pkt->stream_index));
+        
         int ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+        
+        LOG_DEBUG("[RTMP] After write: ret=" + std::to_string(ret) +
+                  ", pts=" + std::to_string(write_pkt->pts) +
+                  ", dts=" + std::to_string(write_pkt->dts) +
+                  ", size=" + std::to_string(write_pkt->size));
+        
+        // Save size before potential free
+        int packet_size = write_pkt->size;
+        
         if (ret < 0) {
             char errbuf[128] = {0};
             av_strerror(ret, errbuf, sizeof(errbuf));
+            
+            // Log detailed debug info for audio packets
+            if (packet->type == MediaType::AUDIO) {
+                LOG_ERROR("[RTMP] Audio send failed: ret=" + std::to_string(ret) + " (" + errbuf + ")");
+                LOG_ERROR("  - pts=" + std::to_string(write_pkt->pts) + ", dts=" + std::to_string(write_pkt->dts));
+                LOG_ERROR("  - duration=" + std::to_string(write_pkt->duration) + ", size=" + std::to_string(packet_size));
+                LOG_ERROR("  - stream_index=" + std::to_string(write_pkt->stream_index));
+                LOG_ERROR("  - stream.time_base=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den));
+                //LOG_ERROR("  - codecpar.channels=" + std::to_string(st->codecpar->channels));
+                LOG_ERROR("  - codecpar.sample_rate=" + std::to_string(st->codecpar->sample_rate));
+                LOG_ERROR("  - codecpar.extradata_size=" + std::to_string(st->codecpar->extradata_size));
+            }
+            
             LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
             if (pkt_to_free) av_packet_free(&pkt_to_free);
             return ErrorCode::SEND_FAILED;
         }
-        stats_.bytes_sent += avpkt->size;
+        stats_.bytes_sent += packet_size;
     }
 
     if (pkt_to_free) {
