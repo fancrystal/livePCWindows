@@ -95,7 +95,12 @@ ErrorCode StreamPusher::start() {
         set_state(StreamState::ERR);
         return result;
     }
-    
+
+    // 🔧 强制第一帧为关键帧，解决视频开头卡顿问题
+    // 在推流开始前设置，确保第一帧视频被正确发送
+    //rtmp_pusher_.force_next_keyframe_ = true;
+    Log::info("Forcing first video frame to be keyframe");
+
     stop_thread_ = false;
     push_thread_ = std::thread(&StreamPusher::push_thread_func, this);
     

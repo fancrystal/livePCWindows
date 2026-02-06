@@ -133,11 +133,10 @@ ErrorCode RTMPPusher::open_output() {
     }
 
     std::string full_url = config_.server_url + "/" + config_.stream_key;
-
     // 调试模式：可选择输出到本地文件进行测试
     // 要测试本地文件，请取消下面一行的注释：
     full_url = "D:/test.flv";
-    // 正常推流时，请确保这一行被注释掉+
+    // 正常推流时，请确保这一行被注释掉
 
     int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
     if (ret < 0) {
@@ -224,8 +223,36 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     AVPacket* avpkt = packet->pkt.get();
 
+    // 🔧 诊断第一帧 PTS 问题
+    static int64_t first_audio_pts = -1;
+    static int64_t first_video_pts = -1;
+    static int64_t first_audio_wallclock = -1;
+    static int64_t first_video_wallclock = -1;
+    
+    if (packet->type == MediaType::AUDIO && first_audio_pts == -1) {
+        first_audio_pts = packet->pts;
+        first_audio_wallclock = packet->wallclock_us / 1000;
+        LOG_INFO("[RTMP] First AUDIO packet: pts=" + std::to_string(packet->pts) + 
+                 ", wallclock=" + std::to_string(first_audio_wallclock) + "ms" +
+                 ", dts=" + std::to_string(packet->dts));
+    } else if (packet->type == MediaType::VIDEO && first_video_pts == -1) {
+        first_video_pts = packet->pts;
+        first_video_wallclock = packet->wallclock_us / 1000;
+        LOG_INFO("[RTMP] First VIDEO packet: pts=" + std::to_string(packet->pts) + 
+                 ", wallclock=" + std::to_string(first_video_wallclock) + "ms" +
+                 ", dts=" + std::to_string(packet->dts));
+        
+        // 打印音视频第一帧的对比
+        if (first_audio_pts != -1) {
+            LOG_INFO("[RTMP] AV Sync Check: first_audio_pts=" + std::to_string(first_audio_pts) + 
+                     "ms, first_video_pts=" + std::to_string(first_video_pts) + "ms" +
+                     ", diff=" + std::to_string(first_video_pts - first_audio_pts) + "ms");
+        }
+    }
+
     // CRITICAL: Log the packet state BEFORE any operation
-    LOG_DEBUG("[RTMP] send_packet AUDIO: pkt->pts=" + std::to_string(avpkt->pts) +
+    LOG_DEBUG("[RTMP] send_packet " + std::string(packet->type == MediaType::AUDIO ? "AUDIO" : "VIDEO") + 
+              ": pkt->pts=" + std::to_string(avpkt->pts) +
               ", pkt->size=" + std::to_string(avpkt->size) +
               ", pkt->data[0]=" + std::to_string(avpkt->data ? avpkt->data[0] : -1) +
               ", pkt->stream_index=" + std::to_string(avpkt->stream_index));

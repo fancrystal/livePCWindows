@@ -38,6 +38,11 @@ int main(int argc, char *argv[]) {
 
     // Connect login success signal to show live list window
     QObject::connect(&login_window, &live_assistant::LoginWindow::login_success, &login_window, [&live_list_window, &main_window, &login_window]() {
+        LOG_INFO("Login success - creating live list window");
+
+        // 先关闭登录窗口
+        login_window.close();
+
         // 创建直播列表窗口，传入登录信息
         live_list_window = new live_assistant::LiveListWindow(login_window.user_id(), login_window.token());
 

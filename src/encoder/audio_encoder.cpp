@@ -3,8 +3,6 @@
 #include "common/error.h"
 #include "audio_engine/audio_engine.h"  // For AudioFrame definition
 
-#include <cmath>
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
@@ -57,6 +55,8 @@ AVCodecParameters* AACEncoder::get_codec_parameters() const {
 }
 
 AVRational AACEncoder::get_time_base() const {
+    // ✅ 返回与 codec_ctx_->time_base 一致的值
+    // AAC 编码器使用采样数作为时间单位
     return AVRational{1, config_.sample_rate};
 }
 
@@ -98,7 +98,6 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     LOG_INFO("Initializing AAC encoder (FFmpeg)");
 
     config_ = config;
-    next_pts_ = 0;
     last_audio_timestamp_ = -1;
 
     codec_ = avcodec_find_encoder(AV_CODEC_ID_AAC);
@@ -206,21 +205,46 @@ ErrorCode AACEncoder::shutdown() {
     }
 
     codec_ = nullptr;
-    next_pts_ = 0;
     last_audio_timestamp_ = -1;
     input_buffer_.clear();
 
     return ErrorCode::SUCCESS;
 }
 
-// 新增：接收原始音频数据（与原项目的 encodeData 对应）
+// 接收原始音频数据并编码（使用 media_clock 时间戳确保音视频同步）
 void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     if (!initialized_ || data.isEmpty()) {
         return;
     }
 
+    static int64_t first_timestamp = -1;
     static int encode_count = 0;
     encode_count++;
+
+    // 🔧 诊断第一帧问题
+    if (first_timestamp == -1) {
+        first_timestamp = timestamp;
+        LOG_INFO("[AACEncoder] First audio frame timestamp: " + std::to_string(timestamp) + "ms");
+    } else if (encode_count <= 5) {
+        LOG_INFO("[AACEncoder] Frame " + std::to_string(encode_count) + 
+                 ": timestamp=" + std::to_string(timestamp) + 
+                 "ms, delta=" + std::to_string(timestamp - last_audio_timestamp_) + "ms");
+    }
+
+    // 🔧 检测时间戳回绕（异常跳跃）
+    // 当推流重新开始时，media_clock 会从0开始，但 input_buffer_ 中可能还有旧数据
+    if (last_audio_timestamp_ > 0 && timestamp < last_audio_timestamp_) {
+        int64_t regression = last_audio_timestamp_ - timestamp;
+        // 只在大幅回绕时清空缓冲区（超过100ms认为是异常）
+        if (regression > 100) {
+            LOG_WARNING("[AACEncoder] Large timestamp regression: " +
+                        std::to_string(regression) + "ms, clearing buffer");
+            input_buffer_.clear();
+            first_frame_timestamp_ms_ = -1;  // 重置基准
+        }
+        // 小幅度回绕忽略，继续处理
+    }
+    last_audio_timestamp_ = timestamp;
 
     // 降低日志输出频率
     if (encode_count % 1000 == 0) {
@@ -246,6 +270,10 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     int max_frames_per_call = 2;
     int frames_processed = 0;
 
+    // 计算当前帧应该对应的时间戳（基于编码器帧大小）
+    // 每帧1024采样，在48000Hz下约21.33ms
+    int64_t frame_duration_ms = (codec_ctx_->frame_size * 1000) / codec_ctx_->sample_rate;
+
     while (input_buffer_.size() >= bytes_per_frame && frames_processed < max_frames_per_call) {
         QByteArray frame_data = input_buffer_.left(bytes_per_frame);
         input_buffer_.remove(0, bytes_per_frame);
@@ -264,10 +292,19 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
             continue;
         }
 
-        // 使用内部PTS计数器，确保每次递增 frame_size (1024)
-        // AAC编码器要求固定的帧大小，PTS必须按frame_size递增
-        frame_->pts = next_pts_;
-        next_pts_ += codec_ctx_->frame_size;  // 递增1024采样
+        // ✅ 修复：将毫秒时间戳转换为采样数作为 PTS
+        // time_base 是 {1, sample_rate}，所以 PTS 应该是采样数
+        // 例如：23ms @ 48000Hz = 23 * 48000 / 1000 = 1104 采样
+        // 🔧 确保第一帧从 0 开始，避免播放器等待同步
+        if (first_frame_timestamp_ms_ == -1) {
+            first_frame_timestamp_ms_ = timestamp;
+            LOG_INFO("[AACEncoder] First audio frame timestamp: " + std::to_string(timestamp) + "ms");
+        }
+        int64_t relative_timestamp_ms = timestamp - first_frame_timestamp_ms_;
+        frame_->pts = (relative_timestamp_ms * codec_ctx_->sample_rate) / 1000;
+
+        // 更新时间戳用于下一帧（每帧约21.33ms @ 48kHz）
+        timestamp += frame_duration_ms;
 
         // 发送帧到编码器
         int ret = avcodec_send_frame(codec_ctx_, frame_);
@@ -296,13 +333,12 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
 
             // 发送编码完成信号（过滤6字节异常帧，与原项目一致）
             if (packet_->size > 0) {
-                // if (packet_->size == 6) {
-                //     // 过滤掉已知的6字节异常帧
-                //     LOG_WARNING("[AACEncoder] Filtered abnormal 6-byte AAC frame");
-                // } else
-                {
-                    // 发送所有其他大小的音频帧，包括静音帧
-                    // 使用 packet_->pts（编码器输出的PTS）而不是外部传入的timestamp
+                // 过滤掉已知的6字节异常帧（会导致杂音）
+                if (packet_->size == 6) {
+                    LOG_DEBUG("[AACEncoder] Filtered abnormal 6-byte AAC frame");
+                } else {
+                    // ✅ 使用编码器输出的 PTS（packet->pts），因为编码器可能会修改 PTS
+                    // 例如 AAC 编码器可能有延迟或填充，导致输出 PTS 与输入不同
                     emit audio_encoded(packet_->data, packet_->size, packet_->pts);
                     frames_processed++;
                 }
@@ -312,12 +348,7 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     }
 }
 
-// 新增：处理原始音频数据（内部实现）
-void AACEncoder::process_audio_data(const QByteArray& data, int64_t timestamp) {
-    encode_audio_data(data, timestamp);
-}
-
-// 新增：转换输入数据（与原项目的 convertInputData 对应）
+// 转换输入数据（与原项目的 convertInputData 对应）
 int AACEncoder::convert_input_data(const uint8_t* input_data, int input_size, AVFrame* frame) {
     if (!input_data || input_size <= 0 || !frame) return 0;
 
@@ -334,13 +365,6 @@ int AACEncoder::convert_input_data(const uint8_t* input_data, int input_size, AV
         return 0;
     }
 
-    // 先清零frame数据，避免垃圾数据
-    for (int ch = 0; ch < frame->ch_layout.nb_channels; ch++) {
-        if (frame->data[ch]) {
-            memset(frame->data[ch], 0, frame->nb_samples * sizeof(float));
-        }
-    }
-
     const uint8_t* input_data_arr[1] = {input_data};
     int ret = swr_convert(
         swr_,
@@ -355,8 +379,18 @@ int AACEncoder::convert_input_data(const uint8_t* input_data, int input_size, AV
         return 0;
     }
 
-    // 如果转换的样本数少于frame容量，剩余部分已经是静音（已清零）
-    // 返回实际转换的样本数，但frame已经包含完整的frame->nb_samples数据（部分为静音）
+    // 🔧 只清零未使用的样本（如果转换的样本少于帧大小）
+    // 这样可以避免预先清零导致的潜在问题
+    if (ret < frame->nb_samples) {
+        for (int ch = 0; ch < frame->ch_layout.nb_channels; ch++) {
+            if (frame->data[ch]) {
+                int unused_samples = frame->nb_samples - ret;
+                float* dst = reinterpret_cast<float*>(frame->data[ch]) + ret;
+                memset(dst, 0, unused_samples * sizeof(float));
+            }
+        }
+    }
+
     return frame->nb_samples;  // 返回完整帧大小，确保AAC编码器收到固定大小的帧
 }
 
@@ -524,30 +558,11 @@ ErrorCode AACEncoder::reset() {
     }
 
     // 重置时间戳计数器
-    next_pts_ = 0;
     last_audio_timestamp_ = -1;
+    first_frame_timestamp_ms_ = -1;  // 重置第一帧时间戳基准
 
     LOG_INFO("[AACEncoder] Reset complete");
     return ErrorCode::SUCCESS;
-}
-
-// 保留此函数以兼容旧接口（虽然新实现不再使用它）
-void AACEncoder::write_samples_to_frame(const std::vector<std::vector<float>>& pending,
-                                         int samples_to_write,
-                                         AVFrame* frame,
-                                         int fmt,
-                                         int channels) {
-    // 新实现不再使用此函数，保留以避免编译错误
-    AVSampleFormat sample_fmt = static_cast<AVSampleFormat>(fmt);
-    if (sample_fmt == AV_SAMPLE_FMT_FLTP) {
-        for (int ch = 0; ch < channels; ++ch) {
-            float* dst = reinterpret_cast<float*>(frame->data[ch]);
-            const auto& vec = pending[ch];
-            for (int i = 0; i < samples_to_write && i < static_cast<int>(vec.size()); ++i) {
-                dst[i] = vec[i];
-            }
-        }
-    }
 }
 
 } // namespace live_assistant

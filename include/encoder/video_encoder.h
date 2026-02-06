@@ -69,6 +69,8 @@ public:
     ErrorCode flush(std::vector<EncodedPacketPtr>& packets);
 
 private:
+    // Switch to next encoder in the candidate list when current encoder fails
+    bool switch_to_next_encoder();
     std::string preset_to_string(VideoEncodingPreset preset) const;
     ErrorCode send_frame_internal(const std::shared_ptr<VideoFrame>& frame);
     ErrorCode send_flush();
@@ -77,6 +79,14 @@ private:
     VideoEncoderConfig config_;
     bool initialized_ = false;
     bool force_keyframe_ = false;
+    int64_t first_frame_timestamp_us_ = -1;  // 记录第一帧时间戳，确保从0开始
+
+    // 🔧 运行时故障切换
+    std::vector<std::string> encoder_candidates_;  // 编码器候选列表
+    int current_encoder_index_ = 0;  // 当前使用的编码器索引
+    int consecutive_errors_ = 0;
+    static const int MAX_CONSECUTIVE_ERRORS = 5;  // 连续5次错误后切换
+    bool has_exhausted_encoders_ = false;  // 是否已经尝试了所有编码器
 
     const AVCodec* codec_ = nullptr;
     AVCodecContext* codec_ctx_ = nullptr;
@@ -85,6 +95,14 @@ private:
     AVPixelFormat sws_src_fmt_ = AV_PIX_FMT_NONE;
     int sws_src_w_ = 0;
     int sws_src_h_ = 0;
+
+    // QSV 硬件帧上下文
+    AVBufferRef* hw_device_ctx_ = nullptr;  // 硬件设备
+    AVBufferRef* hw_frame_ctx_ = nullptr;  // 硬件帧池
+    AVFrame* hw_frame_ = nullptr;  // 硬件帧（用于 QSV）
+    AVFrame* sw_frame_ = nullptr;  // 软件帧（用于转换）
+
+    bool is_qsv_encoder_ = false;  // 标记是否使用 QSV 编码器
 };
 
 } // namespace live_assistant

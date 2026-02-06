@@ -231,23 +231,35 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
         stream_pusher_->clear_queue();
     }
 
-    // Restart encoding - new frames will have PTS starting from 0
-    running_ = true;
-    encode_timer_->start(1000 / fps_);
+    // CRITICAL: Start media clock FIRST before connecting
+    // This ensures all new frames get correct timestamps starting from 0
+    media_clock_.start();
 
-    // Now start the stream pusher
+    // 🔧 记录音视频同步基准时间戳
+    // 音频引擎可能已经运行了一段时间，它的第一个包可能带有旧的时间戳
+    // 我们需要记录这个基准，然后在音频编码时转换为相对时间戳
+    audio_timestamp_base_ = 0;  // 强制使用 media_clock 相对时间戳
+
+    // Log that media clock has started (for debugging)
+    LOG_INFO("[BRIDGE] Media clock started at: " + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
+
+    // ✅ 修复：先连接 RTMP，再启动编码
+    // stream_pusher_->start() 会阻塞直到 RTMP 连接成功（可能耗时 40 秒）
+    // 如果在这之前启动编码，视频会积累大量帧，导致时间戳不同步
     ErrorCode start_result = stream_pusher_->start();
     if (start_result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to start streaming to: " + url);
         emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(start_result)));
+        media_clock_.stop();  // 清理：停止时钟
         return false;
     }
 
-    // Start media clock for timestamp synchronization
-    media_clock_.start();
+    // RTMP 连接成功后，再启动编码定时器
+    running_ = true;
+    encode_timer_->start(1000 / fps_);
 
-    // 重置音频时间戳基准标志（在第一个音频数据到达时初始化）
-    audio_timestamp_base_initialized_ = false;
+    // Log that encoding has restarted (for debugging)
+    LOG_INFO("[BRIDGE] Encoding restarted, media_clock: " + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
 
     streaming_ = true;
     stream_url_ = url;
@@ -344,6 +356,20 @@ void CompositorEncoderBridge::encode_and_push_frame() {
         // 获取从推流开始算起的相对时间戳
         auto current_timestamp_us = media_clock_.get_elapsed_time_us();
         auto current_timestamp_ms = current_timestamp_us / 1000;
+
+        // 🔧 诊断视频帧时间戳
+        static int64_t first_video_timestamp = -1;
+        static int frame_count = 0;
+        frame_count++;
+        if (first_video_timestamp == -1) {
+            first_video_timestamp = current_timestamp_ms;
+            LOG_INFO("[BRIDGE] First VIDEO frame: timestamp=" + std::to_string(current_timestamp_ms) + 
+                     "ms, media_clock=" + std::to_string(current_timestamp_ms) + "ms");
+        } else if (frame_count <= 5) {
+            LOG_INFO("[BRIDGE] Video frame #" + std::to_string(frame_count) + 
+                     ": timestamp=" + std::to_string(current_timestamp_ms) + "ms" +
+                     ", delta=" + std::to_string(current_timestamp_ms - first_video_timestamp) + "ms");
+        }
 
         // 编码视频帧
         auto video_frame = capture_compositor_frame();
@@ -461,23 +487,25 @@ void CompositorEncoderBridge::release_sws_context() {
     }
 }
 
-// 新增：处理音频引擎的原始数据（与原项目的信号驱动方式一致）
+// 新增：处理音频引擎的原始数据（使用media_clock确保与视频同步）
 void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_t timestamp) {
     if (!streaming_ || !encoder_) {
         return;
     }
 
-    // 初始化音频时间戳基准（第一次收到音频数据时）
-    if (!audio_timestamp_base_initialized_) {
-        audio_timestamp_base_ = timestamp;
-        audio_timestamp_base_initialized_ = true;
-        LOG_INFO("[BRIDGE] Audio timestamp base initialized to: " + std::to_string(audio_timestamp_base_));
-    }
+    // 🔧 使用 media_clock 获取相对时间戳（与视频使用同一个时钟）
+    // 这样可以确保音视频时间戳同步
+    // 注意：传入的 timestamp 参数被忽略，使用 media_clock_ 的值
+    auto current_timestamp_us = media_clock_.get_elapsed_time_us();
+    auto current_timestamp_ms = current_timestamp_us / 1000;
 
-    // 计算相对时间戳（从推流开始计算的毫秒数）
-    int64_t relative_timestamp_ms = timestamp - audio_timestamp_base_;
-    if (relative_timestamp_ms < 0) {
-        relative_timestamp_ms = 0;  // 防止负值
+    // 🔧 诊断：验证时间戳合理性
+    static int audio_frame_count = 0;
+    audio_frame_count++;
+    if (audio_frame_count <= 3) {
+        LOG_INFO("[BRIDGE] on_audio_data_ready #" + std::to_string(audio_frame_count) + 
+                 ": media_clock_ms=" + std::to_string(current_timestamp_ms) +
+                 ", raw_timestamp=" + std::to_string(timestamp));
     }
 
     auto* audio_encoder = dynamic_cast<AACEncoder*>(encoder_->get_audio_encoder());
@@ -485,21 +513,75 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
         return;
     }
 
-    // 获取实际的音频采样率（从编码器配置）
-    int audio_sample_rate = encoder_->get_audio_config().sample_rate;
-
-    // 将毫秒转换为采样数（AACEncoder的timebase是1/sample_rate，即采样数）
-    // 相对时间戳(毫秒) * 采样率 / 1000 = 采样数
-    int64_t relative_timestamp_samples = (relative_timestamp_ms * audio_sample_rate) / 1000;
-
-    // 使用相对时间戳（采样数）调用编码器
-    audio_encoder->encode_audio_data(data, relative_timestamp_samples);
+    // 传递相对时间戳给编码器（基于 media_clock）
+    audio_encoder->encode_audio_data(data, current_timestamp_ms);
 }
 
 // 新增：处理编码后的音频数据（推送到流）
 void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, int64_t timestamp) {
     if (!stream_pusher_ || !stream_pusher_->is_pushing() || !data || size <= 0) {
         return;
+    }
+
+    // 🔇 过滤静音帧和异常帧
+    // 6字节AAC帧是已知异常帧，会导致杂音
+    if (size == 6) {
+        static int silent_6byte_count = 0;
+        if (++silent_6byte_count <= 3) {
+            LOG_DEBUG("[BRIDGE] Filtered 6-byte abnormal AAC frame");
+        }
+        return;
+    }
+
+    // 🔇 检测静音帧：检查前64字节，如果90%以上都是静音则过滤
+    if (size > 32) {
+        int check_bytes = std::min(size, 64);
+        int near_zero_count = 0;
+        for (int i = 0; i < check_bytes; i++) {
+            // 检查是否为0或接近0（绝对值小于5）
+            if (data[i] == 0 || (data[i] > 0 && data[i] < 5) || (data[i] < 0 && data[i] > -5)) {
+                near_zero_count++;
+            }
+        }
+        int silence_percent = (near_zero_count * 100) / check_bytes;
+        if (silence_percent > 90) {
+            static int silent_frame_count = 0;
+            if (++silent_frame_count <= 5) {
+                LOG_DEBUG("[BRIDGE] Filtered silent frame: " + std::to_string(silence_percent) +
+                         "% silent, size=" + std::to_string(size));
+            }
+            return;
+        }
+    }
+
+    // 🔧 诊断音频包
+    static int64_t first_audio_pts = -1;
+    static int audio_count = 0;
+    audio_count++;
+
+    // ✅ 修复负数 PTS：AAC 编码器会有编码延迟（如 -1024），需要修正为 0
+    int64_t adjusted_timestamp = timestamp;
+    if (timestamp < 0) {
+        adjusted_timestamp = 0;
+        if (audio_count <= 5) {
+            LOG_WARNING("[BRIDGE] Adjusted negative audio PTS from " + std::to_string(timestamp) +
+                       " to 0 (AAC encoder delay)");
+        }
+    }
+
+    if (first_audio_pts == -1) {
+        first_audio_pts = adjusted_timestamp;
+        LOG_INFO("[BRIDGE] First AUDIO packet: pts=" + std::to_string(adjusted_timestamp) +
+                 " (samples), size=" + std::to_string(size) +
+                 ", media_clock=" + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
+    } else if (audio_count <= 5) {
+        int64_t delta_samples = adjusted_timestamp - first_audio_pts;
+        auto audio_sample_rate = encoder_->get_audio_config().sample_rate;
+        double delta_ms = (delta_samples * 1000.0) / audio_sample_rate;
+        LOG_INFO("[BRIDGE] Audio packet #" + std::to_string(audio_count) +
+                 ": pts=" + std::to_string(adjusted_timestamp) +
+                 ", delta=" + std::to_string(delta_ms) + "ms" +
+                 ", media_clock=" + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
     }
 
     // 创建 AVPacket 并复制数据
@@ -517,20 +599,21 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     }
     std::memcpy(pkt->data, data, size);
 
-    // 设置时间戳
-    pkt->pts = timestamp;
-    pkt->dts = timestamp;
+    // ✅ 使用修正后的时间戳（确保音视频同步且避免负数）
+    pkt->pts = adjusted_timestamp;
+    pkt->dts = adjusted_timestamp;
+
+    // 获取音频采样率用于设置 time_base
+    auto audio_sample_rate = encoder_->get_audio_config().sample_rate;
 
     // 创建编码数据包
     auto packet = std::make_shared<EncodedPacket>();
     packet->type = MediaType::AUDIO;
-    packet->pts = timestamp;
-    packet->dts = timestamp;
+    packet->pts = adjusted_timestamp;  // ✅ 使用修正后的时间戳（避免负数）
+    packet->dts = adjusted_timestamp;
     packet->pkt = AVPacketPtr(pkt);
-    // 使用实际的音频采样率作为timebase
-    int audio_sample_rate = encoder_->get_audio_config().sample_rate;
     packet->encoder_time_base = {1, audio_sample_rate};
-    packet->wallclock_us = media_clock_.get_elapsed_time_us();
+    packet->wallclock_us = media_clock_.get_elapsed_time_us();  // 仅用于调试
 
     // 推送到流
     stream_pusher_->push_packet(packet);

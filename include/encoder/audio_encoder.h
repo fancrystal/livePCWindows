@@ -87,19 +87,10 @@ private:
     ErrorCode send_flush();
     ErrorCode receive_packets(std::vector<EncodedPacketPtr>& packets);
     ErrorCode ensure_swr();
-    void write_samples_to_frame(const std::vector<std::vector<float>>& pending,
-                                int samples_to_write,
-                                AVFrame* frame,
-                                int fmt,
-                                int channels);
-
-    // 新增：处理原始音频数据（与原项目一致）
-    void process_audio_data(const QByteArray& data, int64_t timestamp);
     int convert_input_data(const uint8_t* input_data, int input_size, AVFrame* frame);
 
     AudioEncoderConfig config_;
     bool initialized_ = false;
-    int64_t next_pts_ = 0;
 
     const AVCodec* codec_ = nullptr;
     AVCodecContext* codec_ctx_ = nullptr;
@@ -111,6 +102,7 @@ private:
     // 新增：简单的字节缓冲区（与原项目一致）
     QByteArray input_buffer_;
     int64_t last_audio_timestamp_ = -1;  // 用于单调递增保护
+    int64_t first_frame_timestamp_ms_ = -1;  // 记录第一帧时间戳，用于确保从0开始
 };
 
 } // namespace live_assistant

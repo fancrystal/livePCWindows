@@ -5,6 +5,7 @@
 #include "app/login_worker.h"
 #include "http/http_client.h"
 
+#include <QApplication>
 #include <QQuickItem>
 #include <QQuickWidget>
 #include <QQmlContext>
@@ -223,6 +224,22 @@ void LoginWindow::mouseReleaseEvent(QMouseEvent* event) {
         dragging_ = false;
         event->accept();
     }
+}
+
+void LoginWindow::closeEvent(QCloseEvent* event) {
+    LOG_INFO("LoginWindow closeEvent triggered - closing login window only");
+    event->accept();
+    // 注意：不要调用QApplication::quit()，让main函数中的login_success信号处理后续窗口
+}
+
+void LoginWindow::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape) {
+        LOG_INFO("LoginWindow ESC key pressed - quitting application");
+        event->accept();
+        QApplication::quit();
+        return;
+    }
+    QMainWindow::keyPressEvent(event);
 }
 
 } // namespace live_assistant
