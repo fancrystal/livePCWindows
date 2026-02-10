@@ -193,17 +193,17 @@ class ImageSource : public VideoSource {
 public:
     ImageSource(const std::string& id, const std::string& image_path, const std::string& name = "");
     ~ImageSource() override;
-    
+
     // Source接口实现
     bool initialize() override;
     bool shutdown() override;
     bool start() override;
     bool stop() override;
     bool is_running() const override;
-    
+
     // VideoSource接口实现
     bool get_frame(std::vector<uint8_t>& frame_data, int& width, int& height) override;
-    
+
 private:
     std::string name_;
     std::string image_path_;
@@ -214,30 +214,7 @@ private:
     bool running_ = false;
 };
 
-// 媒体文件源实现
-class MediaFileSource : public VideoSource {
-public:
-    MediaFileSource(const std::string& id, const std::string& file_path, const std::string& name = "");
-    ~MediaFileSource() override;
-    
-    // Source接口实现
-    bool initialize() override;
-    bool shutdown() override;
-    bool start() override;
-    bool stop() override;
-    bool is_running() const override;
-    
-    // VideoSource接口实现
-    bool get_frame(std::vector<uint8_t>& frame_data, int& width, int& height) override;
-    
-private:
-    std::string name_;
-    std::string file_path_;
-    bool initialized_ = false;
-    bool running_ = false;
-    int width_ = 0;
-    int height_ = 0;
-};
+// MediaFileSource 已移至 media_pipeline/media_file_source.h，使用更完整的实现
 
 // 音频源实现
 class AudioSourceImpl : public AudioSource {

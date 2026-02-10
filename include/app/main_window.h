@@ -18,6 +18,7 @@
 #include "http/live_item.h"
 
 class ExitDialog;
+class InsertVideoWidget;
 
 namespace Ui {
 class MainWindow;
@@ -70,6 +71,11 @@ private slots:
     void on_screen_share_button_clicked();
     void on_select_screen_share(const QString& target_name, bool is_screen_mode, int fps, const QString& resolution, bool capture_cursor, bool capture_border);
     void on_scene_item_reordered();
+
+    // 插播视频功能
+    void on_insert_video_button_clicked();
+    void on_start_insert_video(const QString& fileId, const QString& fileName);
+    void on_stop_insert_video();
 
     // 推流控制
     void on_streaming_started();
@@ -148,6 +154,12 @@ private:
     // 当前直播项信息
     LiveItem current_live_item_;
 
+    // 插播视频相关
+    InsertVideoWidget* insert_video_widget_ = nullptr;
+    std::shared_ptr<Source> current_insert_video_source_;
+    QString current_insert_video_file_id_;
+    bool is_insert_video_playing_ = false;
+
     // Camera related
     bool is_camera_preview_ = false;
 
@@ -197,6 +209,7 @@ private:
 
     // System tray methods
     void setupSystemTray();
+    void setupNetworkConnections();
     void cleanupSystemTray();
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
     void onTrayShowAction();
@@ -217,6 +230,11 @@ private:
 
     // Screen share methods
     void show_screen_share_selector();
+
+    // 插播视频方法
+    void show_insert_video_widget();
+    void startInsertVideoPlayback(const QString& fileId);
+    void stopInsertVideoPlayback();
 
     // Scene item management methods
     void toggle_scene_item_visibility(int index);

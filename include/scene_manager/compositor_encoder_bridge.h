@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <QTimer>
 #include <QObject>
 #include <QOpenGLContext>
@@ -95,6 +96,9 @@ private:
     std::string stream_url_;
     MediaClock media_clock_;
     bool silent_audio_enabled_ = false;
+
+    // 线程安全：保护状态变量的互斥锁
+    mutable std::mutex state_mutex_;
 
     // 音频时间戳基准（用于将绝对时间戳转换为相对时间戳）
     int64_t audio_timestamp_base_ = 0;

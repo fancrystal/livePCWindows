@@ -1,6 +1,8 @@
 #include "app/settings_dialog.h"
+#include "app/device_check_dialog.h"
 #include "ui_settings_panel.h"
 #include "ui_settings_dialog.h"
+#include "common/log.h"
 
 #include <QStringList>
 #include <QSlider>
@@ -70,6 +72,11 @@ void SettingsPanel::setupConnections() {
     
     // 背景模糊滑块
     connect(ui->slider_bgBlur, &QSlider::valueChanged, this, &SettingsPanel::onBgBlurChanged);
+
+    // 设备检测按钮
+    connect(ui->pushButton_checkDevice, &QPushButton::clicked, this, [this]() {
+        openDeviceCheckDialog();
+    });
 }
 
 void SettingsPanel::updateNavButtons(SettingsTab tab) {
@@ -312,6 +319,30 @@ int SettingsPanel::get_background_blur() const {
 
 void SettingsPanel::onBgBlurChanged(int value) {
     ui->label_bgBlurValue->setText(QString::number(value) + "%");
+}
+
+// ===== 设备检测 =====
+
+void SettingsPanel::openDeviceCheckDialog() {
+    DeviceCheckDialog dialog(this);
+    int result = dialog.exec();
+
+    // 如果用户点击了确定或关闭，检查检测结果
+    if (result == QDialog::Accepted || result == QDialog::Rejected) {
+        DeviceCheckDialog::DeviceCheckResult resultData = dialog.getCheckResult();
+
+        if (!resultData.selectedCameraId.isEmpty()) {
+            // 更新摄像头选择
+            LOG_INFO("[Settings] User selected camera: " + resultData.selectedCameraId.toStdString());
+            // 这里可以更新摄像头设备ID
+        }
+
+        if (!resultData.selectedMicrophoneId.isEmpty()) {
+            // 更新麦克风选择
+            LOG_INFO("[Settings] User selected microphone: " + resultData.selectedMicrophoneId.toStdString());
+            // 这里可以更新麦克风设备ID
+        }
+    }
 }
 
 } // namespace live_assistant

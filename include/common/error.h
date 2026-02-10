@@ -24,7 +24,9 @@ enum class ErrorCode {
     QUEUE_FULL = 16,
     NOT_CONNECTED = 17,
     SEND_FAILED = 18,
-    CONNECT_FAILED = 19
+    CONNECT_FAILED = 19,
+    ALREADY_INITIALIZED = 20,
+    ALREADY_EXISTS = 21
 };
 
 class Error {

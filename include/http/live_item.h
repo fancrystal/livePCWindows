@@ -69,6 +69,16 @@ struct InsertFileItem {
         QDir().mkpath(QFileInfo(cachePath).absolutePath());
         return cachePath;
     }
+
+    // 检查是否已下载
+    bool isDownloaded() const {
+        return status == InsertFileStatus::DOWNLOAD_COMPLETED;
+    }
+
+    // 检查是否可播放
+    bool isPlayable() const {
+        return isDownloaded() || status == InsertFileStatus::PLAYING;
+    }
 };
 
 // 直播列表项结构体

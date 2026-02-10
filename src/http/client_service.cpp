@@ -183,6 +183,9 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     insertFileList.clear();
     totalCount = 0;
 
+    LOG_INFO(QString("getInsertVideolist ENTER - sassUrl: %1, roomId: %2, videoName: %3, transState: %4, verifyStatus: %5, originType: %6")
+             .arg(sassUrl).arg(roomId).arg(videoName).arg(videoTransState).arg(verifyStatus).arg(originType).toStdString());
+
     // 构造请求参数
     QJsonObject reqData;
     reqData["roomInfoId"] = roomId;
@@ -196,15 +199,26 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     // 发送POST请求
     QString url = QString("%1/livesaas/ListVideoRoom").arg(sassUrl);
     HttpClient* client = HttpClient::instance();
-    
+
+    LOG_INFO(QString("getInsertVideolist - Request URL: %1").arg(url).toStdString());
+
+    // 打印完整的请求 body 用于调试
+    QJsonDocument reqDoc(reqData);
+    LOG_INFO(QString("getInsertVideolist - Request body: %1").arg(reqDoc.toJson(QJsonDocument::Compact)).toStdString());
+
     // 为这个请求创建独立的headers
     struct curl_slist* headers = client->createHeaders();
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
     client->addHeader(&headers, "Content-Type", "application/json");
-    
+
     // 使用带自定义headers的post方法
     QJsonObject response = client->post(url, reqData, headers);
     client->freeHeaders(headers);
+
+    // 打印响应
+    QJsonDocument doc(response);
+    QString responseStr = doc.toJson(QJsonDocument::Compact);
+    LOG_INFO(QString("getInsertVideolist - Response: %1").arg(responseStr).toStdString());
 
     // 解析响应状态
     if (response["code"].toInt() != 200) {
@@ -215,19 +229,52 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
 
     // 解析插播视频列表数据
     parseInsertVideolistJson(response["data"].toObject(), insertFileList, totalCount);
+
+    LOG_INFO(QString("getInsertVideolist EXIT - Parsed %1 files, totalCount: %2").arg(insertFileList.size()).arg(totalCount).toStdString());
+
     return true;
 }
 
 // 解析单个插播视频JSON
 void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFileItem& fileItem)
 {
+    LOG_INFO(QString("parseInsertFileJson ENTER - recordJson keys: %1")
+             .arg(QStringList(recordJson.keys()).join(",")).toStdString());
+
     // 基础字段映射
     fileItem.fileId = recordJson["videoRoomId"].toString();
     fileItem.fileName = recordJson["videoName"].toString();
     fileItem.videoRoomId = recordJson["videoRoomId"].toString();
     fileItem.videoName = recordJson["videoName"].toString();
-    //fileItem.downloadUrl = recordJson["fileKey"].toString();  // 文件Key作为fileId
     fileItem.fileKey = recordJson["fileKey"].toString();
+
+    LOG_INFO(QString("parseInsertFileJson - fileId: %1, fileName: %2, fileKey: %3")
+             .arg(fileItem.fileId).arg(fileItem.fileName).arg(fileItem.fileKey).toStdString());
+
+    // 检查是否有 transcodingFileMp4Url
+    bool hasTranscodingUrl = recordJson.contains("transcodingFileMp4Url") && !recordJson["transcodingFileMp4Url"].toString().isEmpty();
+    LOG_INFO(QString("parseInsertFileJson - has transcodingFileMp4Url: %1").arg(hasTranscodingUrl).toStdString());
+
+    // 设置下载URL - 优先使用 transcodingFileMp4Url，否则使用 fileKey 构造
+    if (hasTranscodingUrl) {
+        fileItem.downloadUrl = recordJson["transcodingFileMp4Url"].toString();
+        LOG_INFO(QString("parseInsertFileJson - downloadUrl from transcodingFileMp4Url: %1")
+                 .arg(fileItem.downloadUrl).toStdString());
+    } else if (recordJson.contains("fileKey") && !recordJson["fileKey"].toString().isEmpty()) {
+        // 如果没有直接的下载URL，使用 fileKey 构造
+        // fileKey 格式可能是完整的URL或者需要配合基础URL
+        QString fileKey = recordJson["fileKey"].toString();
+        if (fileKey.startsWith("http://") || fileKey.startsWith("https://")) {
+            fileItem.downloadUrl = fileKey;
+        } else {
+            // 构造下载URL - 假设存储服务基础URL
+            fileItem.downloadUrl = QString("https://stor.lxi-tech.com/%1").arg(fileKey);
+        }
+        LOG_INFO(QString("parseInsertFileJson - downloadUrl constructed: %1")
+                 .arg(fileItem.downloadUrl).toStdString());
+    } else {
+        LOG_WARNING("parseInsertFileJson - No downloadUrl available!");
+    }
     fileItem.videoType = recordJson["videoType"].toInt();
     fileItem.videoCoverUrl = recordJson["videoCoverUrl"].toString();
     fileItem.videoDuration = recordJson["videoDuration"].toString();

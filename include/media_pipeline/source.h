@@ -6,13 +6,11 @@
 #include "common/error.h"
 #include "common/media_clock.h"
 
+namespace live_assistant {
+
 // Forward declarations
 struct AudioFrame;
-namespace live_assistant {
 struct VideoFrame;
-}
-
-namespace live_assistant {
 
 // Media source abstract interface
 class Source {

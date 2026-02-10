@@ -23,8 +23,8 @@ if(WIN32)
     add_definitions(-DCPPWINRT_VERSION="2.0.230207.1")
 endif()
 
-# Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture)
-find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia)
+# Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture, MultimediaWidgets for QVideoWidget, PrintSupport for QCustomPlot)
+find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport)
 qt_standard_project_setup()
 
 # Third-party library paths
@@ -32,6 +32,7 @@ set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 set(FFMPEG_DIR ${THIRD_PARTY_DIR}/ffmpeg)
 set(OPENCV_DIR ${THIRD_PARTY_DIR}/opencv)
 set(LIBCURL_DIR ${THIRD_PARTY_DIR}/libcurl)
+set(VLC_DIR ${THIRD_PARTY_DIR}/vlc)
 
 # Include directories
 include_directories(include)
@@ -39,6 +40,9 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${FFMPEG_DIR}/include)
 include_directories(${OPENCV_DIR}/include)  # Parent directory containing opencv2
 include_directories(${LIBCURL_DIR}/include)  # libcurl include directory
+include_directories(${THIRD_PARTY_DIR}/qcustomplot)  # QCustomPlot for audio visualization
+include_directories(${THIRD_PARTY_DIR}/kiss_fft)     # KissFFT for audio spectrum analysis
+include_directories(${VLC_DIR}/include)   # VLC include directory
 
 # Source files
 file(GLOB_RECURSE APP_SOURCES "src/app/*.cpp")
@@ -64,6 +68,8 @@ file(GLOB_RECURSE ENCODER_SOURCES "src/encoder/*.cpp")
 file(GLOB_RECURSE ENCODER_HEADERS "include/encoder/*.h")
 file(GLOB_RECURSE STREAM_PUSHER_SOURCES "src/stream_pusher/*.cpp")
 file(GLOB_RECURSE STREAM_PUSHER_HEADERS "include/stream_pusher/*.h")
+file(GLOB_RECURSE MEDIA_PIPELINE_SOURCES "src/media_pipeline/*.cpp")
+file(GLOB_RECURSE MEDIA_PIPELINE_HEADERS "include/media_pipeline/*.h")
 
 # HTTP module sources
 set(HTTP_SOURCES 
@@ -78,7 +84,7 @@ set(HTTP_HEADERS
 )
 
 # UI files - let Qt handle them automatically
-set(APP_UIS "src/app/main_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui" "src/app/exit_dialog.ui")
+set(APP_UIS "src/app/main_window.ui" "src/app/live_list_window.ui" "src/app/camera_settings.ui" "src/app/screen_share.ui" "src/app/settings_dialog.ui" "src/app/exit_dialog.ui" "src/app/device_check_dialog.ui")
 
 # Add QML and image resources (resources/qml.qrc)
 qt_add_resources(RCC_QML_SOURCES resources/qml.qrc)
@@ -92,6 +98,8 @@ set(ALL_SOURCES
     ${AUDIO_ENGINE_SOURCES}
     ${ENCODER_SOURCES}
     ${STREAM_PUSHER_SOURCES}
+    ${MEDIA_PIPELINE_SOURCES}
+    ${THIRD_PARTY_DIR}/qcustomplot/qcustomplot.cpp
 )
 list(APPEND ALL_SOURCES ${RCC_QML_SOURCES})
 
@@ -103,10 +111,20 @@ set(ALL_HEADERS
     ${AUDIO_ENGINE_HEADERS}
     ${ENCODER_HEADERS}
     ${STREAM_PUSHER_HEADERS}
+    ${MEDIA_PIPELINE_HEADERS}
 )
 
 # Create executable with AUTOMOC enabled (handles Q_OBJECT automatically)
 qt_add_executable(LiveAssistant ${ALL_SOURCES} ${ALL_HEADERS} ${APP_UIS})
+
+# Add KissFFT C source files directly to the main project
+# Set source file properties to compile as C
+set_source_files_properties(${THIRD_PARTY_DIR}/kiss_fft/kiss_fft.c PROPERTIES LANGUAGE C)
+set_source_files_properties(${THIRD_PARTY_DIR}/kiss_fft/kiss_fftr.c PROPERTIES LANGUAGE C)
+target_sources(LiveAssistant PRIVATE
+    ${THIRD_PARTY_DIR}/kiss_fft/kiss_fft.c
+    ${THIRD_PARTY_DIR}/kiss_fft/kiss_fftr.c
+)
 
 # Link libraries
 target_link_libraries(LiveAssistant PRIVATE
@@ -117,6 +135,8 @@ target_link_libraries(LiveAssistant PRIVATE
     Qt6::QuickWidgets
     Qt6::WebSockets
     Qt6::Multimedia
+    Qt6::MultimediaWidgets
+    Qt6::PrintSupport
     # FFmpeg libraries
     ${FFMPEG_DIR}/lib/x64/avformat.lib
     ${FFMPEG_DIR}/lib/x64/avcodec.lib
@@ -131,6 +151,9 @@ target_link_libraries(LiveAssistant PRIVATE
     debug ${OPENCV_DIR}/lib/x64/opencv_world4110d.lib
     # libcurl library
     ${LIBCURL_DIR}/lib/x64/libcurl.lib
+    # VLC libraries
+    ${VLC_DIR}/lib/x64/libvlc.lib
+    ${VLC_DIR}/lib/x64/libvlccore.lib
 )
 # Optionally link GraphicalEffects if available
 if (TARGET Qt6::GraphicalEffects)

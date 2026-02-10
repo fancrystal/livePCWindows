@@ -113,10 +113,10 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         // set ui->logoLabel to use Frame_icon.png; always clear original text
         QPixmap iconPix2(":/images/Frame_icon.png");
         if (ui->logoLabel) {
+            ui->logoLabel->setFixedSize(32, 32);  // FIXED: Set size BEFORE pixmap
             if (!iconPix2.isNull()) {
-                // slightly smaller to match target header compactness
-                ui->logoLabel->setPixmap(iconPix2.scaled(32,32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                ui->logoLabel->setFixedSize(32,32);
+                // FIXED: Use KeepAspectRatioByExpanding to fill the 32x32 space
+                ui->logoLabel->setPixmap(iconPix2.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
             }
             ui->logoLabel->setText("");
             ui->logoLabel->setStyleSheet("background: transparent;");
@@ -150,8 +150,10 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         titleContainer->setAttribute(Qt::WA_TranslucentBackground);
         titleContainer->setAutoFillBackground(false);
         titleContainer->setStyleSheet("background: transparent;");
+        // Set size policy to prevent layout jumping
+        titleContainer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         QHBoxLayout* tl = new QHBoxLayout(titleContainer);
-        tl->setContentsMargins(0, -8, 0, 0); // nudge upward slightly more
+        tl->setContentsMargins(0, 0, 0, 0); // FIXED: Removed negative margin
         tl->setSpacing(6);
         QLabel* titleLabel = new QLabel(titleContainer);
         titleLabel->setPixmap(titlePixmap);
@@ -177,7 +179,10 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
             if (hl) {
                 // remove original text label if present to avoid duplicate text
                 if (ui->logoLabel) ui->logoLabel->setText("");
+                // FIXED: Set proper alignment to prevent jumping
+                hl->setAlignment(ui->logoLabel, Qt::AlignLeft | Qt::AlignVCenter);
                 hl->insertWidget(1, titleContainer);
+                hl->setAlignment(titleContainer, Qt::AlignLeft | Qt::AlignVCenter);
             }
         }
         titleContainer->show();
@@ -785,16 +790,7 @@ bool LiveListWindow::eventFilter(QObject* watched, QEvent* event) {
             }
             // ensure initial positions if this is called before any resize
             if (!closeBtn->isVisible()) { /*noop*/ }
-            // reposition logo and title container if present
-            QLabel* logo = ui->headerWidget->findChild<QLabel*>("logoLabel");
-            QWidget* titleContainer = ui->headerWidget->findChild<QWidget*>("titleContainer");
-            if (logo) {
-                logo->move(12, (ui->headerWidget->height() - logo->height())/2);
-            }
-            if (titleContainer) {
-                int lx = 12 + (logo ? logo->width() : 0) + 8;
-                titleContainer->move(lx, (ui->headerWidget->height() - titleContainer->height())/2 - 4);
-            }
+            // FIXED: Removed manual logo/titleContainer repositioning - let layout handle it
             return false;
         }
     }

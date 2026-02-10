@@ -75,8 +75,8 @@ ErrorCode MediaPipeline::start() {
     Log::info("Starting MediaPipeline");
     
     // Check if pipeline is in valid state for starting
-    if (state_ != PipelineState::IDLE) {
-        Log::error("Pipeline is not in IDLE state, current state: " + std::to_string(static_cast<int>(state_)));
+    if (state_.load() != PipelineState::IDLE) {
+        Log::error("Pipeline is not in IDLE state, current state: " + std::to_string(static_cast<int>(state_.load())));
         return ErrorCode::INVALID_STATE;
     }
     
@@ -113,8 +113,8 @@ ErrorCode MediaPipeline::stop() {
     Log::info("Stopping MediaPipeline");
     
     // Check if pipeline is in valid state for stopping
-    if (state_ != PipelineState::RUNNING) {
-        Log::error("Pipeline is not in RUNNING state, current state: " + std::to_string(static_cast<int>(state_)));
+    if (state_.load() != PipelineState::RUNNING) {
+        Log::error("Pipeline is not in RUNNING state, current state: " + std::to_string(static_cast<int>(state_.load())));
         return ErrorCode::INVALID_STATE;
     }
     
@@ -347,10 +347,10 @@ ErrorCode MediaPipeline::start_components() {
     for (const auto& component_pair : components_) {
         auto& component = component_pair.second;
         if (component->source) {
-            ErrorCode result = component->source->start();
-            if (result != ErrorCode::SUCCESS) {
+            bool result = component->source->start();
+            if (!result) {
                 Log::error("Failed to start source: " + component_pair.first);
-                return result;
+                return ErrorCode::FAILURE;
             }
         }
     }
@@ -368,20 +368,20 @@ ErrorCode MediaPipeline::start_components() {
             ErrorCode result = component->output->start();
             if (result != ErrorCode::SUCCESS) {
                 Log::error("Failed to start output: " + component_pair.first);
-                return result;
+                return ErrorCode::FAILURE;
             }
         }
     }
-    
+
     Log::info("All pipeline components started successfully");
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode MediaPipeline::stop_components() {
     Log::info("Stopping pipeline components");
-    
+
     // Stop order: Output -> Encoder -> Source
-    
+
     // Stop outputs first
     for (const auto& component_pair : components_) {
         auto& component = component_pair.second;
@@ -392,7 +392,7 @@ ErrorCode MediaPipeline::stop_components() {
             }
         }
     }
-    
+
     // Stop encoders next
     for (const auto& component_pair : components_) {
         auto& component = component_pair.second;
@@ -409,78 +409,78 @@ ErrorCode MediaPipeline::stop_components() {
             }
         }
     }
-    
+
     // Stop sources last
     for (const auto& component_pair : components_) {
         auto& component = component_pair.second;
         if (component->source) {
-            ErrorCode result = component->source->stop();
-            if (result != ErrorCode::SUCCESS) {
+            bool result = component->source->stop();
+            if (!result) {
                 Log::warn("Failed to stop source: " + component_pair.first + ", continuing...");
             }
         }
     }
-    
+
     Log::info("All pipeline components stopped");
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode MediaPipeline::initialize_components() {
     Log::info("Initializing pipeline components");
-    
+
     // Initialize all components
     for (const auto& component_pair : components_) {
         auto& component = component_pair.second;
-        
+
         if (component->source) {
-            ErrorCode result = component->source->initialize();
-            if (result != ErrorCode::SUCCESS) {
+            bool result = component->source->initialize();
+            if (!result) {
                 Log::error("Failed to initialize source: " + component_pair.first);
-                return result;
+                return ErrorCode::FAILURE;
             }
         }
-        
+
         if (component->output) {
             ErrorCode result = component->output->initialize();
             if (result != ErrorCode::SUCCESS) {
                 Log::error("Failed to initialize output: " + component_pair.first);
-                return result;
+                return ErrorCode::FAILURE;
             }
         }
     }
-    
+
     Log::info("All pipeline components initialized successfully");
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode MediaPipeline::shutdown_components() {
     Log::info("Shutting down pipeline components");
-    
+
     // Shutdown all components
     for (const auto& component_pair : components_) {
         auto& component = component_pair.second;
-        
+
         if (component->source) {
-            ErrorCode result = component->source->shutdown();
-            if (result != ErrorCode::SUCCESS) {
+            bool result = component->source->shutdown();
+            if (!result) {
                 Log::warn("Failed to shutdown source: " + component_pair.first + ", continuing...");
             }
         }
-        
+
         if (component->audio_encoder) {
             ErrorCode result = component->audio_encoder->shutdown();
             if (result != ErrorCode::SUCCESS) {
                 Log::warn("Failed to shutdown audio encoder: " + component_pair.first + ", continuing...");
             }
         }
-        
+
         if (component->video_encoder) {
             ErrorCode result = component->video_encoder->shutdown();
             if (result != ErrorCode::SUCCESS) {
                 Log::warn("Failed to shutdown video encoder: " + component_pair.first + ", continuing...");
             }
         }
-        
+
         if (component->output) {
             ErrorCode result = component->output->shutdown();
             if (result != ErrorCode::SUCCESS) {
@@ -488,7 +488,7 @@ ErrorCode MediaPipeline::shutdown_components() {
             }
         }
     }
-    
+
     Log::info("All pipeline components shutdown");
     return ErrorCode::SUCCESS;
 }
@@ -568,9 +568,9 @@ bool MediaPipeline::are_all_components_stopped() const {
 }
 
 void MediaPipeline::update_state(PipelineState new_state) {
-    state_.store(new_state);
-    Log::info("Pipeline state changed: " + 
-             std::to_string(static_cast<int>(state_)) + " -> " + 
+    PipelineState old_state = state_.exchange(new_state);
+    Log::info("Pipeline state changed: " +
+             std::to_string(static_cast<int>(old_state)) + " -> " +
              std::to_string(static_cast<int>(new_state)));
 }
 

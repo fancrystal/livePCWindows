@@ -133,6 +133,10 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             LOG_INFO("[H264Encoder] Unknown CPU vendor → Priority: NVENC → QSV → AMF → Software");
         }
 
+        // 🔧 临时测试：暂时跳过硬件编码器，只使用软编
+        candidates = {"libx264"};
+        LOG_INFO("[H264Encoder] [TEST] Using software encoder only for testing");
+
         // Probe each candidate by trying to open a temporary codec context and checking codec parameters.
         for (size_t i = 0; i < candidates.size(); ++i) {
             const char* hw_name = candidates[i];
@@ -320,9 +324,18 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     codec_ctx_->height = config_.height;
     codec_ctx_->time_base = get_time_base();
     codec_ctx_->framerate = AVRational{config_.fps > 0 ? config_.fps : 30, 1};
-    // GOP: prefer explicit config.gop (frames). Default to 2 seconds worth of frames.
-    codec_ctx_->gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
-    codec_ctx_->max_b_frames = config_.b_frames_enabled ? 2 : 0;
+
+    // ✅ 降低编码延迟的关键设置
+    codec_ctx_->max_b_frames = 0;  // 禁用 B 帧
+    codec_ctx_->thread_count = 1;  // 单线程编码，减少延迟
+    codec_ctx_->thread_type = 0;   // 禁用帧级并行
+
+    // ✅ GOP: 参考原项目，使用 1 秒关键帧间隔
+    int gop_size = config_.fps;  // 1秒 @ 30fps = 30帧
+    codec_ctx_->gop_size = gop_size;
+    codec_ctx_->keyint_min = config_.fps / 2;  // 最小关键帧间隔
+
+    LOG_INFO("[H264Encoder] GOP size set to " + std::to_string(gop_size) + " frames (1 second @ " + std::to_string(config_.fps) + " fps)");
 
     // 🔧 像素格式设置
     if (is_qsv_encoder_) {
@@ -379,8 +392,6 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         LOG_INFO("[H264Encoder] Using YUV420P pixel format");
     }
 
-    codec_ctx_->bit_rate = config_.bitrate;
-
     // For FLV/RTMP, extradata is typically required
     codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
@@ -397,29 +408,23 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     }
 
     // x264 options (works when underlying encoder is libx264)
+    // ✅ 参考原项目 qt-live-client 的配置
     if (codec_ctx_->priv_data) {
         av_opt_set(codec_ctx_->priv_data, "preset", preset_to_string(config_.preset).c_str(), 0);
         av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
 
         // Only set x264-specific params when using libx264 (software) encoder.
         if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
-            // Base x264 params to control refs/slices/profile and avoid huge NAL units.
-            // More aggressive slicing to avoid oversized NAL units that break FLV/RTMP
+            // ✅ 参考原项目：使用简单可靠的 x264-params，不设置 keyint/min-keyint/forced-idr
+            // 这些参数由 codec_ctx_->gop_size 和 codec_ctx_->keyint_min 控制
             std::string x264_params = "ref=1:slice-max-size=400:slices=8:profile=baseline";
 
-            // Rate control: respect user-selected mode (VBR/CBR/CQP)
-            if (config_.mode == VideoEncodingMode::VBR) {
-                // VBR: set a max bitrate (vbv-maxrate) and buffer size to allow variability.
-                x264_params += ":vbv-maxrate=" + std::to_string(config_.max_bitrate / 1000) +
-                               ":vbv-bufsize=" + std::to_string((config_.max_bitrate / 1000) * 2);
-            } else if (config_.mode == VideoEncodingMode::CBR) {
-                // CBR: instruct x264 to use nal-hrd=cbr and tighten vbv limits
-                x264_params += ":nal-hrd=cbr:vbv-maxrate=" + std::to_string(config_.max_bitrate / 1000) +
-                               ":vbv-bufsize=" + std::to_string((config_.max_bitrate / 1000));
-            } else if (config_.mode == VideoEncodingMode::CQP) {
-                // CQP: map quality value to crf if provided; use quality as CRF for x264
-                x264_params += ":crf=" + std::to_string(static_cast<int>(config_.quality));
-            }
+            // ✅ 禁用场景检测，严格按照 GOP 间隔生成 IDR 关键帧
+            // scenecut=0 表示禁用场景检测，确保第一帧和每 GOP 帧都生成 IDR
+            x264_params += ":scenecut=0";
+
+            // ✅ 降低编码延迟：使用单线程模式，减少帧缓冲
+            x264_params += ":threads=1";
 
             av_opt_set(codec_ctx_->priv_data, "x264-params", x264_params.c_str(), 0);
             LOG_INFO(std::string("H264Encoder: set x264-params: ") + x264_params);
@@ -428,12 +433,29 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         }
     }
 
-    if (avcodec_open2(codec_ctx_, codec_, nullptr) < 0) {
+    // ✅ 参考原项目：使用 AVDictionary 设置码率控制参数
+    AVDictionary* opts = nullptr;
+    if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
+        // 软件编码器：设置 VBR 码率控制
+        av_dict_set(&opts, "rc", "vbr", 0);
+        av_dict_set(&opts, "b", (std::to_string(config_.bitrate / 1000) + "k").c_str(), 0);
+        av_dict_set(&opts, "maxrate", (std::to_string(config_.max_bitrate / 1000) + "k").c_str(), 0);
+        av_dict_set(&opts, "bufsize", (std::to_string((config_.max_bitrate / 1000) * 2) + "k").c_str(), 0);
+        av_dict_set(&opts, "max_delay", "20000000", 0);
+        LOG_INFO("[H264Encoder] Set libx264 bitrate: " + std::to_string(config_.bitrate / 1000) + "k, maxrate: " +
+                 std::to_string(config_.max_bitrate / 1000) + "k");
+    }
+
+    if (avcodec_open2(codec_ctx_, codec_, &opts) < 0) {
+        av_dict_free(&opts);
         LOG_ERROR("Failed to open H264 encoder");
         return ErrorCode::INIT_FAILED;
     }
-    // Ensure the encoder will produce a keyframe for the first frame after initialization.
+    av_dict_free(&opts);
+
+    // ✅ 强制首帧为 IDR 关键帧
     force_keyframe_ = true;
+    LOG_INFO("[H264Encoder] First frame will be forced as keyframe (IDR)");
 
     // ✅ 只为非 QSV 编码器创建软件帧
     // QSV 编码器使用硬件帧，在 send_frame_internal 中创建
@@ -538,6 +560,12 @@ ErrorCode H264Encoder::shutdown() {
 ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in) {
     if (!in || !codec_ctx_) {
         return ErrorCode::INVALID_PARAM;
+    }
+
+    // 对于QSV编码器，检查硬件帧上下文
+    if (is_qsv_encoder_ && !hw_frame_ctx_) {
+        LOG_ERROR("[H264Encoder] QSV encoder requires hw_frame_ctx_");
+        return ErrorCode::ENCODING_ERROR;
     }
 
     AVPixelFormat src_fmt = AV_PIX_FMT_RGBA;
@@ -685,10 +713,15 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
     encode_frame->pts = pts;
 
     if (force_keyframe_) {
+        // ✅ 强制生成 IDR 帧（而非普通 I 帧）
+        // 对于 libx264，设置为 I 帧并清空编码器缓冲区，确保生成 IDR
         encode_frame->pict_type = AV_PICTURE_TYPE_I;
+        encode_frame->key_frame = 1;  // 标记为关键帧
         force_keyframe_ = false;
+        LOG_INFO("[H264Encoder] Force IDR frame at pts=" + std::to_string(pts));
     } else {
         encode_frame->pict_type = AV_PICTURE_TYPE_NONE;
+        encode_frame->key_frame = 0;
     }
 
     int ret = avcodec_send_frame(codec_ctx_, encode_frame);
@@ -918,7 +951,9 @@ bool H264Encoder::switch_to_next_encoder() {
     new_codec_ctx->height = old_config.height;
     new_codec_ctx->time_base = get_time_base();
     new_codec_ctx->framerate = AVRational{old_config.fps > 0 ? old_config.fps : 30, 1};
-    new_codec_ctx->gop_size = old_config.gop > 0 ? old_config.gop : (old_config.fps > 0 ? old_config.fps * 2 : 60);
+    // ✅ GOP: 参考原项目，使用 1 秒关键帧间隔
+    new_codec_ctx->gop_size = old_config.gop > 0 ? old_config.gop : old_config.fps;
+    new_codec_ctx->keyint_min = old_config.fps / 2;
     new_codec_ctx->max_b_frames = 0;
     new_codec_ctx->bit_rate = old_config.bitrate;
     new_codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -985,7 +1020,18 @@ bool H264Encoder::switch_to_next_encoder() {
         char errbuf[128];
         av_strerror(AVERROR_UNKNOWN, errbuf, sizeof(errbuf));
         LOG_ERROR("[H264Encoder] Failed to open encoder '" + next_encoder_name + "': " + errbuf);
+
+        // 释放新分配的资源
         avcodec_free_context(&new_codec_ctx);
+
+        // 释放旧编码器资源
+        if (old_codec_ctx) {
+            avcodec_free_context(&old_codec_ctx);
+        }
+        if (old_frame) {
+            av_frame_free(&old_frame);
+        }
+
         // 继续尝试下一个编码器
         current_encoder_index_ = next_index;
         return switch_to_next_encoder();
@@ -1012,6 +1058,10 @@ bool H264Encoder::switch_to_next_encoder() {
         frame_ = av_frame_alloc();
         if (!frame_) {
             LOG_ERROR("[H264Encoder] Failed to alloc frame for new encoder");
+            // 释放已打开的编码器
+            avcodec_free_context(&codec_ctx_);
+            codec_ = nullptr;
+            codec_ctx_ = nullptr;
             return false;
         }
         frame_->format = codec_ctx_->pix_fmt;
@@ -1021,6 +1071,10 @@ bool H264Encoder::switch_to_next_encoder() {
             LOG_ERROR("[H264Encoder] Failed to alloc frame buffer");
             av_frame_free(&frame_);
             frame_ = nullptr;
+            // 释放已打开的编码器
+            avcodec_free_context(&codec_ctx_);
+            codec_ = nullptr;
+            codec_ctx_ = nullptr;
             return false;
         }
     } else {

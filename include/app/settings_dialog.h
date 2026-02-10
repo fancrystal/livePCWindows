@@ -74,6 +74,7 @@ private:
     void setupConnections();
     void updateNavButtons(SettingsTab tab);
     void showTab(SettingsTab tab);
+    void openDeviceCheckDialog();  // 打开设备检测对话框
 
     Ui::SettingsPanel *ui;
     

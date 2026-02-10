@@ -439,21 +439,21 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                   ", size=" + std::to_string(write_pkt->size) +
                   ", duration=" + std::to_string(write_pkt->duration) +
                   ", stream_index=" + std::to_string(write_pkt->stream_index));
-        
+
         int ret = av_interleaved_write_frame(format_ctx_, write_pkt);
-        
+
         LOG_DEBUG("[RTMP] After write: ret=" + std::to_string(ret) +
                   ", pts=" + std::to_string(write_pkt->pts) +
                   ", dts=" + std::to_string(write_pkt->dts) +
                   ", size=" + std::to_string(write_pkt->size));
-        
+
         // Save size before potential free
         int packet_size = write_pkt->size;
-        
+
         if (ret < 0) {
             char errbuf[128] = {0};
             av_strerror(ret, errbuf, sizeof(errbuf));
-            
+
             // Log detailed debug info for audio packets
             if (packet->type == MediaType::AUDIO) {
                 LOG_ERROR("[RTMP] Audio send failed: ret=" + std::to_string(ret) + " (" + errbuf + ")");
@@ -465,7 +465,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                 LOG_ERROR("  - codecpar.sample_rate=" + std::to_string(st->codecpar->sample_rate));
                 LOG_ERROR("  - codecpar.extradata_size=" + std::to_string(st->codecpar->extradata_size));
             }
-            
+
             LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
             if (pkt_to_free) av_packet_free(&pkt_to_free);
             return ErrorCode::SEND_FAILED;

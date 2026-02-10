@@ -1,0 +1,390 @@
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
+import QtQuick.Controls 2.15
+
+Rectangle {
+    id: root
+    width: 1280
+    height: 760
+    color: "transparent"
+
+    // 登录状态属性
+    property string loginStatus: ""
+    property string loginError: ""
+    property bool isLoggingIn: false
+
+    Image {
+        id: bg
+        anchors.fill: parent
+        source: "qrc:/images/Frame back.png"
+        fillMode: Image.PreserveAspectCrop
+    }
+
+    // 关闭按钮
+    Rectangle {
+        id: closeBtn
+        width: 36
+        height: 36
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 12
+        color: "transparent"
+        radius: 6
+
+        // X图标
+        Text {
+            anchors.centerIn: parent
+            text: "×"
+            color: "white"
+            font.pixelSize: 24
+            font.weight: Font.Light
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            onEntered: {
+                parent.color = Qt.rgba(1, 0, 0, 0.3)
+            }
+            onExited: {
+                parent.color = "transparent"
+            }
+            onClicked: {
+                if (typeof loginWindow !== 'undefined') {
+                    loginWindow.close()
+                } else {
+                    Qt.quit()
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        id: panel
+        width: 380
+        height: 500
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.verticalCenter: parent.verticalCenter
+        radius: 14
+        color: "transparent"
+
+        Rectangle {
+            id: card
+            anchors.centerIn: parent
+            width: parent.width
+            height: parent.height
+            radius: 24
+            clip: true
+            color: Qt.rgba(0.06,0.02,0.04,0.86)
+            border.width: 1
+            border.color: Qt.rgba(1,1,1,0.03)
+        }
+
+        ColumnLayout {
+            id: cardLayout
+            anchors.fill: card
+            anchors.margins: 26
+            spacing: 12
+
+            Text {
+                text: "直播伴侣 · 启点点"
+                color: "white"
+                font.pixelSize: 22
+                horizontalAlignment: Text.AlignHCenter
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            // 状态提示文字
+            Text {
+                id: statusText
+                text: ""
+                color: "transparent"
+                font.pixelSize: 12
+                horizontalAlignment: Text.AlignHCenter
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: parent.width
+                Layout.preferredHeight: 16  // 固定高度，即使不可见也占据空间
+                wrapMode: Text.WordWrap
+                opacity: text !== "" ? 1.0 : 0.0  // 使用opacity而不是visible，避免布局跳动
+            }
+
+            // 监听状态变化来更新statusText
+            Binding {
+                target: statusText
+                property: "text"
+                value: loginStatus !== "" ? loginStatus : loginError
+                when: loginStatus !== "" || loginError !== ""
+            }
+
+            Binding {
+                target: statusText
+                property: "color"
+                value: isLoggingIn ? "#4aa6ff" : "#ff6b6b"
+                when: isLoggingIn || loginError !== ""
+            }
+
+            Text { text: "手机号"; color: Qt.rgba(1,1,1,0.6); font.pixelSize: 12 }
+
+            Rectangle {
+                width: parent.width
+                height: 40
+                radius: 6
+                color: "white"
+                border.width: 1
+                border.color: Qt.rgba(0,0,0,0.06)
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 8
+                    Image {
+                        source: "qrc:/images/Frame_user.png"
+                        width: 20
+                        height: 20
+                        opacity: 0.6
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    TextField {
+                        id: accountField
+                        placeholderText: "请输入手机号"
+                        color: "#222222"
+                        background: Rectangle { color: "transparent"; border.width: 0 }
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        maximumLength: 11
+                        validator: RegularExpressionValidator { regularExpression: /[0-9]*/ }
+                        onTextChanged: {
+                            // 移除非数字字符
+                            var filtered = text.replace(/[^0-9]/g, '')
+                            if (text !== filtered) {
+                                text = filtered
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text { text: "密码"; color: Qt.rgba(1,1,1,0.6); font.pixelSize: 12 }
+
+            Rectangle {
+                width: parent.width
+                height: 40
+                radius: 6
+                color: "white"
+                border.width: 1
+                border.color: Qt.rgba(0,0,0,0.06)
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 8
+                    Image {
+                        source: "qrc:/images/Frame_pass.png"
+                        width: 20
+                        height: 20
+                        opacity: 0.6
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    TextField {
+                        id: passwordField
+                        echoMode: TextInput.Password
+                        placeholderText: "请输入密码"
+                        color: "#222222"
+                        background: Rectangle { color: "transparent"; border.width: 0 }
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                    }
+                    Rectangle {
+                        width: 28
+                        height: 28
+                        radius: 6
+                        color: "white"
+                        Layout.alignment: Qt.AlignVCenter
+
+                        Image {
+                            anchors.centerIn: parent
+                            source: "qrc:/images/close.png"
+                            width: 14
+                            height: 14
+                            opacity: 0.8
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: passwordField.echoMode = passwordField.echoMode === TextInput.Password ? TextInput.Normal : TextInput.Password
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                spacing: 8
+                CheckBox { id: rememberBox; checked: true }
+                Text { text: "记住密码"; color: Qt.rgba(1,1,1,0.6); font.pixelSize: 12 }
+            }
+
+            Button {
+                id: loginBtn
+                height: 42
+                Layout.preferredWidth: parent.width * 0.9
+                Layout.alignment: Qt.AlignHCenter
+
+                background: Rectangle {
+                    radius: 6
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: "#4a6ef0" }
+                        GradientStop { position: 1; color: "#f05a6a" }
+                    }
+                }
+
+                contentItem: Text {
+                    id: loginText
+                    text: isLoggingIn ? "登录中..." : "登录"
+                    color: "white"
+                    font.pixelSize: 14
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                onClicked: {
+                    handleLogin()
+                }
+            }
+
+            Text {
+                text: "—— 登录即同意《用户协议》与《隐私政策》 ——"
+                font.pixelSize: 10
+                color: Qt.rgba(1,1,1,0.45)
+                horizontalAlignment: Text.AlignHCenter
+                Layout.alignment: Qt.AlignHCenter
+            }
+        }
+    }
+
+    // 登录处理函数 - 在QML端做初步验证
+    function handleLogin() {
+        if (isLoggingIn) return
+
+        var phone = accountField.text.trim()
+        var password = passwordField.text
+
+        // 清空之前的状态
+        loginStatus = ""
+        loginError = ""
+        statusText.text = ""
+
+        // QML端验证手机号格式
+        var phoneRegex = /^1[3-9]\d{9}$/
+        if (phone === "") {
+            loginError = "请输入手机号"
+            statusText.text = loginError
+            statusText.color = "#ff6b6b"
+            return
+        }
+        if (!phoneRegex.test(phone)) {
+            loginError = "请输入有效的手机号（11位数字）"
+            statusText.text = loginError
+            statusText.color = "#ff6b6b"
+            return
+        }
+        if (password === "") {
+            loginError = "密码不能为空"
+            statusText.text = loginError
+            statusText.color = "#ff6b6b"
+            return
+        }
+
+        // QML验证通过，设置为登录中状态
+        isLoggingIn = true
+        statusText.text = "正在登录..."
+        statusText.color = "#4aa6ff"
+
+        console.log("QML validation passed, calling C++ login...")
+
+        // 调用C++登录
+        if (typeof loginWindow !== 'undefined' && loginWindow.qmlLogin) {
+            loginWindow.qmlLogin(phone, password)
+        }
+    }
+
+    // 组件加载时读取保存的凭据
+    Component.onCompleted: {
+        console.log("Login.qml component completed")
+        if (typeof loginWindow !== 'undefined') {
+            console.log("loginWindow is defined")
+            // 检查是否有保存的凭据且是有效手机号
+            if (loginWindow.qmlHasSavedCredentials()) {
+                var savedPhone = loginWindow.qmlGetSavedUsername()
+                console.log("Saved username: " + savedPhone)
+                // 验证保存的用户名是否是有效手机号
+                var phoneRegex = /^1[3-9]\d{9}$/
+                if (phoneRegex.test(savedPhone)) {
+                    accountField.text = savedPhone
+                    passwordField.text = loginWindow.qmlGetSavedPassword()
+                } else {
+                    console.log("Saved username is not a valid phone number, clearing...")
+                }
+            }
+        } else {
+            console.log("loginWindow is NOT defined")
+        }
+    }
+
+    // 监听登录状态变化 - 使用直接方法调用
+    Connections {
+        target: loginWindow
+
+        function onLoginStateChanged(loggingIn, errorMsg) {
+            console.log("QML onLoginStateChanged: loggingIn=" + loggingIn + ", error=" + errorMsg)
+            isLoggingIn = loggingIn
+            if (!loggingIn && errorMsg && errorMsg !== "") {
+                loginError = errorMsg
+                statusText.text = errorMsg
+                statusText.color = "#ff6b6b"
+            }
+        }
+
+        function onLoginFailed(errorMsg) {
+            console.log("QML onLoginFailed: " + errorMsg)
+            handleLoginFailed(errorMsg)
+        }
+
+        function onLoginStatusChanged(status) {
+            console.log("QML onLoginStatusChanged: " + status)
+            if (status === "登录成功！") {
+                isLoggingIn = false
+                loginStatus = status
+                statusText.text = status
+                statusText.color = "#4aa6ff"
+            }
+        }
+
+        function onLoginSuccess() {
+            console.log("QML onLoginSuccess called")
+            isLoggingIn = false
+            loginStatus = "登录成功！"
+            statusText.text = "登录成功！"
+            statusText.color = "#4aa6ff"
+        }
+    }
+
+    // 处理登录失败 - C++直接调用此方法
+    function onCppLoginFailed(errorMsg) {
+        console.log("QML onCppLoginFailed called: " + errorMsg)
+        handleLoginFailed(errorMsg)
+    }
+
+    // 处理登录失败
+    function onLoginFailed(errorMsg) {
+        console.log("QML onLoginFailed called: " + errorMsg)
+        handleLoginFailed(errorMsg)
+    }
+
+    // 统一的登录失败处理
+    function handleLoginFailed(errorMsg) {
+        isLoggingIn = false
+        loginError = errorMsg
+        statusText.text = errorMsg
+        statusText.color = "#ff6b6b"
+        console.log("handleLoginFailed: isLoggingIn=" + isLoggingIn + ", error=" + errorMsg)
+    }
+}

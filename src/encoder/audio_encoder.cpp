@@ -255,6 +255,15 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     // 添加数据到输入缓冲区
     input_buffer_.append(data.constData(), data.size());
 
+    // 防止缓冲区无限增长 - 限制最大5秒的音频数据
+    size_t max_buffer_size = config_.sample_rate * sizeof(int16_t) * config_.channels * 5;
+    if (input_buffer_.size() > static_cast<int>(max_buffer_size)) {
+        LOG_WARNING("[AACEncoder] Input buffer too large (" + std::to_string(input_buffer_.size()) +
+                   " bytes), clearing to prevent memory growth");
+        input_buffer_.clear();
+        first_frame_timestamp_ms_ = -1;
+    }
+
     // 确保使用正确的输入格式（S16格式）
     int input_bytes_per_sample = sizeof(int16_t);
     int bytes_per_frame = codec_ctx_->frame_size * input_bytes_per_sample * config_.channels;
@@ -337,6 +346,10 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
                 if (packet_->size == 6) {
                     LOG_DEBUG("[AACEncoder] Filtered abnormal 6-byte AAC frame");
                 } else {
+                    // ✅ 设置 duration（AAC 编码器通常为 1024 采样）
+                    if (packet_->duration <= 0) {
+                        packet_->duration = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 1024;
+                    }
                     // ✅ 使用编码器输出的 PTS（packet->pts），因为编码器可能会修改 PTS
                     // 例如 AAC 编码器可能有延迟或填充，导致输出 PTS 与输入不同
                     emit audio_encoded(packet_->data, packet_->size, packet_->pts);

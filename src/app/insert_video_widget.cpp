@@ -1,0 +1,513 @@
+#include "app/insert_video_widget.h"
+#include "app/insert_file_manager.h"
+#include "http/live_item.h"
+#include "common/log.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QTableWidgetItem>
+#include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QPainter>
+#include <QPixmap>
+#include <QFile>
+#include <QFrame>
+
+InsertVideoWidget::InsertVideoWidget(QWidget *parent)
+    : QDialog(parent), is_previewing_(false) {
+    setupUI();
+    setWindowTitle(QString::fromUtf8("插播视频"));
+    setMinimumSize(900, 600);
+    setModal(true);
+
+    // 连接 InsertFileManager 信号
+    auto manager = InsertFileManager::instance();
+    connect(manager, &InsertFileManager::filesUpdated, this, &InsertVideoWidget::onFilesUpdated);
+    connect(manager, &InsertFileManager::downloadProgress, this, &InsertVideoWidget::onDownloadProgress);
+    connect(manager, &InsertFileManager::downloadFinished, this, &InsertVideoWidget::onDownloadFinished);
+    connect(manager, &InsertFileManager::errorOccurred, this, &InsertVideoWidget::onErrorOccurred);
+}
+
+InsertVideoWidget::~InsertVideoWidget() {
+    // 确保停止预览
+    if (vlc_player_ && is_previewing_) {
+        vlc_player_->stop();
+    }
+}
+
+void InsertVideoWidget::setupUI() {
+    auto* mainLayout = new QVBoxLayout(this);
+    mainLayout->setSpacing(10);
+    mainLayout->setContentsMargins(15, 15, 15, 15);
+
+    // 标题栏
+    auto* titleLayout = new QHBoxLayout();
+    auto* titleLabel = new QLabel(QString::fromUtf8("添加插播视频"), this);
+    titleLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;");
+    titleLayout->addWidget(titleLabel);
+    titleLayout->addStretch();
+
+    // 关闭按钮
+    auto* closeButton = new QPushButton("✕", this);
+    closeButton->setFixedSize(30, 30);
+    closeButton->setStyleSheet(
+        "QPushButton { border: none; background: transparent; font-size: 16px; color: #ffffff; }"
+        "QPushButton:hover { color: #ff6a6a; }"
+    );
+    connect(closeButton, &QPushButton::clicked, this, &QDialog::reject);
+    titleLayout->addWidget(closeButton);
+    mainLayout->addLayout(titleLayout);
+
+    // 搜索栏
+    auto* searchLayout = new QHBoxLayout();
+    searchEdit_ = new QLineEdit(this);
+    searchEdit_->setPlaceholderText(QString::fromUtf8("请输入视频名称"));
+    searchEdit_->setStyleSheet(
+        "QLineEdit { background-color: #333333; color: #ffffff; border: 1px solid #444444; "
+        "border-radius: 4px; padding: 8px 12px; }"
+    );
+    connect(searchEdit_, &QLineEdit::textChanged, this, &InsertVideoWidget::onSearchTextChanged);
+    searchLayout->addWidget(searchEdit_);
+
+    refreshButton_ = new QPushButton(QString::fromUtf8("刷新"), this);
+    refreshButton_->setStyleSheet(
+        "QPushButton { background-color: #4a6ef0; color: #ffffff; border: none; "
+        "border-radius: 4px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: #5a7eff; }"
+    );
+    connect(refreshButton_, &QPushButton::clicked, this, &InsertVideoWidget::onRefreshClicked);
+    searchLayout->addWidget(refreshButton_);
+    mainLayout->addLayout(searchLayout);
+
+    // 内容区域 - 左右布局
+    auto* contentLayout = new QHBoxLayout();
+    contentLayout->setSpacing(10);
+
+    // 左侧：视频列表
+    auto* leftLayout = new QVBoxLayout();
+    leftLayout->setSpacing(10);
+
+    // 视频列表表格
+    tableWidget_ = new QTableWidget(this);
+    tableWidget_->setColumnCount(5);
+    tableWidget_->setHorizontalHeaderLabels({
+        QString::fromUtf8(""),
+        QString::fromUtf8("文件名称"),
+        QString::fromUtf8("大小"),
+        QString::fromUtf8("时长"),
+        QString::fromUtf8("状态")
+    });
+    tableWidget_->setColumnWidth(0, 40);   // 复选框
+    tableWidget_->setColumnWidth(1, 200);  // 文件名
+    tableWidget_->setColumnWidth(2, 80);   // 大小
+    tableWidget_->setColumnWidth(3, 80);   // 时长
+    tableWidget_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tableWidget_->setSelectionMode(QAbstractItemView::SingleSelection);
+    tableWidget_->setStyleSheet(
+        "QTableWidget { background-color: #2a2a2a; border: 1px solid #444444; "
+        "border-radius: 6px; color: #ffffff; gridline-color: #444444; }"
+        "QTableWidget::item { padding: 8px; border-bottom: 1px solid #444444; }"
+        "QTableWidget::item:selected { background-color: #4a6ef0; }"
+        "QHeaderView::section { background-color: #333333; color: #ffffff; "
+        "padding: 8px; border: none; border-bottom: 1px solid #444444; }"
+    );
+    tableWidget_->horizontalHeader()->setStretchLastSection(true);
+    tableWidget_->verticalHeader()->setVisible(false);
+    connect(tableWidget_, &QTableWidget::itemSelectionChanged,
+            this, &InsertVideoWidget::onItemSelectionChanged);
+    connect(tableWidget_, &QTableWidget::cellDoubleClicked,
+            this, [this](int row, int column) {
+                if (column == 1) { // 双击文件名列播放
+                    onPlayClicked();
+                }
+            });
+    leftLayout->addWidget(tableWidget_, 3);
+
+    // 底部状态栏
+    auto* bottomLayout = new QHBoxLayout();
+    selectedLabel_ = new QLabel(QString::fromUtf8("已选: 0 项"), this);
+    selectedLabel_->setStyleSheet("color: #aaaaaa;");
+    bottomLayout->addWidget(selectedLabel_);
+    bottomLayout->addStretch();
+
+    statusLabel_ = new QLabel(this);
+    statusLabel_->setStyleSheet("color: #aaaaaa;");
+    bottomLayout->addWidget(statusLabel_);
+    leftLayout->addLayout(bottomLayout);
+
+    // 按钮栏
+    auto* buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+
+    playButton_ = new QPushButton(QString::fromUtf8("▶ 预览播放"), this);
+    playButton_->setEnabled(false);
+    playButton_->setStyleSheet(
+        "QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; "
+        "border-radius: 4px; padding: 10px 20px; }"
+        "QPushButton:hover { background-color: #444444; }"
+        "QPushButton:disabled { background-color: #222222; color: #666666; }"
+    );
+    connect(playButton_, &QPushButton::clicked, this, &InsertVideoWidget::onPlayClicked);
+    buttonLayout->addWidget(playButton_);
+
+    stopPreviewButton_ = new QPushButton(QString::fromUtf8("■ 停止预览"), this);
+    stopPreviewButton_->setEnabled(false);
+    stopPreviewButton_->setStyleSheet(
+        "QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; "
+        "border-radius: 4px; padding: 10px 20px; }"
+        "QPushButton:hover { background-color: #444444; }"
+        "QPushButton:disabled { background-color: #222222; color: #666666; }"
+    );
+    connect(stopPreviewButton_, &QPushButton::clicked, this, &InsertVideoWidget::onStopPreviewClicked);
+    buttonLayout->addWidget(stopPreviewButton_);
+
+    startInsertButton_ = new QPushButton(QString::fromUtf8("开始插播"), this);
+    startInsertButton_->setEnabled(false);
+    startInsertButton_->setStyleSheet(
+        "QPushButton { background-color: #4a6ef0; color: #ffffff; border: none; "
+        "border-radius: 4px; padding: 10px 30px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #5a7eff; }"
+        "QPushButton:disabled { background-color: #333333; color: #666666; }"
+    );
+    connect(startInsertButton_, &QPushButton::clicked, this, &InsertVideoWidget::onStartInsertClicked);
+    buttonLayout->addWidget(startInsertButton_);
+
+    leftLayout->addLayout(buttonLayout);
+
+    // 右侧：预览区域
+    auto* rightLayout = new QVBoxLayout();
+    rightLayout->setSpacing(10);
+
+    auto* previewTitle = new QLabel(QString::fromUtf8("预览"), this);
+    previewTitle->setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;");
+    rightLayout->addWidget(previewTitle);
+
+    // 预览窗口
+    previewWidget_ = new QFrame(this);
+    previewWidget_->setMinimumSize(320, 240);
+    previewWidget_->setStyleSheet(
+        "QFrame { background-color: #000000; border: 1px solid #444444; border-radius: 6px; }"
+    );
+    previewWidget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // 在预览窗口中放置一个标签用于显示
+    previewLabel_ = new QLabel(previewWidget_);
+    previewLabel_->setAlignment(Qt::AlignCenter);
+    previewLabel_->setText(QString::fromUtf8("选择视频后点击预览播放"));
+    previewLabel_->setStyleSheet("color: #666666; font-size: 14px;");
+    previewLabel_->setGeometry(previewWidget_->rect());
+
+    rightLayout->addWidget(previewWidget_, 1);
+
+    contentLayout->addLayout(leftLayout, 1);
+    contentLayout->addLayout(rightLayout, 1);
+    mainLayout->addLayout(contentLayout);
+
+    // 设置对话框样式
+    setStyleSheet("QDialog { background-color: #1a1a1a; }");
+}
+
+void InsertVideoWidget::setLiveInfo(const QString& sassUrl, const QString& userId, const QString& token, const QString& roomId) {
+    sass_url_ = sassUrl;
+    user_id_ = userId;
+    token_ = token;
+    room_id_ = roomId;
+
+    // 设置 InsertFileManager 的直播间信息
+    InsertFileManager::instance()->setLiveInfo(sassUrl, userId, token);
+
+    // 初始化 VLC 播放器（使用预览窗口）
+    vlc_player_.reset(new VlcPlayer(previewWidget_));
+    connect(vlc_player_.get(), &VlcPlayer::endReached, this, &InsertVideoWidget::onPreviewEndReached);
+}
+
+void InsertVideoWidget::refreshVideoList() {
+    if (room_id_.isEmpty()) {
+        statusLabel_->setText(QString::fromUtf8("直播间ID未设置"));
+        return;
+    }
+
+    statusLabel_->setText(QString::fromUtf8("正在加载..."));
+    InsertFileManager::instance()->refreshInsertFiles(room_id_);
+}
+
+void InsertVideoWidget::showEvent(QShowEvent *event) {
+    QDialog::showEvent(event);
+
+    if (!is_initialized_) {
+        is_initialized_ = true;
+        refreshVideoList();
+    }
+}
+
+void InsertVideoWidget::closeEvent(QCloseEvent *event) {
+    // 停止预览
+    if (vlc_player_ && is_previewing_) {
+        vlc_player_->stop();
+        is_previewing_ = false;
+    }
+    QDialog::closeEvent(event);
+}
+
+void InsertVideoWidget::onRefreshClicked() {
+    refreshVideoList();
+}
+
+void InsertVideoWidget::onPlayClicked() {
+    auto item = InsertFileManager::instance()->getFile(selected_file_id_);
+    if (!item) return;
+
+    if (!item->isDownloaded()) {
+        QMessageBox::warning(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("文件尚未下载完成，请等待下载完成后再播放"));
+        return;
+    }
+
+    QString localPath = item->getLocalCachePath();
+
+    // 使用内嵌 VLC 播放器播放视频
+    if (vlc_player_) {
+        // 停止之前的预览
+        if (is_previewing_) {
+            vlc_player_->stop();
+        }
+
+        if (vlc_player_->openFile(localPath)) {
+            vlc_player_->play();
+            is_previewing_ = true;
+            updateButtonStates();
+            LOG_INFO("InsertVideoWidget: Started preview playback for " + item->fileName.toStdString());
+        } else {
+            QMessageBox::warning(this, QString::fromUtf8("播放失败"),
+                QString::fromUtf8("无法打开视频文件"));
+        }
+    }
+}
+
+void InsertVideoWidget::onStopPreviewClicked() {
+    if (vlc_player_ && is_previewing_) {
+        vlc_player_->stop();
+        is_previewing_ = false;
+        previewLabel_->setText(QString::fromUtf8("选择视频后点击预览播放"));
+        previewLabel_->setStyleSheet("color: #666666; font-size: 14px;");
+        updateButtonStates();
+        LOG_INFO("InsertVideoWidget: Stopped preview playback");
+    }
+}
+
+void InsertVideoWidget::onStartInsertClicked() {
+    auto item = InsertFileManager::instance()->getFile(selected_file_id_);
+    if (!item) return;
+
+    if (!item->isDownloaded()) {
+        QMessageBox::warning(this, QString::fromUtf8("提示"),
+            QString::fromUtf8("文件尚未下载完成，请等待下载完成后再开始插播"));
+        return;
+    }
+
+    // 停止预览
+    if (vlc_player_ && is_previewing_) {
+        vlc_player_->stop();
+        is_previewing_ = false;
+    }
+
+    emit startInsertVideo(item->fileId, item->fileName);
+    accept(); // 关闭对话框
+}
+
+void InsertVideoWidget::onSearchTextChanged(const QString& text) {
+    updateVideoTable();
+}
+
+void InsertVideoWidget::onItemSelectionChanged() {
+    auto selectedItems = tableWidget_->selectedItems();
+    if (selectedItems.isEmpty()) {
+        selected_file_id_.clear();
+    } else {
+        int row = selectedItems.first()->row();
+        auto* item = tableWidget_->item(row, 0);
+        if (item) {
+            selected_file_id_ = item->data(Qt::UserRole).toString();
+        }
+    }
+
+    updateButtonStates();
+}
+
+void InsertVideoWidget::onFilesUpdated() {
+    updateVideoTable();
+    statusLabel_->setText(QString::fromUtf8("共 %1 个视频").arg(InsertFileManager::instance()->getAllFiles().size()));
+}
+
+void InsertVideoWidget::onDownloadProgress(const QString& fileId, int percent) {
+    auto* progressBar = progress_bars_.value(fileId, nullptr);
+    if (progressBar) {
+        progressBar->setValue(percent);
+    }
+}
+
+void InsertVideoWidget::onDownloadFinished(const QString& fileId, bool success, const QString& message) {
+    updateVideoTable(); // 刷新列表以更新状态
+}
+
+void InsertVideoWidget::onErrorOccurred(const QString& fileId, const QString& message) {
+    LOG_ERROR("InsertVideoWidget: Error for file " + fileId.toStdString() + ": " + message.toStdString());
+}
+
+void InsertVideoWidget::onPreviewEndReached() {
+    is_previewing_ = false;
+    previewLabel_->setText(QString::fromUtf8("播放结束"));
+    previewLabel_->setStyleSheet("color: #00aa00; font-size: 14px;");
+    updateButtonStates();
+}
+
+void InsertVideoWidget::updateVideoTable() {
+    tableWidget_->clearContents();
+    progress_bars_.clear();
+
+    auto files = InsertFileManager::instance()->getAllFiles();
+    QString searchText = searchEdit_->text().toLower();
+
+    int row = 0;
+    for (const auto& file : files) {
+        // 搜索过滤
+        if (!searchText.isEmpty() && !file->fileName.toLower().contains(searchText)) {
+            continue;
+        }
+
+        tableWidget_->setRowCount(row + 1);
+
+        // 复选框列
+        auto* checkItem = new QTableWidgetItem();
+        checkItem->setFlags(checkItem->flags() | Qt::ItemIsUserCheckable);
+        checkItem->setCheckState(Qt::Unchecked);
+        checkItem->setData(Qt::UserRole, file->fileId);
+        tableWidget_->setItem(row, 0, checkItem);
+
+        // 文件列（可点击播放）
+        auto* nameItem = new QTableWidgetItem(file->fileName);
+        nameItem->setToolTip(file->fileName);
+        nameItem->setForeground(QBrush(QColor("#4a6ef0"))); // 蓝色字体提示可点击
+        tableWidget_->setItem(row, 1, nameItem);
+
+        // 大小列
+        qint64 fileSize = 0;
+        QString localPath = file->getLocalCachePath();
+        if (QFile::exists(localPath)) {
+            fileSize = QFile(localPath).size();
+        }
+        auto* sizeItem = new QTableWidgetItem(formatFileSize(fileSize));
+        sizeItem->setTextAlignment(Qt::AlignCenter);
+        tableWidget_->setItem(row, 2, sizeItem);
+
+        // 时长列
+        auto* durationItem = new QTableWidgetItem(formatDuration(file->durationMs));
+        durationItem->setTextAlignment(Qt::AlignCenter);
+        tableWidget_->setItem(row, 3, durationItem);
+
+        // 状态列
+        QString statusText = insertFileStatusToString(file->status);
+        QWidget* statusWidget = nullptr;
+
+        if (file->status == InsertFileStatus::DOWNLOADING) {
+            // 显示进度条
+            auto* progressBar = new QProgressBar(this);
+            progressBar->setRange(0, 100);
+            progressBar->setValue(0);
+            progressBar->setTextVisible(true);
+            progressBar->setStyleSheet(
+                "QProgressBar { border: 1px solid #444444; border-radius: 3px; text-align: center; "
+                "background-color: #333333; color: #ffffff; }"
+                "QProgressBar::chunk { background-color: #4a6ef0; border-radius: 2px; }"
+            );
+            progress_bars_[file->fileId] = progressBar;
+            statusWidget = progressBar;
+            statusText = QString::fromUtf8("下载中...");
+        } else {
+            // 显示状态文本
+            auto* label = new QLabel(statusText, this);
+            label->setAlignment(Qt::AlignCenter);
+            if (file->status == InsertFileStatus::DOWNLOAD_COMPLETED) {
+                label->setStyleSheet("color: #00aa00;");
+            } else if (file->status == InsertFileStatus::DOWNLOAD_FAILED) {
+                label->setStyleSheet("color: #ff6a6a;");
+            } else {
+                label->setStyleSheet("color: #aaaaaa;");
+            }
+            statusWidget = label;
+        }
+
+        auto* statusItem = new QTableWidgetItem(statusText);
+        tableWidget_->setItem(row, 4, statusItem);
+        tableWidget_->setCellWidget(row, 4, statusWidget);
+
+        row++;
+    }
+
+    selectedLabel_->setText(QString::fromUtf8("已选: %1 项").arg(row));
+}
+
+void InsertVideoWidget::updateButtonStates() {
+    bool hasSelection = !selected_file_id_.isEmpty();
+    playButton_->setEnabled(hasSelection);
+    stopPreviewButton_->setEnabled(is_previewing_);
+    startInsertButton_->setEnabled(hasSelection);
+
+    if (hasSelection) {
+        auto item = InsertFileManager::instance()->getFile(selected_file_id_);
+        if (item && item->isDownloaded()) {
+            startInsertButton_->setStyleSheet(
+                "QPushButton { background-color: #4a6ef0; color: #ffffff; border: none; "
+                "border-radius: 4px; padding: 10px 30px; font-weight: bold; }"
+                "QPushButton:hover { background-color: #5a7eff; }"
+            );
+        } else {
+            startInsertButton_->setStyleSheet(
+                "QPushButton { background-color: #333333; color: #666666; border: none; "
+                "border-radius: 4px; padding: 10px 30px; font-weight: bold; }"
+            );
+        }
+    }
+}
+
+QString InsertVideoWidget::formatDuration(qint64 durationMs) const {
+    if (durationMs <= 0) return "--:--";
+
+    int seconds = durationMs / 1000;
+    int minutes = seconds / 60;
+    int hours = minutes / 60;
+
+    seconds %= 60;
+    minutes %= 60;
+
+    if (hours > 0) {
+        return QString("%1:%2:%3")
+            .arg(hours, 2, 10, QChar('0'))
+            .arg(minutes, 2, 10, QChar('0'))
+            .arg(seconds, 2, 10, QChar('0'));
+    } else {
+        return QString("%1:%2")
+            .arg(minutes, 2, 10, QChar('0'))
+            .arg(seconds, 2, 10, QChar('0'));
+    }
+}
+
+QString InsertVideoWidget::formatFileSize(qint64 bytes) const {
+    if (bytes < 1024) {
+        return QString("%1 B").arg(bytes);
+    } else if (bytes < 1024 * 1024) {
+        return QString("%1 KB").arg(bytes / 1024.0, 0, 'f', 1);
+    } else if (bytes < 1024 * 1024 * 1024) {
+        return QString("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+    } else {
+        return QString("%1 GB").arg(bytes / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
+    }
+}
+
+QPixmap InsertVideoWidget::loadVideoThumbnail(const QString& coverUrl) const {
+    // TODO: 实现缩略图加载
+    // 可以下载封面图并缓存
+    return QPixmap();
+}

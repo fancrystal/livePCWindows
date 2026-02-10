@@ -679,6 +679,16 @@ QPushButton:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
 									</widget>
 								</item>
 								<item>
+									<widget class="QPushButton" name="pushButton_checkDevice">
+										<property name="text">
+											<string>设备检测</string>
+										</property>
+										<property name="toolTip">
+											<string>检测摄像头、麦克风和网络连接</string>
+										</property>
+									</widget>
+								</item>
+								<item>
 									<widget class="QPushButton" name="pushButton_ok">
 										<property name="text">
 											<string>确定</string>

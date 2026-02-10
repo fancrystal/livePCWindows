@@ -125,10 +125,13 @@ void CompositorEncoderBridge::stop() {
 }
 
 bool CompositorEncoderBridge::is_running() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return running_;
 }
 
 bool CompositorEncoderBridge::start_streaming(const std::string& url) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
     if (streaming_) {
         LOG_WARNING("Already streaming");
         return true;
@@ -269,6 +272,8 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
 }
 
 void CompositorEncoderBridge::stop_streaming() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
     if (!streaming_) {
         return;
     }
@@ -287,6 +292,7 @@ void CompositorEncoderBridge::stop_streaming() {
 }
 
 bool CompositorEncoderBridge::is_streaming() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return streaming_;
 }
 
@@ -602,6 +608,7 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     // ✅ 使用修正后的时间戳（确保音视频同步且避免负数）
     pkt->pts = adjusted_timestamp;
     pkt->dts = adjusted_timestamp;
+    pkt->duration = 1024;  // ✅ AAC 帧大小（采样数）
 
     // 获取音频采样率用于设置 time_base
     auto audio_sample_rate = encoder_->get_audio_config().sample_rate;
@@ -611,6 +618,7 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     packet->type = MediaType::AUDIO;
     packet->pts = adjusted_timestamp;  // ✅ 使用修正后的时间戳（避免负数）
     packet->dts = adjusted_timestamp;
+    packet->duration = 1024;  // ✅ AAC 帧大小（采样数）
     packet->pkt = AVPacketPtr(pkt);
     packet->encoder_time_base = {1, audio_sample_rate};
     packet->wallclock_us = media_clock_.get_elapsed_time_us();  // 仅用于调试

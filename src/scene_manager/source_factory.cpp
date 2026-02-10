@@ -41,8 +41,10 @@ std::shared_ptr<Source> SourceFactory::create_image_source(const std::string& id
 }
 
 std::shared_ptr<Source> SourceFactory::create_media_file_source(const std::string& id, const std::string& file_path, const std::string& name) {
-    LOG_INFO("Creating media file source: " + id + " with path: " + file_path);
-    return std::make_shared<MediaFileSource>(id, file_path, name);
+    LOG_INFO("Media file source using new implementation - use create_insert_media_source instead");
+    // 旧的 MediaFileSource 已被新的插播功能替代
+    // 新的实现需要 InsertFileItem 参数，请使用 media_pipeline/media_file_source.h 中的类
+    return nullptr;
 }
 
 std::shared_ptr<Source> SourceFactory::create_audio_source(const std::string& id, const std::string& name) {
@@ -325,75 +327,8 @@ bool ImageSource::get_frame(std::vector<uint8_t>& frame_data, int& width, int& h
     return true;
 }
 
-MediaFileSource::MediaFileSource(const std::string& id, const std::string& file_path, const std::string& name) 
-    : VideoSource(id, Source::Type::FILE_SOURCE), name_(name), file_path_(file_path) {
-    LOG_INFO("MediaFileSource constructor: " + id + " with path: " + file_path);
-}
-
-MediaFileSource::~MediaFileSource() {
-    shutdown();
-    LOG_INFO("MediaFileSource destructor: " + get_id());
-}
-
-bool MediaFileSource::initialize() {
-    if (initialized_) {
-        return true;
-    }
-    
-    LOG_INFO("Initializing media file source: " + get_id());
-    initialized_ = true;
-    return true;
-}
-
-bool MediaFileSource::shutdown() {
-    if (!initialized_) {
-        return true;
-    }
-    
-    LOG_INFO("Shutting down media file source: " + get_id());
-    stop();
-    initialized_ = false;
-    return true;
-}
-
-bool MediaFileSource::start() {
-    if (!initialized_) {
-        return false;
-    }
-    
-    if (running_) {
-        return true;
-    }
-    
-    LOG_INFO("Starting media file source: " + get_id());
-    running_ = true;
-    return true;
-}
-
-bool MediaFileSource::stop() {
-    if (!running_) {
-        return true;
-    }
-    
-    LOG_INFO("Stopping media file source: " + get_id());
-    running_ = false;
-    return true;
-}
-
-bool MediaFileSource::is_running() const {
-    return running_;
-}
-
-bool MediaFileSource::get_frame(std::vector<uint8_t>& frame_data, int& width, int& height) {
-    if (!running_) {
-        return false;
-    }
-    
-    width = width_;
-    height = height_;
-    frame_data.clear();
-    return true;
-}
+// MediaFileSource 旧实现已移至 media_pipeline/media_file_source.cpp
+// 以下为新的 AudioSourceImpl 实现
 
 AudioSourceImpl::AudioSourceImpl(const std::string& id, const std::string& name) 
     : AudioSource(id, Source::Type::AUDIO_CAPTURE), name_(name) {

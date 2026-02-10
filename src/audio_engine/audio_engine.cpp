@@ -4,6 +4,7 @@
 
 #include <QMediaDevices>
 #include <QAudioDevice>
+#include <QMutex>
 #include <cmath>
 
 // Windows Speaker volume control
@@ -493,6 +494,261 @@ int AudioEngine::get_sample_rate() const {
 
 int AudioEngine::get_channels() const {
     return channels_;
+}
+
+//=============================================================================
+// 音频源管理
+//=============================================================================
+
+bool AudioEngine::addAudioSource(const QString& sourceId, AudioSourceType type) {
+    QMutexLocker locker(&state_mutex_);
+
+    if (source_configs_.contains(sourceId)) {
+        LOG_WARNING("[AudioEngine] Source already exists: " + sourceId.toStdString());
+        return false;
+    }
+
+    AudioSourceConfig config;
+    config.type = type;
+    config.volume = 1.0f;
+    config.muted = false;
+    config.enabled = true;
+    source_configs_[sourceId] = config;
+
+    emit sourceAdded(sourceId, type);
+    LOG_INFO("[AudioEngine] Added audio source: " + sourceId.toStdString() +
+             ", type: " + std::to_string(static_cast<int>(type)));
+    return true;
+}
+
+void AudioEngine::removeAudioSource(const QString& sourceId) {
+    QMutexLocker locker(&state_mutex_);
+
+    if (!source_configs_.contains(sourceId)) {
+        return;
+    }
+
+    source_configs_.remove(sourceId);
+    emit sourceRemoved(sourceId);
+
+    LOG_INFO("[AudioEngine] Removed audio source: " + sourceId.toStdString());
+}
+
+AudioSourceConfig AudioEngine::getSourceConfig(const QString& sourceId) const {
+    std::lock_guard<std::mutex> locker(state_mutex_);
+    return source_configs_.value(sourceId, AudioSourceConfig());
+}
+
+void AudioEngine::setSourceVolume(const QString& sourceId, float volume) {
+    QMutexLocker locker(&state_mutex_);
+
+    volume = (std::max)(0.0f, (std::min)(1.0f, volume));
+    if (source_configs_.contains(sourceId)) {
+        source_configs_[sourceId].volume = volume;
+        emit sourceVolumeChanged(sourceId, volume);
+        LOG_INFO("[AudioEngine] Source volume changed: " + sourceId.toStdString() +
+                 ", volume: " + std::to_string(static_cast<int>(volume * 100)) + "%");
+    }
+}
+
+void AudioEngine::setSourceMute(const QString& sourceId, bool muted) {
+    QMutexLocker locker(&state_mutex_);
+
+    if (source_configs_.contains(sourceId)) {
+        source_configs_[sourceId].muted = muted;
+        emit sourceMuteChanged(sourceId, muted);
+        LOG_INFO("[AudioEngine] Source mute changed: " + sourceId.toStdString() +
+                 ", muted: " + std::string(muted ? "true" : "false"));
+    }
+}
+
+void AudioEngine::setSourceEnabled(const QString& sourceId, bool enabled) {
+    QMutexLocker locker(&state_mutex_);
+
+    if (source_configs_.contains(sourceId)) {
+        source_configs_[sourceId].enabled = enabled;
+        LOG_INFO("[AudioEngine] Source enabled changed: " + sourceId.toStdString() +
+                 ", enabled: " + std::string(enabled ? "true" : "false"));
+    }
+}
+
+//=============================================================================
+// 插播媒体控制
+//=============================================================================
+
+bool AudioEngine::set_media_volume(float volume) {
+    volume = (std::max)(0.0f, (std::min)(1.0f, volume));
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    media_volume_ = volume;
+    LOG_INFO("[AudioEngine] Media volume set to " + std::to_string(static_cast<int>(volume * 100)) + "%");
+    return true;
+}
+
+float AudioEngine::get_media_volume() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return media_volume_;
+}
+
+bool AudioEngine::set_media_mute(bool mute) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    media_muted_ = mute;
+    LOG_INFO("[AudioEngine] Media " + std::string(mute ? "MUTED" : "UNMUTED"));
+    return true;
+}
+
+bool AudioEngine::get_media_mute() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return media_muted_;
+}
+
+//=============================================================================
+// 混音模式控制
+//=============================================================================
+
+void AudioEngine::setMixMode(AudioMixMode mode) {
+    if (mix_mode_ != mode) {
+        mix_mode_ = mode;
+        emit mixModeChanged(mode);
+        LOG_INFO("[AudioEngine] Mix mode changed to: " + std::to_string(static_cast<int>(mode)));
+    }
+}
+
+AudioMixMode AudioEngine::getMixMode() const {
+    return mix_mode_;
+}
+
+//=============================================================================
+// 自定义音频源扩展
+//=============================================================================
+
+void AudioEngine::registerAudioSourceCallback(const QString& sourceId,
+    std::function<std::shared_ptr<AudioFrame>()> callback) {
+    std::lock_guard<std::mutex> lock(custom_sources_mutex_);
+    custom_source_callbacks_[sourceId] = callback;
+    LOG_INFO("[AudioEngine] Registered audio source callback: " + sourceId.toStdString());
+}
+
+void AudioEngine::unregisterAudioSource(const QString& sourceId) {
+    std::lock_guard<std::mutex> lock(custom_sources_mutex_);
+    custom_source_callbacks_.remove(sourceId);
+    LOG_INFO("[AudioEngine] Unregistered audio source: " + sourceId.toStdString());
+}
+
+//=============================================================================
+// 混音实现
+//=============================================================================
+
+std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
+    const QList<std::shared_ptr<AudioFrame>>& sources) {
+
+    if (sources.isEmpty()) {
+        return nullptr;
+    }
+
+    // 获取第一个帧的参数作为输出参数
+    std::shared_ptr<AudioFrame> firstFrame = sources.first();
+    int out_sample_rate = firstFrame->sample_rate;
+    int out_channels = firstFrame->channels;
+    int out_samples = firstFrame->samples;
+
+    // 创建输出帧
+    auto output = std::make_shared<AudioFrame>(out_sample_rate, out_channels, out_samples);
+
+    if (!output->raw_data) {
+        return nullptr;
+    }
+
+    // 初始化输出为0
+    std::memset(output->raw_data, 0, out_samples * out_channels * sizeof(int16_t));
+
+    // 遍历所有源并混音
+    for (const auto& frame : sources) {
+        if (!frame || !frame->raw_data) continue;
+
+        // 确保参数匹配
+        if (frame->sample_rate != out_sample_rate ||
+            frame->channels != out_channels ||
+            frame->samples != out_samples) {
+            // 参数不匹配时跳过（实际项目中应该重采样）
+            continue;
+        }
+
+        // 应用音量
+        float volume = 1.0f; // 默认音量
+        // 可以根据源类型设置不同音量
+
+        for (int i = 0; i < out_samples * out_channels; ++i) {
+            int32_t mixed = static_cast<int32_t>(output->raw_data[i]) +
+                           static_cast<int32_t>(frame->raw_data[i] * volume);
+
+            // 限制在有效范围内
+            if (mixed > 32767) mixed = 32767;
+            if (mixed < -32768) mixed = -32768;
+
+            output->raw_data[i] = static_cast<int16_t>(mixed);
+        }
+    }
+
+    return output;
+}
+
+std::shared_ptr<AudioFrame> AudioEngine::getAudioFrameByType(AudioSourceType type) {
+    switch (type) {
+    case AudioSourceType::MICROPHONE:
+        return get_audio_frame();
+    case AudioSourceType::MEDIA: {
+        // 从自定义回调获取媒体音频
+        std::lock_guard<std::mutex> lock(custom_sources_mutex_);
+        for (auto it = custom_source_callbacks_.begin(); it != custom_source_callbacks_.end(); ++it) {
+            if (it.value()) {
+                auto frame = it.value()();
+                if (frame) {
+                    return frame;
+                }
+            }
+        }
+        return nullptr;
+    }
+    case AudioSourceType::SPEAKER:
+    case AudioSourceType::CUSTOM:
+    default:
+        return nullptr;
+    }
+}
+
+QList<AudioSourceType> AudioEngine::getActiveSourcesByMode(AudioMixMode mode) {
+    QList<AudioSourceType> sources;
+
+    switch (mode) {
+    case AudioMixMode::MIC_ONLY:
+        sources.append(AudioSourceType::MICROPHONE);
+        break;
+    case AudioMixMode::SPEAKER_ONLY:
+        sources.append(AudioSourceType::SPEAKER);
+        break;
+    case AudioMixMode::MEDIA_ONLY:
+        sources.append(AudioSourceType::MEDIA);
+        break;
+    case AudioMixMode::MIC_SPEAKER:
+        sources.append(AudioSourceType::MICROPHONE);
+        sources.append(AudioSourceType::SPEAKER);
+        break;
+    case AudioMixMode::MIC_MEDIA:
+        sources.append(AudioSourceType::MICROPHONE);
+        sources.append(AudioSourceType::MEDIA);
+        break;
+    case AudioMixMode::SPEAKER_MEDIA:
+        sources.append(AudioSourceType::SPEAKER);
+        sources.append(AudioSourceType::MEDIA);
+        break;
+    case AudioMixMode::MIC_SPEAKER_MEDIA:
+        sources.append(AudioSourceType::MICROPHONE);
+        sources.append(AudioSourceType::SPEAKER);
+        sources.append(AudioSourceType::MEDIA);
+        break;
+    }
+
+    return sources;
 }
 
 //=============================================================================

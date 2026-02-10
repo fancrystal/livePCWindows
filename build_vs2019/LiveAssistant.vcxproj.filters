@@ -13,6 +13,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\config.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\device_check_dialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\draggable_list_item.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -20,6 +23,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\exit_dialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\insert_file_manager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\insert_video_widget.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\live_list_window.cpp">
@@ -154,7 +163,25 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\stream_pusher\stream_pusher.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\media_pipeline\media_file_source.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\media_pipeline\media_pipeline.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\media_pipeline\vlc_player.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\third_party\qcustomplot\qcustomplot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\build_vs2019\qrc_qml.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\third_party\kiss_fft\kiss_fft.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\third_party\kiss_fft\kiss_fftr.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\mocs_compilation_Release.cpp">
@@ -177,6 +204,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\device_check_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\draggable_list_item.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -184,6 +214,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_file_item.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_file_manager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_video_widget.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_item.h">
@@ -333,6 +372,21 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\stream_pusher\stream_pusher.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\media_pipeline\media_file_source.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\media_pipeline\media_pipeline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\media_pipeline\output.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\media_pipeline\source.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\media_pipeline\vlc_player.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -349,6 +403,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Debug\src\app\ui_device_check_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_main_window.h">
@@ -369,6 +426,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_exit_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_Release\src\app\ui_device_check_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_main_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -385,6 +445,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_exit_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_MinSizeRel\src\app\ui_device_check_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_main_window.h">
@@ -405,6 +468,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_exit_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\include_RelWithDebInfo\src\app\ui_device_check_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="D:\work\project\LiveAssistant\resources\qml.qrc" />
@@ -420,6 +486,7 @@
     <None Include="D:\work\project\LiveAssistant\src\app\screen_share.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\settings_dialog.ui" />
     <None Include="D:\work\project\LiveAssistant\src\app\exit_dialog.ui" />
+    <None Include="D:\work\project\LiveAssistant\src\app\device_check_dialog.ui" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_Debug.stamp" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_Release.stamp" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_MinSizeRel.stamp" />

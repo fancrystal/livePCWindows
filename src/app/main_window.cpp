@@ -4,7 +4,12 @@
 #include "app/screen_capture_selector.h"
 #include "app/settings_dialog.h"
 #include "app/exit_dialog.h"
+#include "app/insert_video_widget.h"
+#include "app/insert_file_manager.h"
+#include "app/add_material_dialog.h"
+#include "http/network_manager.h"
 #include "http/live_item.h"
+#include "media_pipeline/media_file_source.h"
 #include "ui_main_window.h"
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/source_factory.h"
@@ -91,10 +96,12 @@ MainWindow::MainWindow(QWidget *parent) :
 
         // logo
         QLabel* logoLbl = new QLabel(titleContainer);
+        logoLbl->setFixedSize(32, 32);  // 先设置固定尺寸
         QPixmap iconPix(":/images/Frame_icon.png");
         if (!iconPix.isNull()) {
-            logoLbl->setPixmap(iconPix.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            logoLbl->setFixedSize(32, 32);
+            // 使用KeepAspectRatioByExpanding确保填满32x32区域
+            QPixmap scaledPix = iconPix.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+            logoLbl->setPixmap(scaledPix);
         }
         tlay->addWidget(logoLbl);
 
@@ -303,6 +310,9 @@ MainWindow::MainWindow(QWidget *parent) :
 
     // 初始化系统托盘图标
     setupSystemTray();
+
+    // 初始化网络连接
+    setupNetworkConnections();
 
     update_status("Ready");
 
@@ -884,6 +894,180 @@ void MainWindow::setup_ui_connections() {
     // Initialize audio controls
     update_microphone_ui();
     update_speaker_ui();
+
+    // 插播视频按钮连接
+    if (ui->pushButton_insertVideo) {
+        connect(ui->pushButton_insertVideo, &QPushButton::clicked, this, &MainWindow::on_insert_video_button_clicked);
+    }
+}
+
+void MainWindow::on_insert_video_button_clicked() {
+    LOG_INFO("Insert video button clicked");
+    show_insert_video_widget();
+}
+
+void MainWindow::show_insert_video_widget() {
+    if (!insert_video_widget_) {
+        insert_video_widget_ = new InsertVideoWidget(this);
+
+        // 设置直播间信息
+        // 从 current_live_item_ 获取直播间ID
+        QString roomId = current_live_item_.liveId;
+        if (!roomId.isEmpty()) {
+            // 注意：需要传递 live_url_，不能传空字符串
+            insert_video_widget_->setLiveInfo(live_url_, user_id_, token_, roomId);
+        }
+
+        // 连接开始插播信号
+        connect(insert_video_widget_, &InsertVideoWidget::startInsertVideo,
+                this, &MainWindow::on_start_insert_video);
+    }
+
+    insert_video_widget_->show();
+    insert_video_widget_->raise();
+    insert_video_widget_->activateWindow();
+}
+
+void MainWindow::on_start_insert_video(const QString& fileId, const QString& fileName) {
+    LOG_INFO("Starting insert video: " + fileId.toStdString() + " - " + fileName.toStdString());
+
+    // 如果已经有插播视频在播放，先停止
+    if (is_insert_video_playing_) {
+        stopInsertVideoPlayback();
+    }
+
+    startInsertVideoPlayback(fileId);
+}
+
+void MainWindow::startInsertVideoPlayback(const QString& fileId) {
+    auto fileItem = InsertFileManager::instance()->getFile(fileId);
+    if (!fileItem) {
+        LOG_ERROR("Insert video file not found: " + fileId.toStdString());
+        QMessageBox::warning(this, "错误", "插播视频文件未找到");
+        return;
+    }
+
+    if (!fileItem->isDownloaded()) {
+        LOG_ERROR("Insert video file not downloaded: " + fileId.toStdString());
+        QMessageBox::warning(this, "错误", "插播视频文件尚未下载完成");
+        return;
+    }
+
+    // 创建 MediaFileSource
+    std::string source_id = "insert_video_" + fileId.toStdString();
+    auto mediaSource = std::make_shared<MediaFileSource>(source_id, fileItem);
+
+    if (!mediaSource->initialize()) {
+        LOG_ERROR("Failed to initialize media file source");
+        QMessageBox::warning(this, "错误", "初始化插播视频源失败");
+        return;
+    }
+
+    // 添加到场景
+    if (!scene_manager_) {
+        LOG_ERROR("Scene manager not initialized");
+        return;
+    }
+
+    auto scene = scene_manager_->get_current_scene();
+    if (!scene) {
+        LOG_ERROR("No current scene");
+        return;
+    }
+
+    // 添加到场景（全屏显示）
+    auto sceneItem = scene->add_source(mediaSource);
+    if (sceneItem) {
+        // 设置全屏变换
+        Transform transform(0, 0, canvas_config_.get_width(), canvas_config_.get_height());
+        scene->set_transform(sceneItem, transform);
+
+        // 启动播放
+        if (mediaSource->start()) {
+            current_insert_video_source_ = mediaSource;
+            current_insert_video_file_id_ = fileId;
+            is_insert_video_playing_ = true;
+
+            // 设置混音模式：麦克风 + 插播音频
+            if (audio_engine_) {
+                audio_engine_->setMixMode(AudioMixMode::MIC_MEDIA);
+                audio_engine_->set_media_volume(0.7f);  // 默认插播音量为70%
+
+                // 注册插播音频源回调
+                audio_engine_->registerAudioSourceCallback(
+                    QString::fromStdString(source_id),
+                    [mediaSource]() -> std::shared_ptr<AudioFrame> {
+                        if (mediaSource && mediaSource->is_running()) {
+                            return mediaSource->get_audio_frame();
+                        }
+                        return nullptr;
+                    }
+                );
+
+                LOG_INFO("Audio mix mode set to MIC_MEDIA");
+            }
+
+            LOG_INFO("Insert video playback started: " + fileItem->fileName.toStdString());
+
+            // 更新场景列表UI
+            sync_scene_to_compositor();
+            build_scene_list();
+
+            // 连接播放完成回调
+            // TODO: 实现播放完成检测
+        } else {
+            LOG_ERROR("Failed to start media source");
+            scene->remove_scene_item(sceneItem);
+            QMessageBox::warning(this, "错误", "启动插播视频失败");
+        }
+    }
+}
+
+void MainWindow::stopInsertVideoPlayback() {
+    if (!is_insert_video_playing_) {
+        return;
+    }
+
+    LOG_INFO("Stopping insert video playback");
+
+    // 从场景中移除
+    if (scene_manager_ && current_insert_video_source_) {
+        auto scene = scene_manager_->get_current_scene();
+        if (scene) {
+            scene->remove_source(current_insert_video_source_->get_id());
+        }
+    }
+
+    // 停止并清理源
+    if (current_insert_video_source_) {
+        current_insert_video_source_->stop();
+        current_insert_video_source_->shutdown();
+        current_insert_video_source_.reset();
+    }
+
+    current_insert_video_file_id_.clear();
+    is_insert_video_playing_ = false;
+
+    // 恢复混音模式：只用麦克风
+    if (audio_engine_) {
+        audio_engine_->setMixMode(AudioMixMode::MIC_ONLY);
+        // 注销插播音频源回调
+        if (!current_insert_video_file_id_.isEmpty()) {
+            QString callbackId = QString("insert_video_%1").arg(current_insert_video_file_id_);
+            audio_engine_->unregisterAudioSource(callbackId);
+        }
+        LOG_INFO("Audio mix mode restored to MIC_ONLY");
+    }
+
+    // 更新UI
+    sync_scene_to_compositor();
+    build_scene_list();
+
+    LOG_INFO("Insert video playback stopped");
+}
+
+void MainWindow::on_stop_insert_video() {
+    stopInsertVideoPlayback();
 }
 
 void MainWindow::on_camera_button_clicked() {
@@ -2335,8 +2519,48 @@ void MainWindow::setupSystemTray() {
     
     // 显示托盘图标
     system_tray_icon_->show();
-    
+
     LOG_INFO("System tray icon initialized");
+}
+
+void MainWindow::setupNetworkConnections() {
+    // 连接 NetworkManager 的信号
+    NetworkManager* networkManager = NetworkManager::instance();
+
+    // 插播视频转码完成通知
+    connect(networkManager, &NetworkManager::insertVideoTranscoded,
+            this, [this](const QString& fileId, int fileState) {
+        LOG_INFO(QString("Insert video transcoded: fileId=%1, state=%2").arg(fileId).arg(fileState).toStdString());
+        // 刷新插播列表
+        InsertFileManager::instance()->refreshInsertFiles(current_live_item_.liveId);
+    });
+
+    // 开始执行插播视频
+    connect(networkManager, &NetworkManager::startInsertVideo,
+            this, [this](const QString& fileId) {
+        LOG_INFO(QString("Received start insert video command: fileId=%1").arg(fileId).toStdString());
+        // 检查是否已开始插播
+        if (!is_insert_video_playing_) {
+            // 检查文件是否已下载
+            auto fileItem = InsertFileManager::instance()->getFile(fileId);
+            if (fileItem && fileItem->isDownloaded()) {
+                startInsertVideoPlayback(fileId);
+            } else {
+                LOG_WARNING("Insert video file not ready: " + fileId.toStdString());
+            }
+        }
+    });
+
+    // 停止插播视频
+    connect(networkManager, &NetworkManager::stopInsertVideo,
+            this, [this](const QString& fileId) {
+        LOG_INFO(QString("Received stop insert video command: fileId=%1").arg(fileId).toStdString());
+        if (is_insert_video_playing_ && current_insert_video_file_id_ == fileId) {
+            stopInsertVideoPlayback();
+        }
+    });
+
+    LOG_INFO("Network connections for insert video initialized");
 }
 
 void MainWindow::cleanupSystemTray() {
