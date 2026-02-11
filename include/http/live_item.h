@@ -59,6 +59,9 @@ struct InsertFileItem {
     QString createName;                                         // 创建人姓名
     QString fileKeyTransTs;                                     // 文件Key转码时间戳
     QString createTime;                                         // 创建时间
+
+    // 循环播放设置（默认开启）
+    bool loopEnabled = true;                                   // 是否循环播放
     
     QString getLocalCachePath() const {
         // 1. 获取系统推荐的缓存根目录

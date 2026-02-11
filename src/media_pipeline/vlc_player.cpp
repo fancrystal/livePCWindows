@@ -4,22 +4,42 @@
 #include <QUrl>
 #include <QTimer>
 #include <QFileInfo>
+#include <QCoreApplication>
 
 VlcPlayer::VlcPlayer(QWidget *videoWidget, QObject *parent)
     : QObject(parent), m_vlcInstance(nullptr), 
       m_vlcPlayer(nullptr), m_vlcMedia(nullptr),
       m_videoWidget(videoWidget)
 {
+    // 获取插件目录路径
+    QString pluginPath = QCoreApplication::applicationDirPath() + "/plugins";
+    qDebug() << "VLC plugin path:" << pluginPath;
+
     const char *vlcArgs[] = {
         "--no-xlib",
         "--no-audio-time-stretch",
-        "--quiet" // 减少控制台输出
+        "--no-video-title-show",  // 不显示视频标题
+        "--quiet",  // 减少控制台输出
+        "--verbose=0",
+        QString("--plugin-path=%1").arg(pluginPath).toLocal8Bit().constData()
     };
     
     m_vlcInstance = libvlc_new(sizeof(vlcArgs)/sizeof(vlcArgs[0]), vlcArgs);
     if (!m_vlcInstance) {
-        LOG_ERROR("Failed to create VLC instance");
-        return;
+        LOG_ERROR("Failed to create VLC instance - possibly missing plugins or wrong VLC version");
+        // 尝试不使用插件路径初始化
+        const char *vlcArgsNoPlugin[] = {
+            "--no-xlib",
+            "--no-audio-time-stretch",
+            "--quiet",
+            "--verbose=0"
+        };
+        m_vlcInstance = libvlc_new(sizeof(vlcArgsNoPlugin)/sizeof(vlcArgsNoPlugin[0]), vlcArgsNoPlugin);
+        if (!m_vlcInstance) {
+            LOG_ERROR("Failed to create VLC instance even without plugin path");
+            return;
+        }
+        LOG_WARNING("VLC instance created without explicit plugin path");
     }
 
     m_vlcPlayer = libvlc_media_player_new(m_vlcInstance);
@@ -50,7 +70,19 @@ VlcPlayer::VlcPlayer(QWidget *videoWidget, QObject *parent)
 
 VlcPlayer::~VlcPlayer()
 {
+    // 分离事件回调（防止回调访问已释放的对象）
     if (m_vlcPlayer) {
+        libvlc_event_manager_t *em = libvlc_media_player_event_manager(m_vlcPlayer);
+        if (em) {
+            libvlc_event_detach(em, libvlc_MediaPlayerPositionChanged, vlcEventCallback, this);
+            libvlc_event_detach(em, libvlc_MediaPlayerTimeChanged, vlcEventCallback, this);
+            libvlc_event_detach(em, libvlc_MediaPlayerLengthChanged, vlcEventCallback, this);
+            libvlc_event_detach(em, libvlc_MediaPlayerPlaying, vlcEventCallback, this);
+            libvlc_event_detach(em, libvlc_MediaPlayerPaused, vlcEventCallback, this);
+            libvlc_event_detach(em, libvlc_MediaPlayerStopped, vlcEventCallback, this);
+            libvlc_event_detach(em, libvlc_MediaPlayerEndReached, vlcEventCallback, this);
+        }
+        // 直接释放，不调用stop以避免可能的阻塞
         libvlc_media_player_release(m_vlcPlayer);
         m_vlcPlayer = nullptr;
     }
@@ -89,6 +121,19 @@ void VlcPlayer::setupVideoOutput()
 #else // Linux and other platforms
     libvlc_media_player_set_xwindow(m_vlcPlayer, winId);
 #endif
+
+    // 设置自适应缩放模式：视频将铺满整个窗口
+    libvlc_video_set_scale(m_vlcPlayer, 0.0f);  // 0 = 自适应铺满
+
+    // 关键：设置宽高比为 NULL，让 VLC 忽略原始宽高比，拉伸填充窗口
+    // 这样可以消除黑边，视频会完全铺满预览窗口
+    libvlc_video_set_aspect_ratio(m_vlcPlayer, NULL);
+
+    // 清除裁剪设置，确保没有任何裁剪
+    libvlc_video_set_crop_geometry(m_vlcPlayer, NULL);
+
+    // 设置为全屏自适应（忽略原始视频尺寸）
+    libvlc_video_set_scale(m_vlcPlayer, 0.0f);
 
     qDebug() << "Video Widget WinID:" << winId;
     qDebug() << "Video Widget Geometry:" << m_videoWidget->geometry();
@@ -162,6 +207,7 @@ void VlcPlayer::pause()
 void VlcPlayer::stop()
 {
     if (m_vlcPlayer) {
+        libvlc_media_player_pause(m_vlcPlayer);
         libvlc_media_player_stop(m_vlcPlayer);
         LOG_INFO("Stopped video playback");
     }
@@ -214,6 +260,16 @@ qint64 VlcPlayer::position() const
         return libvlc_media_player_get_time(m_vlcPlayer);
     }
     return 0;
+}
+
+void VlcPlayer::refreshVideoOutput()
+{
+    if (m_vlcPlayer && m_videoWidget) {
+        // 重新设置视频输出参数，确保视频填满窗口
+        libvlc_video_set_scale(m_vlcPlayer, 0.0f);
+        libvlc_video_set_aspect_ratio(m_vlcPlayer, NULL);
+        libvlc_video_set_crop_geometry(m_vlcPlayer, NULL);
+    }
 }
 
 void VlcPlayer::vlcEventCallback(const libvlc_event_t *event, void *userData)

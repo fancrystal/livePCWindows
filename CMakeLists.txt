@@ -223,6 +223,27 @@ if(WIN32)
         COMMENT "Copying libcurl DLL to output directory"
     )
     
+    # Copy VLC DLLs to output directory
+    file(GLOB VLC_DLLS "${VLC_DIR}/lib/x64/*.dll")
+    add_custom_command(
+        TARGET LiveAssistant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${VLC_DLLS}
+        $<TARGET_FILE_DIR:LiveAssistant>
+        COMMENT "Copying VLC DLLs to output directory"
+    )
+    
+    # Copy VLC plugins directory if exists
+    if(EXISTS "${VLC_DIR}/lib/x64/plugins")
+        add_custom_command(
+            TARGET LiveAssistant POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${VLC_DIR}/lib/x64/plugins"
+            $<TARGET_FILE_DIR:LiveAssistant>/plugins
+            COMMENT "Copying VLC plugins directory"
+        )
+    endif()
+    
     # Copy cacert.pem to output directory
     add_custom_command(
         TARGET LiveAssistant POST_BUILD

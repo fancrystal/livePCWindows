@@ -17,7 +17,7 @@ AddMaterialDialog::AddMaterialDialog(QWidget* parent)
     QPushButton* btnWhite = new QPushButton("白板", this);
     QPushButton* btnCloud = new QPushButton("云端文档", this);
     QPushButton* btnImage = new QPushButton("图片", this);
-    QPushButton* btnVideo = new QPushButton("视频", this);
+    QPushButton* btnVideo = new QPushButton("插播视频", this);
     QPushButton* btnMore = new QPushButton("更多", this);
 
     btnFull->setFixedSize(120, 80);

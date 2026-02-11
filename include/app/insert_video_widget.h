@@ -32,8 +32,8 @@ public:
     void refreshVideoList();
 
 signals:
-    // 开始插播信号
-    void startInsertVideo(const QString& fileId, const QString& fileName);
+    // 开始插播信号（包含循环播放设置）
+    void startInsertVideo(const QString& fileId, const QString& fileName, bool loopEnabled);
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -51,6 +51,7 @@ private slots:
     void onDownloadFinished(const QString& fileId, bool success, const QString& message);
     void onErrorOccurred(const QString& fileId, const QString& message);
     void onPreviewEndReached();
+    void onLoopCheckStateChanged(int row, int column);
 
 private:
     void setupUI();

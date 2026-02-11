@@ -3,6 +3,7 @@
 #include "video_engine/video_engine.h"
 #include "scene_manager/source_factory.h"
 #include "scene_manager/render_utils.h"
+#include "media_pipeline/media_file_source.h"
 #include <QTimer>
 #include <QBrush>
 #include <QPen>
@@ -153,8 +154,30 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
                 painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
             }
         }
+    } else if (source->get_type() == Source::Type::FILE_SOURCE) {
+        // 处理文件源（插播视频）
+        auto mediaSource = std::dynamic_pointer_cast<MediaFileSource>(source);
+        bool is_running = mediaSource && mediaSource->is_running();
+        auto frame = is_running ? mediaSource->get_video_frame() : nullptr;
+        bool has_frame = frame && frame->data;
+
+        if (is_running && has_frame) {
+            // 将VideoFrame转换为QImage并绘制
+            // 性能优化：使用 FastTransformation 代替 SmoothTransformation
+            QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
+            if (!image.isNull()) {
+                QImage scaled = image.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
+                QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
+                                   (scaled.height() - item_rect.height()) / 2.0,
+                                   item_rect.width(),
+                                   item_rect.height());
+                painter.drawImage(item_rect, scaled, source_rect);
+                goto RENDER_LABELS;
+            }
+        }
+
+        // 如果没有帧，保持透明（不绘制，让背景透出来）
     } else {
-        // 对于其他类型的源，绘制占位符
         QColor rect_color;
         switch (source->get_type()) {
             case Source::Type::AUDIO_CAPTURE:
@@ -282,20 +305,46 @@ void CanvasRenderer::draw_resize_handles(QPainter& painter, const Transform& tra
 CanvasWidget::CanvasWidget(QWidget *parent) : QWidget(parent) {
     // 初始化渲染器
     renderer_ = std::make_unique<CanvasRenderer>();
-    
+
     // 设置组件属性
     setMinimumSize(800, 600);
     setMouseTracking(true);
     setCursor(Qt::ArrowCursor);
-    
+
     // 创建刷新定时器 (30fps)
+    // 使用 QTimer::singleShot 循环调用，确保每次都独立触发，避免 Qt 节流
     auto* timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, [this]() {
-        refresh();
+    connect(timer, &QTimer::timeout, this, [this, timer]() {
+        // 记录定时器触发
+        static int timer_count = 0;
+        timer_count++;
+        static int64_t last_timer_time = 0;
+        int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now_ms - last_timer_time >= 1000) {
+            LOG_INFO("[DIAG] Timer tick, count=" + std::to_string(timer_count) +
+                     ", isVisible=" + std::to_string(isVisible()) +
+                     ", updatesEnabled=" + std::to_string(updatesEnabled()));
+            last_timer_time = now_ms;
+        }
+        // 使用 QTimer::singleShot 触发刷新，确保 update() 被处理
+        QTimer::singleShot(0, this, [this]() {
+            update();
+        });
+        // 同时触发 Compositor 刷新（如果存在）
+        if (compositor_) {
+            QTimer::singleShot(0, compositor_.get(), [this]() {
+                if (compositor_) {
+                    compositor_->update();
+                }
+            });
+        }
+        // 重新启动定时器（保持恒定帧率）
+        timer->start(33);
     });
     timer->start(33);
-    
-    LOG_INFO("CanvasWidget created");
+
+    LOG_INFO("CanvasWidget created with 30fps render timer (using QTimer::singleShot)");
 }
 
 CanvasWidget::~CanvasWidget() {
@@ -415,6 +464,20 @@ void CanvasWidget::set_canvas_config(const CanvasConfig& config) {
 }
 
 void CanvasWidget::paintEvent(QPaintEvent *event) {
+    // 记录渲染时间戳
+    static int64_t last_paint_time = 0;
+    int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    static int paint_count = 0;
+    paint_count++;
+
+    // 每秒打印一次诊断信息
+    if (now_ms - last_paint_time >= 1000) {
+        LOG_INFO("[DIAG] CanvasWidget::paintEvent called, count=" + std::to_string(paint_count) +
+                 ", delta_ms=" + std::to_string(now_ms - last_paint_time));
+        last_paint_time = now_ms;
+    }
+
     QPainter painter(this);
 
     // 获取组件尺寸
@@ -677,28 +740,28 @@ void CanvasWidget::mousePressEvent(QMouseEvent *event) {
     if (!interaction_enabled_) {
         return;
     }
-    
+
     int x = event->pos().x();
     int y = event->pos().y();
-    
+
     // 检查是否点击到场景项
     auto item = hit_test(x, y);
-    
+
     if (item) {
         // 选择项
         selected_item_ = item;
         is_dragging_ = true;
-        
+
         // 检查是否拖动调整大小句柄
         is_resizing_ = is_in_resize_handle(x, y, item->get_transform());
-        
+
         // 存储原始变换和鼠标位置
         original_transform_ = item->get_transform();
         last_mouse_pos_ = event->pos();
-        
+
         // 发送选择信号
         emit scene_item_selected(item);
-        
+
         // 更新画布
         refresh();
     } else {
@@ -708,16 +771,16 @@ void CanvasWidget::mousePressEvent(QMouseEvent *event) {
             // 选择摄像头视频帧
             selected_item_ = nullptr; // 摄像头不是SceneItem，所以设为nullptr
             is_dragging_ = true;
-            
+
             // 检查是否在调整大小句柄上
             int handle_index;
             is_resizing_ = is_in_camera_resize_handle(x, y, handle_index);
             camera_resize_handle_ = is_resizing_ ? handle_index : -1;
-            
+
             // 存储原始变换和鼠标位置
             original_transform_ = camera_transform_;
             last_mouse_pos_ = event->pos();
-            
+
             // 更新画布
             refresh();
         } else {

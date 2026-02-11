@@ -60,10 +60,11 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
             "QComboBox::drop-down { border: none; }"
             "QComboBox QAbstractItemView { background-color: rgba(40, 30, 50, 0.95); color: rgba(220, 200, 255, 0.9); selection-background-color: rgba(100, 80, 150, 0.6); selection-color: #ffffff; border: 1px solid rgba(100, 80, 150, 0.3); }"
         );
-        // create button: gradient pill
+        // create button: gradient pill - 往左移，给关闭按钮留空间
         ui->createLiveButton->setStyleSheet(
             "QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4a6ef0, stop:1 #f05a6a); color: white; border-radius: 6px; padding: 6px 12px; }"
         );
+        // 给createLiveButton左边加一个spacer，确保它不会太靠右
         // pagination and grid spacing
         if (ui->gridLayout) {
             ui->gridLayout->setHorizontalSpacing(18);
@@ -187,20 +188,22 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         }
         titleContainer->show();
     }
-    // set initial positions for win buttons now that header has size
+    // set initial positions for win buttons - 放在 createLiveButton 右边
     if (ui && ui->headerWidget) {
         QPushButton* closeBtn = ui->headerWidget->findChild<QPushButton*>("winCloseBtn");
         QPushButton* miniBtn = ui->headerWidget->findChild<QPushButton*>("winMinBtn");
-        int x = ui->headerWidget->width() - 12;
+        
+        // 从最右边往左计算位置
+        int x = ui->headerWidget->width() - 8;
+        
         if (closeBtn) {
             x -= closeBtn->width();
             closeBtn->move(x, 8);
-            x -= 8;
+            x -= 12;  // 按钮之间留12px间距
         }
         if (miniBtn) {
             x -= miniBtn->width();
             miniBtn->move(x, 8);
-            x -= 8;
         }
     }
     // Hide statusbar/footer if present
@@ -774,23 +777,21 @@ bool LiveListWindow::eventFilter(QObject* watched, QEvent* event) {
             dragging_ = false;
             return true;
         } else if (event->type() == QEvent::Resize) {
-            // reposition control buttons we created (winCloseBtn, winMinBtn) to top-right
+            // reposition control buttons to top-right corner
             QPushButton* closeBtn = ui->headerWidget->findChild<QPushButton*>("winCloseBtn");
             QPushButton* miniBtn = ui->headerWidget->findChild<QPushButton*>("winMinBtn");
-            int x = ui->headerWidget->width() - 12;
+            
+            int x = ui->headerWidget->width() - 8;
+            
             if (closeBtn) {
                 x -= closeBtn->width();
                 closeBtn->move(x, 8);
-                x -= 8;
+                x -= 12;
             }
             if (miniBtn) {
                 x -= miniBtn->width();
                 miniBtn->move(x, 8);
-                x -= 8;
             }
-            // ensure initial positions if this is called before any resize
-            if (!closeBtn->isVisible()) { /*noop*/ }
-            // FIXED: Removed manual logo/titleContainer repositioning - let layout handle it
             return false;
         }
     }

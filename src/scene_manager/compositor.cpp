@@ -1,6 +1,7 @@
 #include "scene_manager/compositor.h"
 #include "common/log.h"
 #include "scene_manager/render_utils.h"
+#include "video_engine/video_engine.h"  // For VideoFrame definition
 
 #include <QImage>
 
@@ -73,6 +74,22 @@ void Compositor::updateLayerImage(QString source_id, QImage image) {
     update_layer_image(source_id.toStdString(), image);
 }
 
+void Compositor::update_layer_video_frame(const std::string& source_id, std::shared_ptr<VideoFrame> frame) {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    auto it = layers_.find(source_id);
+    if (it == layers_.end()) {
+        LOG_WARNING("Layer not found for video frame update: " + source_id);
+        return;
+    }
+
+    // 存储 shared_ptr<VideoFrame>，保持数据存活
+    // 不做任何拷贝，零开销！
+    it->second.video_frame = frame;
+
+    update();  // Trigger repaint
+}
+
 void Compositor::update_layer_image(const std::string& source_id, const QImage& image) {
     std::lock_guard<std::mutex> lock(layers_mutex_);
 
@@ -82,7 +99,9 @@ void Compositor::update_layer_image(const std::string& source_id, const QImage& 
         return;
     }
 
-    it->second.qimage = image.copy(); // Use deep copy for cross-thread safety
+    // 兼容旧接口：必须深拷贝（因为没有 VideoFrame 管理数据生命周期）
+    it->second.qimage = image.copy();
+
     update();  // Trigger repaint
 }
 
@@ -194,8 +213,28 @@ void Compositor::paintEvent(QPaintEvent* event) {
         if (layer.visible) {
             painter.setOpacity(layer.opacity);
 
-            // Draw QImage if available, otherwise draw placeholder
-            if (!layer.qimage.isNull()) {
+            // 优先使用 video_frame（零拷贝），否则使用 qimage（legacy兼容）
+            QImage render_image;
+            bool has_frame = false;
+
+            if (layer.video_frame && layer.video_frame->data) {
+                // 从 VideoFrame 创建临时 QImage（零拷贝，只引用数据）
+                // 数据由 shared_ptr<VideoFrame> 保持存活，安全
+                render_image = QImage(
+                    layer.video_frame->data.get(),
+                    layer.video_frame->width,
+                    layer.video_frame->height,
+                    layer.video_frame->stride,
+                    QImage::Format_RGBA8888
+                );
+                has_frame = true;
+            } else if (!layer.qimage.isNull()) {
+                // Legacy 回退：使用 qimage
+                render_image = layer.qimage;
+                has_frame = true;
+            }
+
+            if (has_frame) {
                 // Map layer.dest_rect (canvas coordinates) to widget coordinates
                 QRect widget_rect = rect();
                 auto mapping = compute_canvas_mapping(widget_rect, canvas_size_.width(), canvas_size_.height());
@@ -206,7 +245,7 @@ void Compositor::paintEvent(QPaintEvent* event) {
                 QRectF dest = layer.dest_rect;
                 QRectF mapped_rect(dest.x() * scale + offset_x, dest.y() * scale + offset_y, dest.width() * scale, dest.height() * scale);
 
-                painter.drawImage(mapped_rect, layer.qimage);
+                painter.drawImage(mapped_rect, render_image);
             } else {
                 // Placeholder rectangle
                 QRect widget_rect = rect();
@@ -269,18 +308,37 @@ void Compositor::render(QPainter* painter, const QRect& target_rect) {
         if (layer.visible) {
             painter->setOpacity(layer.opacity);
 
-            // Draw QImage if available, otherwise draw placeholder
-            if (!layer.qimage.isNull()) {
+            // 优先使用 video_frame（零拷贝），否则使用 qimage（legacy兼容）
+            QImage render_image;
+            bool has_frame = false;
 
+            if (layer.video_frame && layer.video_frame->data) {
+                // 从 VideoFrame 创建临时 QImage（零拷贝，只引用数据）
+                // 数据由 shared_ptr<VideoFrame> 保持存活，安全
+                render_image = QImage(
+                    layer.video_frame->data.get(),
+                    layer.video_frame->width,
+                    layer.video_frame->height,
+                    layer.video_frame->stride,
+                    QImage::Format_RGBA8888
+                );
+                has_frame = true;
+            } else if (!layer.qimage.isNull()) {
+                // Legacy 回退：使用 qimage
+                render_image = layer.qimage;
+                has_frame = true;
+            }
+
+            if (has_frame) {
                 // Use the layer's dest_rect for positioning and scaling
                 QRectF target_rect_in_canvas = layer.dest_rect;
 
                 // Scale to fit the dest_rect, maintaining aspect ratio
-                QSize image_size = layer.qimage.size();
+                QSize image_size = render_image.size();
                 QSizeF target_size = target_rect_in_canvas.size();
 
                 // Scale to fill the target rect, cropping if necessary (like CanvasWidget)
-                QImage scaled = layer.qimage.scaled(target_size.toSize(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+                QImage scaled = render_image.scaled(target_size.toSize(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
 
                 // Calculate source rect to crop the center part if needed
                 QRectF source_rect;
@@ -309,6 +367,70 @@ void Compositor::reset_performance_stats() {
     perf_stats_.avg_fps = 0.0;
     perf_stats_.frame_count = 0;
     perf_stats_.last_update = std::chrono::steady_clock::now();
+}
+
+std::optional<CompositorLayer> Compositor::get_layer_state(const std::string& source_id) const {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    auto it = layers_.find(source_id);
+    if (it == layers_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+void Compositor::move_layer_up(const std::string& source_id) {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    auto it = layers_.find(source_id);
+    if (it == layers_.end()) {
+        LOG_WARNING("Layer not found for move up: " + source_id);
+        return;
+    }
+
+    // Find the highest z_order
+    int max_z = it->second.z_order;
+    for (const auto& pair : layers_) {
+        if (pair.second.z_order > max_z) {
+            max_z = pair.second.z_order;
+        }
+    }
+
+    // If not already at top, swap with layer above
+    if (it->second.z_order < max_z) {
+        // Find the layer just above this one
+        for (auto& pair : layers_) {
+            if (pair.second.z_order == it->second.z_order + 1) {
+                pair.second.z_order--;
+                break;
+            }
+        }
+        it->second.z_order++;
+    }
+    update();
+}
+
+void Compositor::move_layer_down(const std::string& source_id) {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+
+    auto it = layers_.find(source_id);
+    if (it == layers_.end()) {
+        LOG_WARNING("Layer not found for move down: " + source_id);
+        return;
+    }
+
+    // If not already at bottom, swap with layer below
+    if (it->second.z_order > 0) {
+        // Find the layer just below this one
+        for (auto& pair : layers_) {
+            if (pair.second.z_order == it->second.z_order - 1) {
+                pair.second.z_order++;
+                break;
+            }
+        }
+        it->second.z_order--;
+    }
+    update();
 }
 
 } // namespace live_assistant

@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QPainter>
+#include <QImage>
 #include <memory>
 #include <vector>
 #include <string>
@@ -15,10 +16,14 @@
 
 namespace live_assistant {
 
+// 前向声明
+struct VideoFrame;
+
 struct CompositorLayer {
     std::string source_id;
     ID3D11Texture2D* d3d_texture = nullptr;
-    QImage qimage;  // For CPU-based rendering
+    QImage qimage;  // Legacy: 用于非插播视频源
+    std::shared_ptr<VideoFrame> video_frame;  // 零拷贝：插播视频使用，共享数据
     QRectF dest_rect;  // Destination rectangle in canvas coordinates
     float opacity = 1.0f;
     bool visible = true;
@@ -41,6 +46,7 @@ public:
     void remove_layer(const std::string& source_id);
     void update_layer_texture(const std::string& source_id, ID3D11Texture2D* texture);
     void update_layer_image(const std::string& source_id, const QImage& image);
+    void update_layer_video_frame(const std::string& source_id, std::shared_ptr<VideoFrame> frame);
     void update_layer_transform(const std::string& source_id, const QRectF& dest_rect, float opacity = 1.0f);
     void set_layer_visible(const std::string& source_id, bool visible);
     void set_layer_order(const std::string& source_id, int order);

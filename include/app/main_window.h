@@ -74,7 +74,7 @@ private slots:
 
     // 插播视频功能
     void on_insert_video_button_clicked();
-    void on_start_insert_video(const QString& fileId, const QString& fileName);
+    void on_start_insert_video(const QString& fileId, const QString& fileName, bool loopEnabled);
     void on_stop_insert_video();
 
     // 推流控制
@@ -206,6 +206,7 @@ private:
     void update_status(const QString& message);
     void setup_canvas_widget();
     void setupTitleBarButtons();
+    void setupBottomButtonsStyle();
 
     // System tray methods
     void setupSystemTray();
@@ -233,7 +234,7 @@ private:
 
     // 插播视频方法
     void show_insert_video_widget();
-    void startInsertVideoPlayback(const QString& fileId);
+    void startInsertVideoPlayback(const QString& fileId, bool loopEnabled);
     void stopInsertVideoPlayback();
 
     // Scene item management methods

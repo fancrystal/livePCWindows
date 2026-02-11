@@ -84,6 +84,9 @@ MainWindow::MainWindow(QWidget *parent) :
         LOG_WARNING("Failed to load QSS stylesheet: " + qssFile.errorString().toStdString());
     }
 
+    // 设置底部控制栏按钮样式 - 与开始直播按钮风格统一
+    setupBottomButtonsStyle();
+
     setWindowTitle("LiveAssistant");
     // Enhance top bar title: replace simple text with logo + gradient title + italic suffix
     if (ui->topBar) {
@@ -755,6 +758,10 @@ void MainWindow::setup_ui_connections() {
                     case AddMaterialDialog::Selection::Screen:
                         on_screen_share_button_clicked();
                         break;
+                    case AddMaterialDialog::Selection::Video:
+                        // 直接打开插播视频列表对话框，与插播视频按钮逻辑一致
+                        show_insert_video_widget();
+                        break;
                     default:
                         QMessageBox::information(this, "提示", "功能开发中...");
                         break;
@@ -901,6 +908,103 @@ void MainWindow::setup_ui_connections() {
     }
 }
 
+void MainWindow::setupBottomButtonsStyle() {
+    // 设置底部控制栏按钮样式 - 与开始直播按钮风格统一但颜色区分
+    // 开始直播: #4a6ef0 -> #f05a6a (紫红)
+    
+    // 共享屏幕: #2196F3 -> #00BCD4 (青色)
+    QString shareScreenStyle = R"(
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #2196F3, stop:1 #00BCD4);
+            color: white;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: bold;
+            min-width: 80px;
+            min-height: 28px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #42A5F5, stop:1 #26C6DA);
+        }
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #1976D2, stop:1 #0097A7);
+        }
+    )";
+
+    // 摄像头: #4CAF50 -> #8BC34A (绿色)
+    QString cameraStyle = R"(
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #4CAF50, stop:1 #8BC34A);
+            color: white;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: bold;
+            min-width: 80px;
+            min-height: 28px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #66BB6A, stop:1 #9CCC65);
+        }
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #388E3C, stop:1 #689F38);
+        }
+    )";
+
+    // 插播视频: #FF9800 -> #FF5722 (橙红色)
+    QString insertVideoStyle = R"(
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #FF9800, stop:1 #FF5722);
+            color: white;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: bold;
+            min-width: 80px;
+            min-height: 28px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #FFA726, stop:1 #FF7043);
+        }
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #F57C00, stop:1 #E64A19);
+        }
+    )";
+
+    // 应用不同的样式并连接点击事件
+    if (ui->pushButton_shareScreen) {
+        ui->pushButton_shareScreen->setStyleSheet(shareScreenStyle);
+        // 连接共享屏幕按钮点击事件
+        connect(ui->pushButton_shareScreen, &QPushButton::clicked, this, [this]() {
+            LOG_INFO("Share screen button clicked from bottom toolbar");
+            show_screen_share_selector();
+        });
+    }
+    if (ui->pushButton_camera) {
+        ui->pushButton_camera->setStyleSheet(cameraStyle);
+        // 连接摄像头按钮点击事件
+        connect(ui->pushButton_camera, &QPushButton::clicked, this, [this]() {
+            LOG_INFO("Camera button clicked from bottom toolbar");
+            on_camera_button_clicked();
+        });
+    }
+    if (ui->pushButton_insertVideo) {
+        ui->pushButton_insertVideo->setStyleSheet(insertVideoStyle);
+    }
+    
+    LOG_INFO("Bottom buttons styles applied with different colors");
+}
+
 void MainWindow::on_insert_video_button_clicked() {
     LOG_INFO("Insert video button clicked");
     show_insert_video_widget();
@@ -928,18 +1032,19 @@ void MainWindow::show_insert_video_widget() {
     insert_video_widget_->activateWindow();
 }
 
-void MainWindow::on_start_insert_video(const QString& fileId, const QString& fileName) {
-    LOG_INFO("Starting insert video: " + fileId.toStdString() + " - " + fileName.toStdString());
+void MainWindow::on_start_insert_video(const QString& fileId, const QString& fileName, bool loopEnabled) {
+    LOG_INFO("Starting insert video: " + fileId.toStdString() + " - " + fileName.toStdString() +
+             ", loopEnabled=" + std::to_string(loopEnabled));
 
     // 如果已经有插播视频在播放，先停止
     if (is_insert_video_playing_) {
         stopInsertVideoPlayback();
     }
 
-    startInsertVideoPlayback(fileId);
+    startInsertVideoPlayback(fileId, loopEnabled);
 }
 
-void MainWindow::startInsertVideoPlayback(const QString& fileId) {
+void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnabled) {
     auto fileItem = InsertFileManager::instance()->getFile(fileId);
     if (!fileItem) {
         LOG_ERROR("Insert video file not found: " + fileId.toStdString());
@@ -956,6 +1061,9 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId) {
     // 创建 MediaFileSource
     std::string source_id = "insert_video_" + fileId.toStdString();
     auto mediaSource = std::make_shared<MediaFileSource>(source_id, fileItem);
+
+    // 设置循环播放
+    mediaSource->set_loop_enabled(loopEnabled);
 
     if (!mediaSource->initialize()) {
         LOG_ERROR("Failed to initialize media file source");
@@ -981,6 +1089,36 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId) {
         // 设置全屏变换
         Transform transform(0, 0, canvas_config_.get_width(), canvas_config_.get_height());
         scene->set_transform(sceneItem, transform);
+        
+        // 设置插播视频的order为最低（0），确保在摄像头之下渲染（先渲染的在下面）
+        sceneItem->set_order(0);
+
+        // 添加到 Compositor（用于推流渲染）
+        if (compositor_) {
+            const std::string source_id_str = mediaSource->get_id();
+            if (!compositor_->has_layer(source_id_str)) {
+                compositor_->add_layer(source_id_str);
+                // 设置最低的 z_order，确保插播视频在底层（被摄像头覆盖）
+                compositor_->set_layer_order(source_id_str, 0);
+            }
+            compositor_->update_layer_transform(source_id_str, 
+                QRectF(0, 0, canvas_config_.get_width(), canvas_config_.get_height()), 1.0f);
+        }
+
+        // 设置帧回调 - 将解码后的 VideoFrame 传递给 Compositor
+        // 零拷贝方案：传递 shared_ptr<VideoFrame>，数据生命周期由智能指针管理
+        mediaSource->set_frame_ready_callback(
+            [this, mediaSource](std::shared_ptr<VideoFrame> frame) {
+                if (!frame || !frame->data) return;
+
+                // 直接传递 shared_ptr<VideoFrame>，零拷贝
+                const std::string source_id = mediaSource->get_id();
+                if (compositor_) {
+                    compositor_->update_layer_video_frame(source_id, frame);
+                }
+                // 注意：不再直接调用 repaint，由 CanvasWidget 的定时器驱动刷新
+            }
+        );
 
         // 启动播放
         if (mediaSource->start()) {
@@ -1011,6 +1149,25 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId) {
 
             // 更新场景列表UI
             sync_scene_to_compositor();
+
+            // 关键修复：确保所有摄像头源保持最高的 order 值，永远在最上层
+            auto scene = scene_manager_->get_current_scene();
+            if (scene) {
+                auto items = scene->get_all_scene_items();
+                for (auto& item : items) {
+                    if (item && item->get_source()) {
+                        auto src = item->get_source();
+                        // 检查是否是摄像头源（VIDEO_CAPTURE 类型）
+                        if (src->get_type() == Source::Type::VIDEO_CAPTURE) {
+                            item->set_order(9999); // 保持摄像头的最高order值
+                        }
+                    }
+                }
+                scene->normalize_orders();
+                // 重新同步到 compositor，确保 order 值正确应用
+                sync_scene_to_compositor();
+            }
+
             build_scene_list();
 
             // 连接播放完成回调
@@ -2138,7 +2295,14 @@ void MainWindow::sync_scene_to_compositor() {
     }
 
     auto scene = scene_manager_->get_current_scene();
+
+    // 注意：video_engine_->set_current_scene() 现在只在开始插播时调用一次
+    // 不在这里调用，避免频繁同步造成性能问题
+
     auto items = scene->get_all_scene_items();
+    
+    LOG_INFO("[DIAG] sync_scene_to_compositor: scene=" + scene->get_name() + 
+             ", items_count=" + std::to_string(items.size()));
 
     std::unordered_set<std::string> active;
     active.reserve(items.size());
@@ -2544,7 +2708,9 @@ void MainWindow::setupNetworkConnections() {
             // 检查文件是否已下载
             auto fileItem = InsertFileManager::instance()->getFile(fileId);
             if (fileItem && fileItem->isDownloaded()) {
-                startInsertVideoPlayback(fileId);
+                // 从 InsertFileItem 读取循环播放设置
+                bool loopEnabled = fileItem->loopEnabled;
+                startInsertVideoPlayback(fileId, loopEnabled);
             } else {
                 LOG_WARNING("Insert video file not ready: " + fileId.toStdString());
             }

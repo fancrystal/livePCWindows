@@ -23,6 +23,9 @@ public:
     qint64 duration() const;
     qint64 position() const;
 
+    // 刷新视频输出设置（用于确保视频填满窗口）
+    void refreshVideoOutput();
+
 signals:
     void positionChanged(qint64 position);
     void durationChanged(qint64 duration);

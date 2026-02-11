@@ -14,12 +14,16 @@
 #include <QPixmap>
 #include <QFile>
 #include <QFrame>
+#include <QCloseEvent>
+#include <QPointer>
+#include <QTimer>
 
 InsertVideoWidget::InsertVideoWidget(QWidget *parent)
     : QDialog(parent), is_previewing_(false) {
     setupUI();
     setWindowTitle(QString::fromUtf8("插播视频"));
-    setMinimumSize(900, 600);
+    setMinimumSize(1100, 650);
+    resize(1100, 650);
     setModal(true);
 
     // 连接 InsertFileManager 信号
@@ -31,10 +35,9 @@ InsertVideoWidget::InsertVideoWidget(QWidget *parent)
 }
 
 InsertVideoWidget::~InsertVideoWidget() {
-    // 确保停止预览
-    if (vlc_player_ && is_previewing_) {
-        vlc_player_->stop();
-    }
+    // 析构时直接重置VLC播放器
+    // 停止和资源释放在VlcPlayer析构函数中处理
+    vlc_player_.reset();
 }
 
 void InsertVideoWidget::setupUI() {
@@ -63,19 +66,21 @@ void InsertVideoWidget::setupUI() {
     // 搜索栏
     auto* searchLayout = new QHBoxLayout();
     searchEdit_ = new QLineEdit(this);
-    searchEdit_->setPlaceholderText(QString::fromUtf8("请输入视频名称"));
+    searchEdit_->setPlaceholderText(QString::fromUtf8("请输入视频名称搜索"));
+    searchEdit_->setMinimumHeight(36);
     searchEdit_->setStyleSheet(
-        "QLineEdit { background-color: #333333; color: #ffffff; border: 1px solid #444444; "
-        "border-radius: 4px; padding: 8px 12px; }"
+        "QLineEdit { background-color: #2a2a2a; color: #ffffff; border: 1px solid #444444; "
+        "border-radius: 6px; padding: 8px 12px; font-size: 14px; }"
+        "QLineEdit:focus { border-color: #4a6ef0; }"
     );
     connect(searchEdit_, &QLineEdit::textChanged, this, &InsertVideoWidget::onSearchTextChanged);
     searchLayout->addWidget(searchEdit_);
 
-    refreshButton_ = new QPushButton(QString::fromUtf8("刷新"), this);
+    refreshButton_ = new QPushButton(QString::fromUtf8("🔄 刷新"), this);
+    refreshButton_->setMinimumSize(90, 36);
     refreshButton_->setStyleSheet(
-        "QPushButton { background-color: #4a6ef0; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 8px 16px; }"
-        "QPushButton:hover { background-color: #5a7eff; }"
+        "QPushButton { background-color: #3a5a6a; color: #ffffff; border-radius: 6px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: #4a6a7a; }"
     );
     connect(refreshButton_, &QPushButton::clicked, this, &InsertVideoWidget::onRefreshClicked);
     searchLayout->addWidget(refreshButton_);
@@ -91,27 +96,31 @@ void InsertVideoWidget::setupUI() {
 
     // 视频列表表格
     tableWidget_ = new QTableWidget(this);
-    tableWidget_->setColumnCount(5);
+    tableWidget_->setColumnCount(6);
     tableWidget_->setHorizontalHeaderLabels({
         QString::fromUtf8(""),
         QString::fromUtf8("文件名称"),
         QString::fromUtf8("大小"),
         QString::fromUtf8("时长"),
+        QString::fromUtf8("循环"),
         QString::fromUtf8("状态")
     });
-    tableWidget_->setColumnWidth(0, 40);   // 复选框
-    tableWidget_->setColumnWidth(1, 200);  // 文件名
-    tableWidget_->setColumnWidth(2, 80);   // 大小
-    tableWidget_->setColumnWidth(3, 80);   // 时长
+    tableWidget_->setColumnWidth(0, 50);    // 复选框
+    tableWidget_->setColumnWidth(1, 280);    // 文件名
+    tableWidget_->setColumnWidth(2, 90);     // 大小
+    tableWidget_->setColumnWidth(3, 80);     // 时长
+    tableWidget_->setColumnWidth(4, 80);     // 循环
     tableWidget_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tableWidget_->setSelectionMode(QAbstractItemView::SingleSelection);
     tableWidget_->setStyleSheet(
-        "QTableWidget { background-color: #2a2a2a; border: 1px solid #444444; "
-        "border-radius: 6px; color: #ffffff; gridline-color: #444444; }"
-        "QTableWidget::item { padding: 8px; border-bottom: 1px solid #444444; }"
-        "QTableWidget::item:selected { background-color: #4a6ef0; }"
-        "QHeaderView::section { background-color: #333333; color: #ffffff; "
-        "padding: 8px; border: none; border-bottom: 1px solid #444444; }"
+        "QTableWidget { background-color: #252525; border: 1px solid #3a3a3a; "
+        "border-radius: 8px; color: #ffffff; gridline-color: #3a3a3a; }"
+        "QTableWidget::item { padding: 6px 8px; border-bottom: 1px solid #3a3a3a; }"
+        "QTableWidget::item:selected { background-color: #3a5a8a; }"
+        "QTableWidget::item:hover { background-color: #2a3a4a; }"
+        "QHeaderView::section { background-color: #2a2a2a; color: #cccccc; "
+        "padding: 10px 8px; border: none; border-bottom: 1px solid #3a3a3a; "
+        "font-weight: bold; }"
     );
     tableWidget_->horizontalHeader()->setStretchLastSection(true);
     tableWidget_->verticalHeader()->setVisible(false);
@@ -123,17 +132,19 @@ void InsertVideoWidget::setupUI() {
                     onPlayClicked();
                 }
             });
+    connect(tableWidget_, &QTableWidget::cellChanged,
+            this, &InsertVideoWidget::onLoopCheckStateChanged);
     leftLayout->addWidget(tableWidget_, 3);
 
     // 底部状态栏
     auto* bottomLayout = new QHBoxLayout();
     selectedLabel_ = new QLabel(QString::fromUtf8("已选: 0 项"), this);
-    selectedLabel_->setStyleSheet("color: #aaaaaa;");
+    selectedLabel_->setStyleSheet("color: #888888; font-size: 13px;");
     bottomLayout->addWidget(selectedLabel_);
     bottomLayout->addStretch();
 
     statusLabel_ = new QLabel(this);
-    statusLabel_->setStyleSheet("color: #aaaaaa;");
+    statusLabel_->setStyleSheet("color: #888888; font-size: 13px;");
     bottomLayout->addWidget(statusLabel_);
     leftLayout->addLayout(bottomLayout);
 
@@ -143,33 +154,35 @@ void InsertVideoWidget::setupUI() {
 
     playButton_ = new QPushButton(QString::fromUtf8("▶ 预览播放"), this);
     playButton_->setEnabled(false);
+    playButton_->setMinimumSize(100, 36);
     playButton_->setStyleSheet(
-        "QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; "
-        "border-radius: 4px; padding: 10px 20px; }"
-        "QPushButton:hover { background-color: #444444; }"
-        "QPushButton:disabled { background-color: #222222; color: #666666; }"
+        "QPushButton { background-color: #3a5a8a; color: #ffffff; border-radius: 6px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: #4a6aaa; }"
+        "QPushButton:disabled { background-color: #2a3a4a; color: #666666; }"
     );
     connect(playButton_, &QPushButton::clicked, this, &InsertVideoWidget::onPlayClicked);
     buttonLayout->addWidget(playButton_);
 
     stopPreviewButton_ = new QPushButton(QString::fromUtf8("■ 停止预览"), this);
     stopPreviewButton_->setEnabled(false);
+    stopPreviewButton_->setMinimumSize(100, 36);
     stopPreviewButton_->setStyleSheet(
-        "QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; "
-        "border-radius: 4px; padding: 10px 20px; }"
-        "QPushButton:hover { background-color: #444444; }"
-        "QPushButton:disabled { background-color: #222222; color: #666666; }"
+        "QPushButton { background-color: #5a5a6a; color: #ffffff; border-radius: 6px; padding: 8px 16px; }"
+        "QPushButton:hover { background-color: #6a6a7a; }"
+        "QPushButton:disabled { background-color: #3a3a4a; color: #666666; }"
     );
     connect(stopPreviewButton_, &QPushButton::clicked, this, &InsertVideoWidget::onStopPreviewClicked);
     buttonLayout->addWidget(stopPreviewButton_);
 
     startInsertButton_ = new QPushButton(QString::fromUtf8("开始插播"), this);
     startInsertButton_->setEnabled(false);
+    startInsertButton_->setMinimumSize(120, 36);
+    // 与开始直播按钮一致的渐变样式
     startInsertButton_->setStyleSheet(
-        "QPushButton { background-color: #4a6ef0; color: #ffffff; border: none; "
-        "border-radius: 4px; padding: 10px 30px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #5a7eff; }"
-        "QPushButton:disabled { background-color: #333333; color: #666666; }"
+        "QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4a6ef0, stop:1 #f05a6a); "
+        "color: white; border-radius: 6px; padding: 8px 24px; font-weight: bold; }"
+        "QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #5a7eff, stop:1 #f16a7a); }"
+        "QPushButton:disabled { background: #3a3a4a; color: #666666; }"
     );
     connect(startInsertButton_, &QPushButton::clicked, this, &InsertVideoWidget::onStartInsertClicked);
     buttonLayout->addWidget(startInsertButton_);
@@ -186,11 +199,16 @@ void InsertVideoWidget::setupUI() {
 
     // 预览窗口
     previewWidget_ = new QFrame(this);
-    previewWidget_->setMinimumSize(320, 240);
+    previewWidget_->setMinimumSize(400, 300);
     previewWidget_->setStyleSheet(
-        "QFrame { background-color: #000000; border: 1px solid #444444; border-radius: 6px; }"
+        "QFrame { background-color: #000000; border: 2px solid #3a3a3a; border-radius: 8px; }"
     );
     previewWidget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // 设置 Qt 属性，确保 VLC 可以直接渲染到窗口
+    previewWidget_->setAttribute(Qt::WA_OpaquePaintEvent, true);
+    previewWidget_->setAttribute(Qt::WA_NoSystemBackground, true);
+    previewWidget_->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
 
     // 在预览窗口中放置一个标签用于显示
     previewLabel_ = new QLabel(previewWidget_);
@@ -201,8 +219,8 @@ void InsertVideoWidget::setupUI() {
 
     rightLayout->addWidget(previewWidget_, 1);
 
-    contentLayout->addLayout(leftLayout, 1);
-    contentLayout->addLayout(rightLayout, 1);
+    contentLayout->addLayout(leftLayout, 2);  // 左侧占比2/3
+    contentLayout->addLayout(rightLayout, 1); // 右侧占比1/3
     mainLayout->addLayout(contentLayout);
 
     // 设置对话框样式
@@ -242,13 +260,16 @@ void InsertVideoWidget::showEvent(QShowEvent *event) {
     }
 }
 
-void InsertVideoWidget::closeEvent(QCloseEvent *event) {
-    // 停止预览
-    if (vlc_player_ && is_previewing_) {
-        vlc_player_->stop();
-        is_previewing_ = false;
-    }
-    QDialog::closeEvent(event);
+void InsertVideoWidget::closeEvent(QCloseEvent *event)
+{
+    // 设置标志位阻止回调
+    is_previewing_ = false;
+
+    // 直接重置VLC播放器（异步方式）
+    vlc_player_.reset();
+
+    event->accept();
+    // 不调用QDialog::closeEvent避免重复处理
 }
 
 void InsertVideoWidget::onRefreshClicked() {
@@ -274,14 +295,24 @@ void InsertVideoWidget::onPlayClicked() {
             vlc_player_->stop();
         }
 
+        // 隐藏提示标签，让 VLC 渲染占据整个预览区域
+        previewLabel_->hide();
+
         if (vlc_player_->openFile(localPath)) {
             vlc_player_->play();
+            // 延迟刷新视频输出，确保窗口已完全初始化
+            QTimer::singleShot(100, this, [this]() {
+                if (vlc_player_) {
+                    vlc_player_->refreshVideoOutput();
+                }
+            });
             is_previewing_ = true;
             updateButtonStates();
             LOG_INFO("InsertVideoWidget: Started preview playback for " + item->fileName.toStdString());
         } else {
             QMessageBox::warning(this, QString::fromUtf8("播放失败"),
                 QString::fromUtf8("无法打开视频文件"));
+            previewLabel_->show();
         }
     }
 }
@@ -313,7 +344,23 @@ void InsertVideoWidget::onStartInsertClicked() {
         is_previewing_ = false;
     }
 
-    emit startInsertVideo(item->fileId, item->fileName);
+    // 获取循环播放设置
+    bool loopEnabled = false;
+    for (int row = 0; row < tableWidget_->rowCount(); row++) {
+        auto* item = tableWidget_->item(row, 0);
+        if (item && item->data(Qt::UserRole).toString() == selected_file_id_) {
+            auto* loopItem = tableWidget_->item(row, 4);
+            if (loopItem) {
+                loopEnabled = (loopItem->checkState() == Qt::Checked);
+            }
+            break;
+        }
+    }
+
+    // 更新 InsertFileItem 中的循环设置
+    item->loopEnabled = loopEnabled;
+
+    emit startInsertVideo(item->fileId, item->fileName, loopEnabled);
     accept(); // 关闭对话框
 }
 
@@ -363,6 +410,27 @@ void InsertVideoWidget::onPreviewEndReached() {
     updateButtonStates();
 }
 
+void InsertVideoWidget::onLoopCheckStateChanged(int row, int column) {
+    if (column != 4) return; // 只处理循环播放列
+
+    auto* loopItem = tableWidget_->item(row, 4);
+    if (!loopItem) return;
+
+    auto* checkItem = tableWidget_->item(row, 0);
+    if (!checkItem) return;
+
+    QString fileId = checkItem->data(Qt::UserRole).toString();
+    bool loopEnabled = (loopItem->checkState() == Qt::Checked);
+
+    // 更新 InsertFileItem 中的循环设置
+    auto item = InsertFileManager::instance()->getFile(fileId);
+    if (item) {
+        item->loopEnabled = loopEnabled;
+        LOG_INFO("InsertVideoWidget: Loop playback for " + item->fileName.toStdString() +
+                 " set to " + (loopEnabled ? "enabled" : "disabled"));
+    }
+}
+
 void InsertVideoWidget::updateVideoTable() {
     tableWidget_->clearContents();
     progress_bars_.clear();
@@ -407,6 +475,14 @@ void InsertVideoWidget::updateVideoTable() {
         durationItem->setTextAlignment(Qt::AlignCenter);
         tableWidget_->setItem(row, 3, durationItem);
 
+        // 循环播放列
+        auto* loopItem = new QTableWidgetItem();
+        loopItem->setFlags(loopItem->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEditable);
+        loopItem->setCheckState(file->loopEnabled ? Qt::Checked : Qt::Unchecked);
+        loopItem->setData(Qt::UserRole, file->fileId);
+        loopItem->setTextAlignment(Qt::AlignCenter);
+        tableWidget_->setItem(row, 4, loopItem);
+
         // 状态列
         QString statusText = insertFileStatusToString(file->status);
         QWidget* statusWidget = nullptr;
@@ -440,8 +516,8 @@ void InsertVideoWidget::updateVideoTable() {
         }
 
         auto* statusItem = new QTableWidgetItem(statusText);
-        tableWidget_->setItem(row, 4, statusItem);
-        tableWidget_->setCellWidget(row, 4, statusWidget);
+        tableWidget_->setItem(row, 5, statusItem);
+        tableWidget_->setCellWidget(row, 5, statusWidget);
 
         row++;
     }
