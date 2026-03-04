@@ -251,6 +251,14 @@ ErrorCode Encoder::reset_audio_encoder() {
     return audio_encoder_->reset();
 }
 
+ErrorCode Encoder::reset_video_encoder() {
+    if (!video_encoder_initialized_ || !video_encoder_) {
+        LOG_WARNING("reset_video_encoder called but video encoder not initialized");
+        return ErrorCode::INVALID_STATE;
+    }
+    return video_encoder_->reset();
+}
+
 AudioEncoder* Encoder::get_audio_encoder() const {
     return audio_encoder_.get();
 }

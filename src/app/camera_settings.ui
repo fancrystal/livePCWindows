@@ -6,28 +6,39 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>600</width>
-    <height>400</height>
+    <width>750</width>
+    <height>500</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>摄像头设置</string>
   </property>
   <property name="styleSheet">
-   <string notr="true">QDialog { background-color: #1a1a1a; color: #ffffff; }
-QWidget { background-color: #1a1a1a; color: #ffffff; }
-QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 8px 16px; }
-QPushButton:hover { background-color: #444444; }
-QPushButton:pressed { background-color: #555555; }
-QPushButton:checked { background-color: #222222; border-color: #007acc; }
-QLabel { color: #ffffff; }
-QCheckBox { color: #ffffff; }
-QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; }
-QStackedWidget { background-color: #222222; border: 1px solid #333333; }
+   <string notr="true">QDialog { background-color: #1e1e2e; color: #cdd6f4; }
+QWidget { background-color: #1e1e2e; color: #cdd6f4; font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; font-size: 14px; }
+QPushButton { background-color: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 8px; padding: 10px 20px; font-weight: 500; }
+QPushButton:hover { background-color: #45475a; border-color: #89b4fa; }
+QPushButton:pressed { background-color: #585b70; }
+QPushButton:checked { background-color: #313244; border-color: #89b4fa; color: #89b4fa; font-weight: 600; }
+QLabel { color: #cdd6f4; font-weight: 500; }
+QCheckBox { color: #cdd6f4; spacing: 8px; }
+QCheckBox::indicator { width: 20px; height: 20px; border: 2px solid #45475a; border-radius: 4px; background-color: #313244; }
+QCheckBox::indicator:hover { border-color: #89b4fa; }
+QCheckBox::indicator:checked { background-color: #89b4fa; border-color: #89b4fa; }
+QCheckBox::indicator:checked::after { content: '✓'; color: #1e1e2e; font-weight: bold; }
+QComboBox { background-color: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 6px; padding: 8px 12px; min-height: 32px; }
+QComboBox:hover { border-color: #89b4fa; }
+QComboBox:focus { border-color: #89b4fa; }
+QComboBox::drop-down { border: none; width: 32px; background-color: #313244; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QComboBox::down-arrow { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #cdd6f4; margin-top: 2px; }
+QComboBox QAbstractItemView { background-color: #313244; border: 1px solid #45475a; border-radius: 6px; selection-background-color: #45475a; selection-color: #cdd6f4; outline: none; }
+QComboBox QAbstractItemView::item { padding: 8px 12px; min-height: 28px; }
+QComboBox QAbstractItemView::item:hover { background-color: #45475a; }
+QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-radius: 8px; }
 /* 左侧标签按钮样式 */
-#leftPanel QPushButton { background-color: #333333; color: #ffffff; border: none; border-right: 2px solid transparent; padding: 12px; text-align: left; }
-#leftPanel QPushButton:hover { background-color: #444444; }
-#leftPanel QPushButton:checked { background-color: #222222; border-right: 2px solid #007acc; }</string>
+#leftPanel QPushButton { background-color: transparent; color: #cdd6f4; border: none; border-right: 3px solid transparent; padding: 14px 16px; text-align: left; font-size: 14px; font-weight: 500; }
+#leftPanel QPushButton:hover { background-color: #313244; color: #cdd6f4; }
+#leftPanel QPushButton:checked { background-color: #313244; border-right: 3px solid #89b4fa; color: #89b4fa; font-weight: 600; }</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
@@ -52,18 +63,18 @@ QStackedWidget { background-color: #222222; border: 1px solid #333333; }
       <widget class="QWidget" name="leftPanel" native="true">
        <property name="minimumSize">
         <size>
-         <width>100</width>
+         <width>140</width>
          <height>0</height>
         </size>
        </property>
        <property name="maximumSize">
         <size>
-         <width>120</width>
+         <width>160</width>
          <height>16777215</height>
         </size>
        </property>
        <property name="styleSheet">
-        <string notr="true">background-color: #222222;</string>
+        <string notr="true">background-color: #181825;</string>
        </property>
        <layout class="QVBoxLayout" name="verticalLayout_left">
         <property name="spacing">

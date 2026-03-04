@@ -340,6 +340,12 @@ bool VideoEngine::set_camera_pixel_format(const std::string& pixel_format) {
     return true;
 }
 
+bool VideoEngine::set_camera_mirror(bool mirror) {
+    camera_mirror_ = mirror;
+    LOG_INFO("Set camera mirror to: " + std::string(mirror ? "enabled" : "disabled"));
+    return true;
+}
+
 std::string VideoEngine::get_camera_resolution() const {
     return camera_resolution_;
 }
@@ -350,6 +356,10 @@ int VideoEngine::get_camera_fps() const {
 
 std::string VideoEngine::get_camera_pixel_format() const {
     return camera_pixel_format_;
+}
+
+bool VideoEngine::get_camera_mirror() const {
+    return camera_mirror_;
 }
 
 bool VideoEngine::start_capture() {

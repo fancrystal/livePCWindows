@@ -47,6 +47,8 @@
 #include <QSettings>
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #endif
 #include <QMenu>
 #include <QAction>
@@ -595,45 +597,19 @@ void MainWindow::initialize_modules() {
 
     video_engine_->initialize(1920, 1080, 30);
     audio_engine_->initialize(48000, 2);
-    // Default: start microphone capture when entering live room
-    if (audio_engine_) {
-        LOG_INFO("Starting audio capture by default for live room");
-        update_audio_status("初始化中...","orange");
-
-        // Try to start audio capture
-        bool audio_started = false;
-        int retry_count = 3;
-
-        for (int i = 0; i < retry_count && !audio_started; ++i) {
-            if (i > 0) {
-                LOG_INFO("Retrying audio capture startup (attempt " + std::to_string(i + 1) + ")");
-                QThread::msleep(500); // Wait a bit before retry
-            }
-
-            if (audio_engine_->start_capture()) {
-                audio_started = true;
-                break;
-            }
-        }
-
-        if (!audio_started) {
-            LOG_WARNING("AudioEngine::start_capture failed after " + std::to_string(retry_count) + " attempts");
-            update_audio_status("故障", "red");
-            // enable silent audio fallback in encoder bridge
-            if (encoder_bridge_) {
-                encoder_bridge_->set_audio_engine(audio_engine_);
-                encoder_bridge_->set_silent_audio(true);
-            }
-            QMessageBox::warning(this, "麦克风故障",
-                "无法打开麦克风，程序将以静音推流作为回退。\n\n可能的原因：\n• 麦克风被其他程序占用\n• 音频设备驱动问题\n• 系统音频服务未运行\n\n请尝试：\n1. 检查麦克风是否被其他程序使用\n2. 重新启动应用程序\n3. 检查音频设备设置");
-        } else {
-            update_audio_status("正常", "green");
-            if (encoder_bridge_) {
-                encoder_bridge_->set_audio_engine(audio_engine_);
-                encoder_bridge_->set_silent_audio(false);
-            }
-        }
+    // 进入直播间时不立即启动麦克风采集，等点击"开始直播"时再采集
+    // 这样可以避免持续占用麦克风资源
+    LOG_INFO("Audio engine initialized, will start capture when live streaming begins");
+    update_audio_status("待机", "gray");
+    // 先设置静音模式，等开始直播时再启动真实采集
+    if (encoder_bridge_) {
+        encoder_bridge_->set_audio_engine(audio_engine_);
+        encoder_bridge_->set_silent_audio(true);  // 默认静音，等开始直播后开启
     }
+
+    // 初始化音频控件UI（同步滑块值）
+    update_microphone_ui();
+    update_speaker_ui();
 
     video_engine_->set_current_scene(scene_manager_->get_current_scene());
 
@@ -791,6 +767,11 @@ void MainWindow::setup_ui_connections() {
                 if (reply == QMessageBox::Yes) {
                     // 用户确认结束直播
                     encoder_bridge_->stop_streaming();
+                    // 停止直播时也停止音频采集
+                    if (audio_engine_ && audio_engine_->is_capturing()) {
+                        LOG_INFO("Stopping audio capture after live streaming ended");
+                        audio_engine_->stop_capture();
+                    }
                     ui->pushButton_startLive->setText("开始直播");
                     if (ui->label_status) {
                         ui->label_status->setText("推流结束");
@@ -835,6 +816,31 @@ void MainWindow::setup_ui_connections() {
                 }
 
                 if (encoder_bridge_->start_streaming(url.toStdString())) {
+                    // 开始直播时启动音频采集
+                    if (audio_engine_ && !audio_engine_->is_capturing()) {
+                        LOG_INFO("Starting audio capture for live streaming");
+                        update_audio_status("初始化中...", "orange");
+                        bool audio_started = false;
+                        int retry_count = 3;
+                        for (int i = 0; i < retry_count && !audio_started; ++i) {
+                            if (i > 0) {
+                                QThread::msleep(500);
+                            }
+                            if (audio_engine_->start_capture()) {
+                                audio_started = true;
+                            }
+                        }
+                        if (!audio_started) {
+                            LOG_WARNING("Failed to start audio capture for live streaming");
+                            update_audio_status("故障", "red");
+                        } else {
+                            // 启动成功后，关闭静音模式
+                            if (encoder_bridge_) {
+                                encoder_bridge_->set_silent_audio(false);
+                            }
+                            update_audio_status("正常", "green");
+                        }
+                    }
                     ui->pushButton_startLive->setText("停止直播");
                     if (ui->label_status) {
                         ui->label_status->setText("正在推流");
@@ -877,6 +883,11 @@ void MainWindow::setup_ui_connections() {
     if (ui->slider_mic) {
         connect(ui->slider_mic, &QSlider::valueChanged, this, [this](int value) {
             set_microphone_volume(value / 100.0f);
+            playVolumeFeedbackSound();
+        });
+        // 滑块释放时保存设置
+        connect(ui->slider_mic, &QSlider::sliderReleased, this, [this]() {
+            saveAudioVolumeSettings();
         });
     }
 
@@ -895,6 +906,11 @@ void MainWindow::setup_ui_connections() {
     if (ui->slider_speaker) {
         connect(ui->slider_speaker, &QSlider::valueChanged, this, [this](int value) {
             set_speaker_volume(value / 100.0f);
+            playVolumeFeedbackSound();
+        });
+        // 滑块释放时保存设置
+        connect(ui->slider_speaker, &QSlider::sliderReleased, this, [this]() {
+            saveAudioVolumeSettings();
         });
     }
 
@@ -1271,14 +1287,16 @@ void MainWindow::show_camera_selector() {
         std::string resolution = dialog.get_resolution();
         int fps = dialog.get_fps();
         std::string pixel_format = dialog.get_pixel_format();
+        bool mirror = dialog.is_mirror();
 
         LOG_INFO("选中摄像头: " + selected_camera.toStdString() + " (ID: " + camera_device_id + ")");
-        LOG_INFO("摄像头参数 - 分辨率: " + resolution + ", 帧率: " + std::to_string(fps) + ", 像素格式: " + pixel_format);
+        LOG_INFO("摄像头参数 - 分辨率: " + resolution + ", 帧率: " + std::to_string(fps) + ", 像素格式: " + pixel_format + ", 镜像: " + (mirror ? "开启" : "关闭"));
 
         if (video_engine_) {
             video_engine_->set_camera_resolution(resolution);
             video_engine_->set_camera_fps(fps);
             video_engine_->set_camera_pixel_format(pixel_format);
+            video_engine_->set_camera_mirror(mirror);
         }
 
         if (camera_device_id.empty()) {
@@ -1310,12 +1328,19 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
         return;
     }
 
+    // Get current mirror setting from video engine
+    bool mirror = false;
+    if (video_engine_) {
+        mirror = video_engine_->get_camera_mirror();
+    }
+
     LOG_INFO("创建摄像头采集配置");
     CaptureConfig cfg;
     cfg.type = CaptureConfig::TargetType::CAMERA;
     cfg.target_id = camera_device_id; // Use dshow device_name
     cfg.fps = 30;
-    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 帧率=" + std::to_string(cfg.fps));
+    cfg.mirror = mirror; // Apply mirror setting
+    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 帧率=" + std::to_string(cfg.fps) + ", 镜像=" + (mirror ? "开启" : "关闭"));
 
     LOG_INFO("调用CaptureFactory::create_capture_source创建采集源");
     auto src = CaptureFactory::create_capture_source(cfg);
@@ -1459,7 +1484,14 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
                 int h = canvas_h / 2;
                 int x = (canvas_w - w) / 2;
                 int y = (canvas_h - h) / 2;
-                Transform tr(x, y, w, h, 0.0f, 1.0f);
+                
+                // Get mirror setting from video engine
+                bool mirror = false;
+                if (video_engine_) {
+                    mirror = video_engine_->get_camera_mirror();
+                }
+                
+                Transform tr(x, y, w, h, 0.0f, 1.0f, mirror);
                 scene->set_transform(added_item, tr);
                 
                 // 设置摄像头的order为最高，确保它永远在最上层
@@ -2123,9 +2155,13 @@ void MainWindow::show_scene_item_settings(int index) {
         dlg.set_available_cameras(camera_choices);
         
         // 获取当前摄像头配置
-        // 这里可以从source中获取当前的分辨率、帧率等配置
-        // 暂时使用默认值
-        dlg.set_camera_config(source_id, "1280x720", 30, false);
+        // 从当前SceneItem的Transform中读取镜像状态
+        bool current_mirror = false;
+        auto current_transform = item->get_transform();
+        current_mirror = current_transform.mirror;
+        
+        // 设置摄像头配置（使用当前的镜像状态）
+        dlg.set_camera_config(source_id, "1280x720", 30, current_mirror);
         
         if (dlg.exec() == QDialog::Accepted) {
             // 应用通用设置
@@ -2161,6 +2197,28 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     const std::string speaker_id = dlg.get_selected_speaker_id();
     float mic_volume = dlg.get_microphone_volume();
     float speaker_volume = dlg.get_speaker_volume();
+    
+    // Apply camera mirror setting
+    bool mirror = dlg.is_camera_mirror();
+    if (video_engine_) {
+        video_engine_->set_camera_mirror(mirror);
+    }
+
+    // Update camera SceneItem's Transform mirror setting
+    if (scene_manager_ && scene_manager_->get_current_scene()) {
+        auto scene = scene_manager_->get_current_scene();
+        auto items = scene->get_all_scene_items();
+        for (auto& item : items) {
+            if (item && item->get_source() && 
+                QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
+                // Update the Transform with new mirror setting
+                Transform tr = item->get_transform();
+                tr.mirror = mirror;
+                scene->set_transform(item, tr);
+                break; // Only update the first camera item
+            }
+        }
+    }
 
     // Reinit audio engine/encoder
     audio_engine_->initialize(new_a.sample_rate, new_a.channels);
@@ -2356,6 +2414,7 @@ void MainWindow::toggle_microphone() {
         audio_engine_->set_microphone_mute(!microphone_enabled_);
     }
     update_microphone_ui();
+    saveAudioVolumeSettings();
     LOG_INFO(std::string("Microphone ") + (microphone_enabled_ ? "enabled" : "disabled"));
 }
 
@@ -2375,14 +2434,21 @@ void MainWindow::set_microphone_volume(float volume) {
 void MainWindow::update_microphone_ui() {
     if (ui->pushButton_mic) {
         ui->pushButton_mic->setText("");
-        ui->pushButton_mic->setStyleSheet(microphone_enabled_ ?
-            "border: none; background: transparent;" :
-            "border: none; background: transparent; opacity: 0.5;");
+        if (microphone_enabled_) {
+            ui->pushButton_mic->setStyleSheet("border: none; background: transparent;");
+            ui->pushButton_mic->setToolTip(QString::fromUtf8("麦克风 (点击静音)\n右键选择设备"));
+        } else {
+            // 静音状态：显示红色边框和半透明效果
+            ui->pushButton_mic->setStyleSheet(
+                "border: 2px solid #ff4444; border-radius: 4px; background: rgba(255, 68, 68, 0.2);");
+            ui->pushButton_mic->setToolTip(QString::fromUtf8("麦克风 (已静音)\n点击取消静音"));
+        }
     }
 
     if (ui->slider_mic && audio_engine_) {
         int volume = static_cast<int>(audio_engine_->get_microphone_volume() * 100);
         ui->slider_mic->setValue(volume);
+        ui->slider_mic->setEnabled(microphone_enabled_);
         if (ui->label_micLevel) {
             ui->label_micLevel->setText(QString::number(volume) + "%");
         }
@@ -2426,6 +2492,7 @@ void MainWindow::toggle_speaker() {
         audio_engine_->set_speaker_mute(!speaker_enabled_);
     }
     update_speaker_ui();
+    saveAudioVolumeSettings();
     LOG_INFO(std::string("Speaker ") + (speaker_enabled_ ? "enabled" : "disabled"));
 }
 
@@ -2445,14 +2512,21 @@ void MainWindow::set_speaker_volume(float volume) {
 void MainWindow::update_speaker_ui() {
     if (ui->pushButton_speaker) {
         ui->pushButton_speaker->setText("");
-        ui->pushButton_speaker->setStyleSheet(speaker_enabled_ ?
-            "border: none; background: transparent;" :
-            "border: none; background: transparent; opacity: 0.5;");
+        if (speaker_enabled_) {
+            ui->pushButton_speaker->setStyleSheet("border: none; background: transparent;");
+            ui->pushButton_speaker->setToolTip(QString::fromUtf8("扬声器 (点击静音)\n右键选择设备"));
+        } else {
+            // 静音状态：显示红色边框和半透明效果
+            ui->pushButton_speaker->setStyleSheet(
+                "border: 2px solid #ff4444; border-radius: 4px; background: rgba(255, 68, 68, 0.2);");
+            ui->pushButton_speaker->setToolTip(QString::fromUtf8("扬声器 (已静音)\n点击取消静音"));
+        }
     }
 
     if (ui->slider_speaker && audio_engine_) {
         int volume = static_cast<int>(audio_engine_->get_speaker_volume() * 100);
         ui->slider_speaker->setValue(volume);
+        ui->slider_speaker->setEnabled(speaker_enabled_);
         if (ui->label_speakerLevel) {
             ui->label_speakerLevel->setText(QString::number(volume) + "%");
         }
@@ -2460,13 +2534,27 @@ void MainWindow::update_speaker_ui() {
 }
 
 void MainWindow::show_speaker_menu(const QPoint& pos) {
-    // Placeholder for speaker device selection
-    // In a full implementation, this would show available speaker devices
-    QMenu menu(this);
-    menu.setTitle("扬声器设备");
+    if (!audio_engine_) return;
 
-    QAction* placeholder = menu.addAction("默认扬声器 (功能开发中...)");
-    placeholder->setEnabled(false);
+    QMenu menu(this);
+    menu.setTitle("选择扬声器");
+
+    auto devices = audio_engine_->get_available_speakers();
+    auto current_id = audio_engine_->get_selected_speaker_id();
+
+    for (const auto& device : devices) {
+        QAction* action = menu.addAction(QString::fromUtf8(device.name.c_str()));
+        action->setCheckable(true);
+        action->setChecked(device.id == current_id);
+
+        connect(action, &QAction::triggered, this, [this, device_id = device.id]() {
+            if (audio_engine_->select_speaker(device_id)) {
+                LOG_INFO("Selected speaker: " + device_id);
+                // 更新扬声器音量UI
+                update_speaker_ui();
+            }
+        });
+    }
 
     menu.exec(pos);
 }
@@ -2628,7 +2716,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
                 encoder_bridge_->stop_streaming();
             }
-            
+
+            // 保存音量设置
+            saveAudioVolumeSettings();
+
             // 清理资源并退出
             cleanupSystemTray();
             event->accept();
@@ -2835,6 +2926,45 @@ void MainWindow::saveExitPreference(int preference) {
     QSettings settings("LiveAssistant", "Settings");
     settings.setValue("exitPreference", preference);
     LOG_INFO("Saved exit preference: " + std::to_string(preference));
+}
+
+void MainWindow::saveAudioVolumeSettings() {
+    QSettings settings("LiveAssistant", "Settings");
+    if (audio_engine_) {
+        settings.setValue("microphoneVolume", audio_engine_->get_microphone_volume());
+        settings.setValue("speakerVolume", audio_engine_->get_speaker_volume());
+        settings.setValue("microphoneEnabled", microphone_enabled_);
+        settings.setValue("speakerEnabled", speaker_enabled_);
+        LOG_INFO("Saved audio volume settings");
+    }
+}
+
+void MainWindow::loadAudioVolumeSettings() {
+    QSettings settings("LiveAssistant", "Settings");
+
+    // 加载音量设置，默认40%
+    float micVolume = settings.value("microphoneVolume", 0.4f).toFloat();
+    float speakerVolume = settings.value("speakerVolume", 0.4f).toFloat();
+    microphone_enabled_ = settings.value("microphoneEnabled", true).toBool();
+    speaker_enabled_ = settings.value("speakerEnabled", true).toBool();
+
+    // 应用到音频引擎
+    if (audio_engine_) {
+        audio_engine_->set_microphone_volume(micVolume);
+        audio_engine_->set_speaker_volume(speakerVolume);
+        audio_engine_->set_microphone_mute(!microphone_enabled_);
+        audio_engine_->set_speaker_mute(!speaker_enabled_);
+    }
+
+    LOG_INFO("Loaded audio volume settings: mic=" + std::to_string(static_cast<int>(micVolume * 100)) +
+             "%, speaker=" + std::to_string(static_cast<int>(speakerVolume * 100)) + "%");
+}
+
+void MainWindow::playVolumeFeedbackSound() {
+#ifdef _WIN32
+    // 使用 Windows 系统提示音
+    PlaySoundW(L"SystemDefault", nullptr, SND_ASYNC | SND_NODEFAULT | SND_ALIAS);
+#endif
 }
 
 } // namespace live_assistant

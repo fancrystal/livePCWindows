@@ -71,7 +71,9 @@ AVCodecParameters* H264Encoder::get_codec_parameters() const {
 }
 
 AVRational H264Encoder::get_time_base() const {
-    return AVRational{1, config_.fps > 0 ? config_.fps : 30};
+    // ✅ FLV 容器统一使用毫秒作为 time_base (1/1000)
+    // 视频和音频都用毫秒，保证音视频 PTS 可以直接比较
+    return AVRational{1, 1000};
 }
 
 ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
@@ -415,13 +417,17 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
 
         // Only set x264-specific params when using libx264 (software) encoder.
         if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
-            // ✅ 参考原项目：使用简单可靠的 x264-params，不设置 keyint/min-keyint/forced-idr
+            // ✅ 使用简单可靠的 x264-params
             // 这些参数由 codec_ctx_->gop_size 和 codec_ctx_->keyint_min 控制
             std::string x264_params = "ref=1:slice-max-size=400:slices=8:profile=baseline";
 
             // ✅ 禁用场景检测，严格按照 GOP 间隔生成 IDR 关键帧
             // scenecut=0 表示禁用场景检测，确保第一帧和每 GOP 帧都生成 IDR
             x264_params += ":scenecut=0";
+
+            // ✅ 强制第一帧为 IDR 帧，这是解决音视频同步问题的关键
+            // 没有这个参数，第一个 I 帧可能不是 IDR，会导致推流时大量丢帧
+            x264_params += ":forced-idr=1";
 
             // ✅ 降低编码延迟：使用单线程模式，减少帧缓冲
             x264_params += ":threads=1";
@@ -552,6 +558,7 @@ ErrorCode H264Encoder::shutdown() {
 
     codec_ = nullptr;
     force_keyframe_ = false;
+    first_keyframe_sent_ = false;  // 🔧 重置第一帧标记
     is_qsv_encoder_ = false;
 
     return ErrorCode::SUCCESS;
@@ -701,24 +708,13 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
         encode_frame = frame_;
     }
 
-    // Use timestamp from VideoFrame for proper A/V sync
-    // Convert microseconds to time_base units
-    // 🔧 确保第一帧从 0 开始，避免播放器等待同步
-    if (first_frame_timestamp_us_ == -1) {
-        first_frame_timestamp_us_ = in->timestamp.us;
-        LOG_INFO("[H264Encoder] First video frame timestamp: " + std::to_string(in->timestamp.us / 1000) + "ms");
-    }
-    int64_t relative_timestamp_us = in->timestamp.us - first_frame_timestamp_us_;
-    int64_t pts = av_rescale_q(relative_timestamp_us, AV_TIME_BASE_Q, codec_ctx_->time_base);
-    encode_frame->pts = pts;
+    encode_frame->pts = in->timestamp_ms;
 
     if (force_keyframe_) {
-        // ✅ 强制生成 IDR 帧（而非普通 I 帧）
-        // 对于 libx264，设置为 I 帧并清空编码器缓冲区，确保生成 IDR
         encode_frame->pict_type = AV_PICTURE_TYPE_I;
-        encode_frame->key_frame = 1;  // 标记为关键帧
+        encode_frame->key_frame = 1;
         force_keyframe_ = false;
-        LOG_INFO("[H264Encoder] Force IDR frame at pts=" + std::to_string(pts));
+        LOG_INFO("[H264Encoder] Force IDR frame at pts=" + std::to_string(in->timestamp_ms));
     } else {
         encode_frame->pict_type = AV_PICTURE_TYPE_NONE;
         encode_frame->key_frame = 0;
@@ -787,6 +783,15 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
         // Ensure packet is reference-counted so its data buffer isn't freed unexpectedly
         if (av_packet_make_refcounted(pkt) < 0) {
             LOG_WARNING("av_packet_make_refcounted failed for received packet; proceeding but this may risk buffer lifetime issues");
+        }
+
+        // 🔧 修复：强制第一帧为关键帧（IDR）
+        // 即使 x264 参数设置了 forced-idr=1，编码器输出可能仍不包含关键帧标志
+        // 这里我们强制第一帧为关键帧，确保 RTMP 推流不会丢弃第一帧视频
+        if (!first_keyframe_sent_) {
+            pkt->flags |= AV_PKT_FLAG_KEY;
+            first_keyframe_sent_ = true;
+            LOG_INFO("[H264Encoder] Force first encoded frame as keyframe, pts=" + std::to_string(pkt->pts));
         }
 
         auto out = std::make_shared<EncodedPacket>();
@@ -891,8 +896,28 @@ ErrorCode H264Encoder::force_keyframe() {
     }
 
     force_keyframe_ = true;
-    first_frame_timestamp_us_ = -1;  // 重置第一帧时间戳基准
-    LOG_INFO("Forcing keyframe in next frame, reset first frame timestamp");
+    LOG_INFO("Forcing keyframe in next frame");
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode H264Encoder::reset() {
+    if (!initialized_) {
+        return ErrorCode::INVALID_STATE;
+    }
+
+    LOG_INFO("[H264Encoder] Resetting video encoder");
+
+    // 重置状态标记
+    force_keyframe_ = true;  // 重置后第一帧强制为关键帧
+    first_keyframe_sent_ = false;
+    total_frames_ = 0;
+
+    // 刷新编码器缓冲区
+    if (codec_ctx_) {
+        avcodec_flush_buffers(codec_ctx_);
+        LOG_DEBUG("[H264Encoder] Flushed codec buffers");
+    }
+
     return ErrorCode::SUCCESS;
 }
 

@@ -83,7 +83,7 @@ bool AudioEngine::start_capture() {
     }
 
     // 使用 AudioCapturer 启动捕获
-    bool result = audio_capturer_->start_capture(sample_rate_, channels_, 16);  // 使用 Int16 格式
+    bool result = audio_capturer_->start_capture(sample_rate_, channels_, 32);  // 使用 Float 32位格式
 
     if (result) {
         is_capturing_ = true;
@@ -123,35 +123,53 @@ void AudioEngine::on_data_captured(QByteArray data, int64_t timestamp) {
         return;
     }
 
-    // 数据格式：Int16 (从 AudioCapturer 传来)
-    // 计算采样数
-    int bytes_per_sample = sizeof(int16_t);
+    // 🔧 诊断：打印原始数据的第一个样本值
+    static int dump_counter = 0;
+    dump_counter++;
+    if (dump_counter <= 3) {
+        const float* raw_data = reinterpret_cast<const float*>(data.constData());
+        float first_sample = raw_data[0];
+        float second_sample = raw_data[1];
+        float fifth_sample = (data.size() >= 20) ? raw_data[5] : 0;
+        LOG_INFO("[AudioEngine] RAW data dump #" + std::to_string(dump_counter) +
+                 ": data_size=" + std::to_string(data.size()) +
+                 ", first_sample=" + std::to_string(first_sample) +
+                 ", second=" + std::to_string(second_sample) +
+                 ", fifth=" + std::to_string(fifth_sample));
+    }
+
+    // 数据格式：32-bit Float (从 WASAPI 传来)
+    // WASAPI 输出的是 float 格式，每个样本 4 字节
+    int bytes_per_sample = sizeof(float);
     int total_samples = data.size() / (channels_ * bytes_per_sample);
 
-    // 创建音频帧
+    // 创建音频帧（float 格式）
     auto frame = std::make_shared<AudioFrame>(sample_rate_, channels_, total_samples);
 
-    if (frame->raw_data) {
+    if (frame->data) {
         // 应用音量控制和静音处理
         float volume = microphone_volume_;
         bool muted = microphone_muted_;
 
-        const int16_t* src_data = reinterpret_cast<const int16_t*>(data.constData());
+        // 直接使用 float 格式，不转换
+        const float* src_data = reinterpret_cast<const float*>(data.constData());
         int total = total_samples * channels_;
 
         for (int i = 0; i < total; ++i) {
-            int16_t sample = src_data[i];
-
-            if (muted) {
-                frame->raw_data[i] = 0;
-            } else if (std::abs(volume - 1.0f) > 0.001f) {
-                int32_t scaled = static_cast<int32_t>(sample * volume);
-                if (scaled > 32767) scaled = 32767;
-                if (scaled < -32768) scaled = -32768;
-                frame->raw_data[i] = static_cast<int16_t>(scaled);
+            float float_sample = src_data[i];
+            
+            // 应用音量
+            if (!muted) {
+                float_sample *= volume;
             } else {
-                frame->raw_data[i] = sample;
+                float_sample = 0.0f;
             }
+            
+            // 限制范围
+            if (float_sample > 1.0f) float_sample = 1.0f;
+            if (float_sample < -1.0f) float_sample = -1.0f;
+            
+            frame->data[i] = float_sample;
         }
 
         // 设置时间戳
@@ -176,22 +194,22 @@ void AudioEngine::on_data_captured(QByteArray data, int64_t timestamp) {
     frame_count++;
     total_samples_processed += (int64_t)total_samples;
 
-    // 计算音量统计
+    // 计算音量统计（使用 float 格式）
     double rms = 0.0;
     double peak = 0.0;
-    if (frame->raw_data) {
-        int64_t sum_squares = 0;
+    if (frame->data) {
+        double sum_squares = 0.0;
         int total = frame->samples * frame->channels;
         for (int i = 0; i < total; ++i) {
-            int64_t sample = static_cast<int64_t>(frame->raw_data[i]);
+            double sample = static_cast<double>(frame->data[i]);
             sum_squares += sample * sample;
-            double abs_sample = std::abs(static_cast<double>(sample));
+            double abs_sample = std::abs(sample);
             if (abs_sample > peak) peak = abs_sample;
         }
-        rms = std::sqrt(static_cast<double>(sum_squares) / total);
+        rms = std::sqrt(sum_squares / total);
     }
 
-    bool is_silent = (rms < 100.0);
+    bool is_silent = (rms < 0.001);
     if (is_silent) {
         silent_frame_count++;
     }
@@ -283,31 +301,19 @@ bool AudioEngine::enable_echo_cancellation(bool enable) {
 }
 
 std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
+    // 🔧 修复：恢复原来的简单逻辑，不在内部混音
+    // 混音应该在更上层处理，或者使用单独的混音器
+    return get_microphone_frame();
+}
+
+// 获取单独的麦克风帧（不经过混音）
+std::shared_ptr<AudioFrame> AudioEngine::get_microphone_frame() {
     std::shared_ptr<AudioFrame> frame = nullptr;
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         if (!frame_queue_.empty()) {
             frame = frame_queue_.front();
             frame_queue_.pop();
-        }
-    }
-
-    // 应用音量控制（在获取时再次应用，确保用户调整生效）
-    if (frame && frame->raw_data) {
-        float volume = get_microphone_volume();
-        bool muted = get_microphone_mute();
-
-        if (muted) {
-            std::memset(frame->raw_data, 0, frame->samples * frame->channels * sizeof(int16_t));
-        } else if (std::abs(volume - 1.0f) > 0.001f) {
-            int total = frame->samples * frame->channels;
-            for (int i = 0; i < total; ++i) {
-                int32_t sample = static_cast<int32_t>(frame->raw_data[i]);
-                sample = static_cast<int32_t>(sample * volume);
-                if (sample > 32767) sample = 32767;
-                if (sample < -32768) sample = -32768;
-                frame->raw_data[i] = static_cast<int16_t>(sample);
-            }
         }
     }
 
@@ -318,14 +324,13 @@ std::shared_ptr<AudioFrame> AudioEngine::get_audio_frame() {
 
     if (frame) {
         bool all_zero = true;
-        if (frame->raw_data) {
+        if (frame->data) {
             int total = frame->samples * frame->channels;
             for (int i = 0; i < total; ++i) {
-                if (frame->raw_data[i] != 0) { all_zero = false; break; }
+                if (frame->data[i] != 0.0f) { all_zero = false; break; }
             }
         }
 
-        // 每50帧打印一次
         if (get_frame_count % 50 == 0) {
             LOG_INFO("[AudioEngine] get_audio_frame: samples=" + std::to_string(frame->samples) +
                      ", channels=" + std::to_string(frame->channels) +
@@ -370,6 +375,33 @@ bool AudioEngine::set_microphone_mute(bool mute) {
 bool AudioEngine::get_microphone_mute() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return microphone_muted_;
+}
+
+bool AudioEngine::set_noise_suppression(bool enabled) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    noise_suppression_enabled_ = enabled;
+    LOG_INFO("[AudioEngine] Noise suppression " + std::string(enabled ? "enabled" : "disabled"));
+    return true;
+}
+
+bool AudioEngine::get_noise_suppression() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return noise_suppression_enabled_;
+}
+
+bool AudioEngine::set_noise_suppression_level(float level) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+    noise_suppression_level_ = level;
+    noise_gate_threshold_ = static_cast<int16_t>(noise_suppression_level_ * 2000);
+    LOG_INFO("[AudioEngine] Noise suppression level: " + std::to_string(noise_suppression_level_));
+    return true;
+}
+
+float AudioEngine::get_noise_suppression_level() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return noise_suppression_level_;
 }
 
 bool AudioEngine::set_speaker_volume(float volume) {
@@ -654,16 +686,16 @@ std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
     // 创建输出帧
     auto output = std::make_shared<AudioFrame>(out_sample_rate, out_channels, out_samples);
 
-    if (!output->raw_data) {
+    if (!output->data) {
         return nullptr;
     }
 
     // 初始化输出为0
-    std::memset(output->raw_data, 0, out_samples * out_channels * sizeof(int16_t));
+    std::fill_n(output->data, out_samples * out_channels, 0.0f);
 
     // 遍历所有源并混音
     for (const auto& frame : sources) {
-        if (!frame || !frame->raw_data) continue;
+        if (!frame || !frame->data) continue;
 
         // 确保参数匹配
         if (frame->sample_rate != out_sample_rate ||
@@ -678,14 +710,11 @@ std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
         // 可以根据源类型设置不同音量
 
         for (int i = 0; i < out_samples * out_channels; ++i) {
-            int32_t mixed = static_cast<int32_t>(output->raw_data[i]) +
-                           static_cast<int32_t>(frame->raw_data[i] * volume);
-
+            float mixed = output->data[i] + frame->data[i] * volume;
             // 限制在有效范围内
-            if (mixed > 32767) mixed = 32767;
-            if (mixed < -32768) mixed = -32768;
-
-            output->raw_data[i] = static_cast<int16_t>(mixed);
+            if (mixed > 1.0f) mixed = 1.0f;
+            if (mixed < -1.0f) mixed = -1.0f;
+            output->data[i] = mixed;
         }
     }
 
@@ -695,7 +724,7 @@ std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
 std::shared_ptr<AudioFrame> AudioEngine::getAudioFrameByType(AudioSourceType type) {
     switch (type) {
     case AudioSourceType::MICROPHONE:
-        return get_audio_frame();
+        return get_microphone_frame();
     case AudioSourceType::MEDIA: {
         // 从自定义回调获取媒体音频
         std::lock_guard<std::mutex> lock(custom_sources_mutex_);
@@ -757,10 +786,6 @@ QList<AudioSourceType> AudioEngine::getActiveSourcesByMode(AudioMixMode mode) {
 
 AudioFrame::AudioFrame(int sample_rate, int channels, int samples)
     : sample_rate(sample_rate), channels(channels), samples(samples) {
-    size_t raw_size = samples * channels * sizeof(int16_t);
-    raw_data = new (std::nothrow) int16_t[samples * channels];
-    if (raw_data) memset(raw_data, 0, raw_size);
-
     size_t float_size = samples * channels * sizeof(float);
     data = new (std::nothrow) float[samples * channels];
     if (data) memset(data, 0, float_size);
@@ -768,46 +793,24 @@ AudioFrame::AudioFrame(int sample_rate, int channels, int samples)
 
 AudioFrame::~AudioFrame() {
     delete[] data;
-    delete[] raw_data;
 }
 
 AudioFrame::AudioFrame(AudioFrame&& other) noexcept
-    : data(other.data), raw_data(other.raw_data), sample_rate(other.sample_rate),
+    : data(other.data), sample_rate(other.sample_rate),
       channels(other.channels), samples(other.samples) {
     other.data = nullptr;
-    other.raw_data = nullptr;
 }
 
 AudioFrame& AudioFrame::operator=(AudioFrame&& other) noexcept {
     if (this != &other) {
         delete[] data;
-        delete[] raw_data;
         data = other.data;
-        raw_data = other.raw_data;
         sample_rate = other.sample_rate;
         channels = other.channels;
         samples = other.samples;
         other.data = nullptr;
-        other.raw_data = nullptr;
     }
     return *this;
-}
-
-void AudioFrame::convert_raw_to_float() {
-    if (!raw_data || !data) return;
-    for (int i = 0; i < samples * channels; ++i) {
-        data[i] = static_cast<float>(raw_data[i]) / 32768.0f;
-    }
-}
-
-void AudioFrame::convert_float_to_raw() {
-    if (!data || !raw_data) return;
-    for (int i = 0; i < samples * channels; ++i) {
-        float scaled = data[i] * 32768.0f;
-        if (scaled > 32767.0f) scaled = 32767.0f;
-        if (scaled < -32768.0f) scaled = -32768.0f;
-        raw_data[i] = static_cast<int16_t>(scaled);
-    }
 }
 
 } // namespace live_assistant

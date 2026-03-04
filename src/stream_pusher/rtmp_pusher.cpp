@@ -9,6 +9,8 @@ extern "C" {
 #include <libavutil/error.h>
 }
 
+#include <cstdio>
+
 namespace live_assistant {
 
 RTMPPusher::RTMPPusher() {
@@ -36,7 +38,8 @@ ErrorCode RTMPPusher::initialize(const StreamConfig& config) {
 
     config_ = config;
     header_written_ = false;
-    
+    have_sent_first_key_ = false;  // 重置第一关键帧标志，确保新推流从第一帧开始正确处理
+
     ErrorCode result = init_format_context();
     if (result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to initialize format context");
@@ -138,6 +141,12 @@ ErrorCode RTMPPusher::open_output() {
     full_url = "D:/test.flv";
     // 正常推流时，请确保这一行被注释掉
 
+    // 对于本地文件测试，先删除已存在的文件以确保干净输出
+    // RTMP 推流时服务器会自动处理
+    if (full_url.find(".flv") != std::string::npos) {
+        std::remove(full_url.c_str());  // 删除已存在的文件
+    }
+
     int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -176,6 +185,7 @@ ErrorCode RTMPPusher::connect_and_write_header() {
     }
 
     header_written_ = true;
+    is_first_video_packet_ = true;
     LOG_INFO("Connected and wrote RTMP header");
     return ErrorCode::SUCCESS;
 }
@@ -222,6 +232,26 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     }
 
     AVPacket* avpkt = packet->pkt.get();
+
+    // 🔧 调试日志：打印每一帧的 PTS（音频和视频）
+    if (packet->type == MediaType::AUDIO) {
+        static int audio_frame_count = 0;
+        audio_frame_count++;
+        LOG_INFO("[DEBUG] AUDIO frame #" + std::to_string(audio_frame_count) + 
+                 ": pts=" + std::to_string(packet->pts) + "ms" +
+                 ", dts=" + std::to_string(packet->dts) + "ms" +
+                 ", duration=" + std::to_string(packet->duration) + "ms" +
+                 ", wallclock=" + std::to_string(packet->wallclock_us / 1000) + "ms");
+    } else {
+        static int video_frame_count = 0;
+        video_frame_count++;
+        LOG_INFO("[DEBUG] VIDEO frame #" + std::to_string(video_frame_count) + 
+                 ": pts=" + std::to_string(packet->pts) + "ms" +
+                 ", dts=" + std::to_string(packet->dts) + "ms" +
+                 ", duration=" + std::to_string(packet->duration) + "ms" +
+                 ", wallclock=" + std::to_string(packet->wallclock_us / 1000) + "ms" +
+                 ", is_keyframe=" + std::to_string(packet->is_keyframe ? 1 : 0));
+    }
 
     // 🔧 诊断第一帧 PTS 问题
     static int64_t first_audio_pts = -1;
@@ -329,14 +359,38 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             avpkt->flags |= AV_PKT_FLAG_KEY;
         }
 
-        // Ensure we don't send non-key video frames before the first keyframe (to avoid corrupted first frame)
-        // Only applies to VIDEO packets, not AUDIO packets
+        // 🔧 修复：确保第一帧视频是关键帧，但最多只等待100ms
+        // 这样可以避免视频延迟，同时确保第一帧质量
+        static auto first_video_wait_start = std::chrono::steady_clock::now();
+        static bool first_video_wait_initialized = false;
+
         if (packet->type == MediaType::VIDEO && !have_sent_first_key_) {
             if (!(avpkt->flags & AV_PKT_FLAG_KEY)) {
-                LOG_WARNING("RTMPPusher::send_packet - dropping initial non-key video packet to wait for first keyframe, size=" + std::to_string(avpkt->size));
-                return ErrorCode::SUCCESS; // drop silently
+                // 初始化等待计时器
+                if (!first_video_wait_initialized) {
+                    first_video_wait_start = std::chrono::steady_clock::now();
+                    first_video_wait_initialized = true;
+                }
+
+                // 计算已等待时间
+                auto elapsed = std::chrono::steady_clock::now() - first_video_wait_start;
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+                // 最多等待100ms，超过则接受非关键帧
+                if (elapsed_ms < 100) {
+                    LOG_WARNING("[RTMP] Dropping non-key video packet, waiting for keyframe (" +
+                               std::to_string(elapsed_ms) + "ms elapsed)");
+                    return ErrorCode::SUCCESS;
+                } else {
+                    LOG_WARNING("[RTMP] Timeout waiting for keyframe, accepting non-key frame after " +
+                               std::to_string(elapsed_ms) + "ms");
+                    have_sent_first_key_ = true;
+                    first_video_wait_initialized = false;
+                }
             } else {
+                LOG_INFO("[RTMP] First keyframe received, size=" + std::to_string(avpkt->size));
                 have_sent_first_key_ = true;
+                first_video_wait_initialized = false;
             }
         }
     }
@@ -360,6 +414,15 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         int64_t old_pts = avpkt->pts;
         av_packet_rescale_ts(avpkt, packet->encoder_time_base, st->time_base);
         LOG_DEBUG("[RTMP] After rescale: pts " + std::to_string(old_pts) + " -> " + std::to_string(avpkt->pts));
+    }
+
+    if (packet->type == MediaType::VIDEO && is_first_video_packet_) {
+        if (avpkt->pts > 0) {
+            LOG_INFO("[RTMP] Fixing first video PTS: " + std::to_string(avpkt->pts) + "ms -> 0ms");
+            avpkt->pts = 0;
+            avpkt->dts = 0;
+        }
+        is_first_video_packet_ = false;
     }
 
     // Note: Packet was already cloned at the beginning of this function
@@ -410,7 +473,13 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                 frag_pkt->size = nal_len + 4;
                 frag_pkt->stream_index = write_pkt->stream_index;
 
-                int ret = av_interleaved_write_frame(format_ctx_, frag_pkt);
+                // 根据配置选择写入模式
+                int ret;
+                if (config_.use_interleaved_write) {
+                    ret = av_interleaved_write_frame(format_ctx_, frag_pkt);
+                } else {
+                    ret = av_write_frame(format_ctx_, frag_pkt);
+                }
                 av_packet_free(&frag_pkt);
 
                 if (ret < 0) {
@@ -434,18 +503,43 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     // Send the original packet if not fragmented or fragmentation failed
     if (!fragmented) {
+        // 🔧 增强调试日志：打印音视频packet的完整时间戳信息
+        std::string media_type = (packet->type == MediaType::VIDEO) ? "VIDEO" : "AUDIO";
+        LOG_INFO("[RTMP] Before write: " + media_type +
+                 " pts=" + std::to_string(packet->pts) +
+                 ", dts=" + std::to_string(packet->dts) +
+                 ", duration=" + std::to_string(packet->duration) +
+                 ", encoder_tb=" + std::to_string(packet->encoder_time_base.num) + "/" + std::to_string(packet->encoder_time_base.den) +
+                 ", stream_tb=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den) +
+                 ", stream_index=" + std::to_string(write_pkt->stream_index));
+        
         LOG_DEBUG("[RTMP] Before write: pts=" + std::to_string(write_pkt->pts) +
                   ", dts=" + std::to_string(write_pkt->dts) +
                   ", size=" + std::to_string(write_pkt->size) +
                   ", duration=" + std::to_string(write_pkt->duration) +
                   ", stream_index=" + std::to_string(write_pkt->stream_index));
 
-        int ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+        // 根据配置选择写入模式
+        int ret;
+        if (config_.use_interleaved_write) {
+            ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+        } else {
+            ret = av_write_frame(format_ctx_, write_pkt);
+        }
 
         LOG_DEBUG("[RTMP] After write: ret=" + std::to_string(ret) +
                   ", pts=" + std::to_string(write_pkt->pts) +
                   ", dts=" + std::to_string(write_pkt->dts) +
-                  ", size=" + std::to_string(write_pkt->size));
+                  ", size=" + std::to_string(write_pkt->size) +
+                  ", mode=" + std::string(config_.use_interleaved_write ? "interleaved" : "direct"));
+        
+        // 🔧 增强调试日志：打印rescale后的时间戳
+        int64_t pts_in_ms = (write_pkt->pts != AV_NOPTS_VALUE && st->time_base.den > 0) 
+            ? (write_pkt->pts * 1000 * st->time_base.num / st->time_base.den) : -1;
+        LOG_INFO("[RTMP] After rescale: " + media_type +
+                 " pts=" + std::to_string(write_pkt->pts) +
+                 ", dts=" + std::to_string(write_pkt->dts) +
+                 ", pts_ms=" + std::to_string(pts_in_ms) + "ms");
 
         // Save size before potential free
         int packet_size = write_pkt->size;

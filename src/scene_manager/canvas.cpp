@@ -104,6 +104,10 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
             if (cameraSrc) {
                 QImage latest = cameraSrc->get_latest_frame();
                 if (!latest.isNull()) {
+                    // 应用镜像设置（勾选镜像时水平翻转）
+                    if (transform.mirror) {
+                        latest = latest.mirrored(true, false);
+                    }
                     // Scale to fill, cropping if necessary, then draw the center part.
                     QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
                     QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
@@ -969,8 +973,9 @@ void CanvasWidget::maximize_item_in_canvas(const std::shared_ptr<SceneItem>& ite
 
     maximized_source_id_ = src->get_id();
 
-    // Save item rect so we can restore
+    // Save complete transform (including mirror, rotation, opacity, etc.)
     auto old_t = item->get_transform();
+    saved_transform_ = old_t;
     saved_item_rect_ = QRectF(old_t.x, old_t.y, old_t.width, old_t.height);
 
     // Maximize inside canvas (not OS fullscreen)
@@ -979,6 +984,10 @@ void CanvasWidget::maximize_item_in_canvas(const std::shared_ptr<SceneItem>& ite
     nt.y = 0;
     nt.width = canvas_width_ > 0 ? canvas_width_ : width();
     nt.height = canvas_height_ > 0 ? canvas_height_ : height();
+    // Preserve rotation, opacity, and mirror from original transform
+    nt.rotation = old_t.rotation;
+    nt.opacity = old_t.opacity;
+    nt.mirror = old_t.mirror;
     item->set_transform(nt);
 
     // If this source is also a compositor layer (screen/window share), stretch that layer too.
@@ -998,18 +1007,13 @@ void CanvasWidget::maximize_item_in_canvas(const std::shared_ptr<SceneItem>& ite
 void CanvasWidget::restore_item_from_maximize() {
     if (!is_maximized_) return;
 
-    // Restore previous transform
+    // Restore complete transform (including mirror, rotation, opacity, etc.)
     if (current_scene_) {
         for (auto &si : current_scene_->get_all_scene_items()) {
             auto src = si ? si->get_source() : nullptr;
             if (!src) continue;
             if (src->get_id() == maximized_source_id_) {
-                Transform t = si->get_transform();
-                t.x = static_cast<int>(saved_item_rect_.x());
-                t.y = static_cast<int>(saved_item_rect_.y());
-                t.width = static_cast<int>(saved_item_rect_.width());
-                t.height = static_cast<int>(saved_item_rect_.height());
-                si->set_transform(t);
+                si->set_transform(saved_transform_);
                 break;
             }
         }
@@ -1017,7 +1021,7 @@ void CanvasWidget::restore_item_from_maximize() {
 
     // Restore compositor layer transform best-effort (we don't have getters)
     if (compositor_ && !maximized_source_id_.empty()) {
-        compositor_->update_layer_transform(maximized_source_id_, QRectF(saved_item_rect_.x(), saved_item_rect_.y(), saved_item_rect_.width(), saved_item_rect_.height()));
+        compositor_->update_layer_transform(maximized_source_id_, QRectF(saved_transform_.x, saved_transform_.y, saved_transform_.width, saved_transform_.height));
     }
 
     maximized_source_id_.clear();

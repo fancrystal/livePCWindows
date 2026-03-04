@@ -51,9 +51,16 @@ void CompositorEncoderBridge::set_compositor(std::shared_ptr<Compositor> composi
 }
 
 void CompositorEncoderBridge::set_encoder(std::shared_ptr<Encoder> encoder) {
+    if (encoder_ && encoder_->get_audio_encoder()) {
+        auto* old_audio_encoder = dynamic_cast<AACEncoder*>(encoder_->get_audio_encoder());
+        if (old_audio_encoder) {
+            disconnect(old_audio_encoder, &AACEncoder::audio_encoded,
+                       this, &CompositorEncoderBridge::on_audio_encoded);
+        }
+    }
+
     encoder_ = encoder;
 
-    // 连接音频编码器的信号到处理函数（使用新的简单架构）
     if (encoder_ && encoder_->get_audio_encoder()) {
         auto* audio_encoder = dynamic_cast<AACEncoder*>(encoder_->get_audio_encoder());
         if (audio_encoder) {
@@ -74,9 +81,13 @@ void CompositorEncoderBridge::set_stream_pusher(std::shared_ptr<StreamPusher> st
 }
 
 void CompositorEncoderBridge::set_audio_engine(std::shared_ptr<AudioEngine> audio_engine) {
+    if (audio_engine_) {
+        disconnect(audio_engine_.get(), &AudioEngine::audio_data_ready,
+                   this, &CompositorEncoderBridge::on_audio_data_ready);
+    }
+
     audio_engine_ = audio_engine;
 
-    // 连接音频引擎的信号到编码器（使用新的简单架构）
     if (audio_engine_) {
         connect(audio_engine_.get(), &AudioEngine::audio_data_ready,
                 this, &CompositorEncoderBridge::on_audio_data_ready);
@@ -104,13 +115,18 @@ void CompositorEncoderBridge::start(int fps) {
 
     fps_ = fps;
     running_ = true;
+    video_frame_count_ = 0;
+
+    media_clock_.start();
 
     initialize_opengl_context();
 
     int interval = 1000 / fps_;
     encode_timer_->start(interval);
 
-    LOG_INFO("CompositorEncoderBridge started with " + std::to_string(fps) + " fps");
+    start_encoder_threads();
+
+    LOG_INFO("CompositorEncoderBridge started with " + std::to_string(fps) + " fps, media_clock started");
 }
 
 void CompositorEncoderBridge::stop() {
@@ -120,6 +136,10 @@ void CompositorEncoderBridge::stop() {
 
     running_ = false;
     encode_timer_->stop();
+
+    stop_encoder_threads();
+
+    media_clock_.stop();
 
     LOG_INFO("CompositorEncoderBridge stopped");
 }
@@ -217,51 +237,46 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
         }
     }
 
-    // CRITICAL: Stop encoding FIRST to drain codec buffers before reset
     running_ = false;
     encode_timer_->stop();
 
-    // Give encoder thread time to finish processing
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    // Now reset encoder to ensure PTS starts from 0
     if (encoder_) {
         encoder_->reset_audio_encoder();
+        // 注意：不在这里重置视频编码器，因为 reset() 可能导致编码器状态异常
+        // 视频编码器应该在停止推流时清理，而不是在开始时重置
     }
 
-    // Clear queue of any remaining packets
     if (stream_pusher_) {
         stream_pusher_->clear_queue();
     }
 
-    // CRITICAL: Start media clock FIRST before connecting
-    // This ensures all new frames get correct timestamps starting from 0
+    {
+        std::lock_guard<std::mutex> lock(encode_queue_mutex_);
+        int cleared_frames = static_cast<int>(pre_encode_queue_.size());
+        pre_encode_queue_.clear();
+        if (cleared_frames > 0) {
+            LOG_INFO("[BRIDGE] Cleared " + std::to_string(cleared_frames) + " frames from encode queue");
+        }
+    }
+
+    video_frame_count_ = 0;
+
     media_clock_.start();
+    LOG_INFO("[BRIDGE] Media clock started");
 
-    // 🔧 记录音视频同步基准时间戳
-    // 音频引擎可能已经运行了一段时间，它的第一个包可能带有旧的时间戳
-    // 我们需要记录这个基准，然后在音频编码时转换为相对时间戳
-    audio_timestamp_base_ = 0;  // 强制使用 media_clock 相对时间戳
-
-    // Log that media clock has started (for debugging)
-    LOG_INFO("[BRIDGE] Media clock started at: " + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
-
-    // ✅ 修复：先连接 RTMP，再启动编码
-    // stream_pusher_->start() 会阻塞直到 RTMP 连接成功（可能耗时 40 秒）
-    // 如果在这之前启动编码，视频会积累大量帧，导致时间戳不同步
     ErrorCode start_result = stream_pusher_->start();
     if (start_result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to start streaming to: " + url);
         emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(start_result)));
-        media_clock_.stop();  // 清理：停止时钟
+        media_clock_.stop();
         return false;
     }
 
-    // RTMP 连接成功后，再启动编码定时器
     running_ = true;
     encode_timer_->start(1000 / fps_);
 
-    // Log that encoding has restarted (for debugging)
     LOG_INFO("[BRIDGE] Encoding restarted, media_clock: " + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
 
     streaming_ = true;
@@ -277,6 +292,11 @@ void CompositorEncoderBridge::stop_streaming() {
     if (!streaming_) {
         return;
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🔧 停止编码线程池
+    // ═══════════════════════════════════════════════════════════════
+    stop_encoder_threads();
 
     if (stream_pusher_) {
         stream_pusher_->stop();
@@ -354,52 +374,41 @@ void CompositorEncoderBridge::on_encode_timer() {
         }
     }
 
-    encode_and_push_frame();
+    // ═══════════════════════════════════════════════════════════════
+    // 🔧 异步编码架构：只捕获帧，加入编码队列
+    // 编码在独立线程中进行，不阻塞定时器
+    // ═══════════════════════════════════════════════════════════════
+    capture_and_queue_frame();
 }
 
-void CompositorEncoderBridge::encode_and_push_frame() {
+void CompositorEncoderBridge::capture_and_queue_frame() {
     try {
-        // 获取从推流开始算起的相对时间戳
-        auto current_timestamp_us = media_clock_.get_elapsed_time_us();
-        auto current_timestamp_ms = current_timestamp_us / 1000;
-
-        // 🔧 诊断视频帧时间戳
-        static int64_t first_video_timestamp = -1;
-        static int frame_count = 0;
-        frame_count++;
-        if (first_video_timestamp == -1) {
-            first_video_timestamp = current_timestamp_ms;
-            LOG_INFO("[BRIDGE] First VIDEO frame: timestamp=" + std::to_string(current_timestamp_ms) + 
-                     "ms, media_clock=" + std::to_string(current_timestamp_ms) + "ms");
-        } else if (frame_count <= 5) {
-            LOG_INFO("[BRIDGE] Video frame #" + std::to_string(frame_count) + 
-                     ": timestamp=" + std::to_string(current_timestamp_ms) + "ms" +
-                     ", delta=" + std::to_string(current_timestamp_ms - first_video_timestamp) + "ms");
+        int64_t frame_duration_ms = 1000 / fps_;
+        
+        video_frame_count_++;
+        
+        auto current_pts_ms = media_clock_.get_elapsed_time_us() / 1000;
+        
+        if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
+            LOG_INFO("[BRIDGE] Video frame #" + std::to_string(video_frame_count_) + 
+                     ": pts=" + std::to_string(current_pts_ms) + "ms");
         }
 
-        // 编码视频帧
         auto video_frame = capture_compositor_frame();
         if (video_frame) {
-            video_frame->timestamp = MediaTimestamp(current_timestamp_us);
-            video_frame->timestamp_ms = current_timestamp_ms;
+            video_frame->timestamp_ms = current_pts_ms;
 
-            std::vector<EncodedPacketPtr> video_packets;
-            ErrorCode video_result = encoder_->encode_video_frame(video_frame, video_packets);
-
-            if (video_result == ErrorCode::SUCCESS && !video_packets.empty() && stream_pusher_ && stream_pusher_->is_pushing()) {
-                for (auto& p : video_packets) {
-                    if (!p) continue;
-                    p->wallclock_us = current_timestamp_us;
-                    stream_pusher_->push_packet(p);
-                }
-            }
+            PreEncodeVideoFrame pre_frame;
+            pre_frame.frame = video_frame;
+            pre_frame.pts_ms = current_pts_ms;
+            pre_frame.wallclock_us = current_pts_ms * 1000;
+            pre_frame.frame_count = video_frame_count_;
+            
+            push_to_encode_queue(pre_frame);
         }
 
-        // 音频处理：现在由信号驱动架构处理（audio_engine → audio_data_ready → AACEncoder → audio_encoded → on_audio_encoded）
-        // 这里不需要重复编码音频
-
     } catch (const std::exception& ex) {
-        LOG_ERROR("[BRIDGE] Exception in encode_and_push_frame: " + std::string(ex.what()));
+        LOG_ERROR("[BRIDGE] Exception in capture_and_queue_frame: " + std::string(ex.what()));
     }
 }
 
@@ -505,13 +514,12 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
     auto current_timestamp_us = media_clock_.get_elapsed_time_us();
     auto current_timestamp_ms = current_timestamp_us / 1000;
 
-    // 🔧 诊断：验证时间戳合理性
     static int audio_frame_count = 0;
     audio_frame_count++;
     if (audio_frame_count <= 3) {
         LOG_INFO("[BRIDGE] on_audio_data_ready #" + std::to_string(audio_frame_count) + 
                  ": media_clock_ms=" + std::to_string(current_timestamp_ms) +
-                 ", raw_timestamp=" + std::to_string(timestamp));
+                 ", data.size=" + std::to_string(data.size()));
     }
 
     auto* audio_encoder = dynamic_cast<AACEncoder*>(encoder_->get_audio_encoder());
@@ -519,7 +527,6 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
         return;
     }
 
-    // 传递相对时间戳给编码器（基于 media_clock）
     audio_encoder->encode_audio_data(data, current_timestamp_ms);
 }
 
@@ -531,34 +538,34 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
 
     // 🔇 过滤静音帧和异常帧
     // 6字节AAC帧是已知异常帧，会导致杂音
-    if (size == 6) {
-        static int silent_6byte_count = 0;
-        if (++silent_6byte_count <= 3) {
-            LOG_DEBUG("[BRIDGE] Filtered 6-byte abnormal AAC frame");
-        }
-        return;
-    }
+    // if (size == 6) {
+    //     static int silent_6byte_count = 0;
+    //     if (++silent_6byte_count <= 3) {
+    //         LOG_DEBUG("[BRIDGE] Filtered 6-byte abnormal AAC frame");
+    //     }
+    //     return;
+    // }
 
     // 🔇 检测静音帧：检查前64字节，如果90%以上都是静音则过滤
-    if (size > 32) {
-        int check_bytes = std::min(size, 64);
-        int near_zero_count = 0;
-        for (int i = 0; i < check_bytes; i++) {
-            // 检查是否为0或接近0（绝对值小于5）
-            if (data[i] == 0 || (data[i] > 0 && data[i] < 5) || (data[i] < 0 && data[i] > -5)) {
-                near_zero_count++;
-            }
-        }
-        int silence_percent = (near_zero_count * 100) / check_bytes;
-        if (silence_percent > 90) {
-            static int silent_frame_count = 0;
-            if (++silent_frame_count <= 5) {
-                LOG_DEBUG("[BRIDGE] Filtered silent frame: " + std::to_string(silence_percent) +
-                         "% silent, size=" + std::to_string(size));
-            }
-            return;
-        }
-    }
+    // if (size > 32) {
+    //     int check_bytes = (size < 64) ? size : 64;
+    //     int near_zero_count = 0;
+    //     for (int i = 0; i < check_bytes; i++) {
+    //         // 检查是否为0或接近0（小于5）
+    //         if (data[i] == 0 || data[i] < 5) {
+    //             near_zero_count++;
+    //         }
+    //     }
+    //     int silence_percent = (near_zero_count * 100) / check_bytes;
+    //     if (silence_percent > 90) {
+    //         static int silent_frame_count = 0;
+    //         if (++silent_frame_count <= 5) {
+    //             LOG_DEBUG("[BRIDGE] Filtered silent frame: " + std::to_string(silence_percent) +
+    //                      "% silent, size=" + std::to_string(size));
+    //         }
+    //         return;
+    //     }
+    // }
 
     // 🔧 诊断音频包
     static int64_t first_audio_pts = -1;
@@ -578,15 +585,13 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     if (first_audio_pts == -1) {
         first_audio_pts = adjusted_timestamp;
         LOG_INFO("[BRIDGE] First AUDIO packet: pts=" + std::to_string(adjusted_timestamp) +
-                 " (samples), size=" + std::to_string(size) +
+                 "ms, size=" + std::to_string(size) +
                  ", media_clock=" + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
     } else if (audio_count <= 5) {
-        int64_t delta_samples = adjusted_timestamp - first_audio_pts;
-        auto audio_sample_rate = encoder_->get_audio_config().sample_rate;
-        double delta_ms = (delta_samples * 1000.0) / audio_sample_rate;
+        int64_t delta_ms = adjusted_timestamp - first_audio_pts;
         LOG_INFO("[BRIDGE] Audio packet #" + std::to_string(audio_count) +
                  ": pts=" + std::to_string(adjusted_timestamp) +
-                 ", delta=" + std::to_string(delta_ms) + "ms" +
+                 "ms, delta=" + std::to_string(delta_ms) + "ms" +
                  ", media_clock=" + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
     }
 
@@ -608,23 +613,157 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     // ✅ 使用修正后的时间戳（确保音视频同步且避免负数）
     pkt->pts = adjusted_timestamp;
     pkt->dts = adjusted_timestamp;
-    pkt->duration = 1024;  // ✅ AAC 帧大小（采样数）
-
-    // 获取音频采样率用于设置 time_base
-    auto audio_sample_rate = encoder_->get_audio_config().sample_rate;
+    // ✅ AAC 帧 duration：1024采样 @ 48kHz ≈ 21.33ms
+    pkt->duration = (1024 * 1000) / 48000;
 
     // 创建编码数据包
     auto packet = std::make_shared<EncodedPacket>();
     packet->type = MediaType::AUDIO;
     packet->pts = adjusted_timestamp;  // ✅ 使用修正后的时间戳（避免负数）
     packet->dts = adjusted_timestamp;
-    packet->duration = 1024;  // ✅ AAC 帧大小（采样数）
+    // ✅ AAC 帧 duration：1024采样 @ 48kHz ≈ 21.33ms
+    packet->duration = (1024 * 1000) / 48000;
     packet->pkt = AVPacketPtr(pkt);
-    packet->encoder_time_base = {1, audio_sample_rate};
+    // ✅ 使用毫秒作为 time_base，与 FLV 容器一致
+    packet->encoder_time_base = {1, 1000};
     packet->wallclock_us = media_clock_.get_elapsed_time_us();  // 仅用于调试
 
     // 推送到流
     stream_pusher_->push_packet(packet);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 🔧 异步编码架构：编码线程池实现
+// ═══════════════════════════════════════════════════════════════════════
+
+void CompositorEncoderBridge::start_encoder_threads() {
+    if (encoder_threads_running_.load()) {
+        LOG_WARNING("[BRIDGE] Encoder threads already running");
+        return;
+    }
+    
+    encoder_threads_running_.store(true);
+    
+    // 启动最多 MAX_ENCODER_THREADS 个编码线程
+    int thread_count = MAX_ENCODER_THREADS;
+    encoder_threads_.reserve(thread_count);
+    
+    for (int i = 0; i < thread_count; i++) {
+        encoder_threads_.emplace_back(&CompositorEncoderBridge::encoder_thread_func, this, i);
+        LOG_INFO("[BRIDGE] Started encoder thread #" + std::to_string(i));
+    }
+    
+    LOG_INFO("[BRIDGE] Encoder thread pool started with " + std::to_string(thread_count) + " threads");
+}
+
+void CompositorEncoderBridge::stop_encoder_threads() {
+    if (!encoder_threads_running_.load()) {
+        return;
+    }
+    
+    encoder_threads_running_.store(false);
+    
+    // 唤醒所有等待中的编码线程
+    encode_queue_cv_.notify_all();
+    
+    // 等待所有编码线程退出
+    for (auto& thread : encoder_threads_) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    
+    encoder_threads_.clear();
+    
+    // 清空编码队列
+    {
+        std::lock_guard<std::mutex> lock(encode_queue_mutex_);
+        pre_encode_queue_.clear();
+    }
+    
+    LOG_INFO("[BRIDGE] Encoder thread pool stopped");
+}
+
+void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
+    LOG_INFO("[BRIDGE] Encoder thread #" + std::to_string(thread_id) + " started");
+    
+    while (encoder_threads_running_.load()) {
+        PreEncodeVideoFrame pre_frame;
+        
+        // 从队列取帧（阻塞等待）
+        if (!pop_from_encode_queue(pre_frame)) {
+            // 队列为空或线程已停止
+            continue;
+        }
+        
+        // 检查帧是否有效
+        if (!pre_frame.frame) {
+            continue;
+        }
+        
+        try {
+            // 编码视频帧
+            std::vector<EncodedPacketPtr> video_packets;
+            ErrorCode video_result = encoder_->encode_video_frame(pre_frame.frame, video_packets);
+            
+            // 编码完成后，推送编码后的包
+            if (video_result == ErrorCode::SUCCESS && !video_packets.empty() && 
+                stream_pusher_ && stream_pusher_->is_pushing()) {
+                
+                for (auto& p : video_packets) {
+                    if (!p) continue;
+                    p->wallclock_us = pre_frame.wallclock_us;
+                    stream_pusher_->push_packet(p);
+                }
+                
+                LOG_INFO("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Encoded frame #" + 
+                         std::to_string(pre_frame.frame_count) + 
+                         ": pts=" + std::to_string(pre_frame.pts_ms) + "ms, packets=" + 
+                         std::to_string(video_packets.size()));
+            }
+        } catch (const std::exception& ex) {
+            LOG_ERROR("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Exception: " + std::string(ex.what()));
+        }
+    }
+    
+    LOG_INFO("[BRIDGE] Encoder thread #" + std::to_string(thread_id) + " stopped");
+}
+
+void CompositorEncoderBridge::push_to_encode_queue(const PreEncodeVideoFrame& frame) {
+    std::lock_guard<std::mutex> lock(encode_queue_mutex_);
+    
+    // 如果队列满了，丢弃最旧的帧
+    if (pre_encode_queue_.size() >= MAX_ENCODE_QUEUE_SIZE) {
+        pre_encode_queue_.pop_front();
+        LOG_WARNING("[BRIDGE] Encode queue full, dropping oldest frame");
+    }
+    
+    pre_encode_queue_.push_back(frame);
+    encode_queue_cv_.notify_one();
+}
+
+bool CompositorEncoderBridge::pop_from_encode_queue(PreEncodeVideoFrame& frame) {
+    std::unique_lock<std::mutex> lock(encode_queue_mutex_);
+    
+    // 等待队列有数据或线程停止
+    encode_queue_cv_.wait(lock, [this] {
+        return !pre_encode_queue_.empty() || !encoder_threads_running_.load();
+    });
+    
+    // 如果线程已停止，返回 false
+    if (!encoder_threads_running_.load()) {
+        return false;
+    }
+    
+    // 取帧
+    if (pre_encode_queue_.empty()) {
+        return false;
+    }
+    
+    frame = pre_encode_queue_.front();
+    pre_encode_queue_.pop_front();
+    
+    return true;
 }
 
 } // namespace live_assistant

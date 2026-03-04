@@ -6,8 +6,8 @@
 namespace live_assistant {
 
 // Transform实现
-Transform::Transform(int x, int y, int width, int height, float rotation, float opacity)
-    : x(x), y(y), width(width), height(height), rotation(rotation), opacity(opacity) {
+Transform::Transform(int x, int y, int width, int height, float rotation, float opacity, bool mirror)
+    : x(x), y(y), width(width), height(height), rotation(rotation), opacity(opacity), mirror(mirror) {
 }
 
 

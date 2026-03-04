@@ -844,7 +844,7 @@ std::shared_ptr<AudioFrame> MediaFileSource::convertToAudioFrame(AVFrame* frame)
 
     auto audioFrame = std::make_shared<AudioFrame>(target_sample_rate_, target_channels_, outSamples);
 
-    uint8_t* outData = reinterpret_cast<uint8_t*>(audioFrame->raw_data);
+    uint8_t* outData = reinterpret_cast<uint8_t*>(audioFrame->data);
     int ret = swr_convert(swr_ctx_, &outData, outSamples,
         (const uint8_t**)frame->data, frame->nb_samples);
 

@@ -140,37 +140,66 @@ PushQueue::Stats PushQueue::get_stats() const {
 }
 
 void PushQueue::discard_low_priority() {
+    // 🔧 增强版丢弃策略：
+    // 1. 音频：永远保留
+    // 2. 视频：保留最新 I 帧及其后续所有帧，丢弃旧 GOP
+    
     std::priority_queue<EncodedPacketPtr, std::vector<EncodedPacketPtr>, PacketComparator> temp_queue;
     
+    // 找到队列中最新关键帧的 PTS（需要转换为微秒统一比较）
+    int64_t newest_keyframe_pts_us = AV_NOPTS_VALUE;
+    
+    // 第一遍：找出最新关键帧的 PTS
+    std::vector<EncodedPacketPtr> all_packets;
     while (!queue_.empty()) {
         auto packet = queue_.top();
         queue_.pop();
-
+        
+        if (packet && packet->type == MediaType::VIDEO && packet->is_keyframe) {
+            int64_t pts_us = av_rescale_q(packet->pts, packet->encoder_time_base, AVRational{1, 1000000});
+            if (newest_keyframe_pts_us == AV_NOPTS_VALUE || pts_us > newest_keyframe_pts_us) {
+                newest_keyframe_pts_us = pts_us;
+            }
+        }
+        all_packets.push_back(std::move(packet));
+    }
+    
+    // 第二遍：根据策略决定保留或丢弃
+    for (auto& packet : all_packets) {
         if (!packet) {
             continue;
         }
         
-        // Always keep audio packets
+        // 1. 音频：永远保留
         if (packet->type == MediaType::AUDIO) {
             temp_queue.push(std::move(packet));
             continue;
         }
         
-        // Always keep keyframes
+        // 2. 视频：检查是否应该保留
+        int64_t pts_us = av_rescale_q(packet->pts, packet->encoder_time_base, AVRational{1, 1000000});
+        
+        // 2.1 关键帧：永远保留
         if (packet->is_keyframe) {
             temp_queue.push(std::move(packet));
             continue;
         }
         
-        if (temp_queue.size() < max_size_ / 2) {
-            temp_queue.push(std::move(packet));
-        } else {
-            discarded_packets_++;
-            if (packet->type == MediaType::AUDIO) {
-                audio_packets_--;
+        // 2.2 非关键帧：只保留"最新 I 帧之后"的帧
+        // 如果没有找到 I 帧，则保留所有非关键帧（避免刚开始推流时丢帧）
+        if (newest_keyframe_pts_us == AV_NOPTS_VALUE || pts_us >= newest_keyframe_pts_us) {
+            // 在最新关键帧之后，保留
+            if (temp_queue.size() < max_size_) {
+                temp_queue.push(std::move(packet));
             } else {
+                // 队列真的满了，统计丢弃
+                discarded_packets_++;
                 video_packets_--;
             }
+        } else {
+            // 旧 GOP（比最新 I 帧还老），丢弃
+            discarded_packets_++;
+            video_packets_--;
         }
     }
     

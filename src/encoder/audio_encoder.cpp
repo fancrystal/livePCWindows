@@ -15,7 +15,7 @@ extern "C" {
 namespace live_assistant {
 
 // ---- AACEncoder ----
-AACEncoder::AACEncoder() {
+AACEncoder::AACEncoder() : output_frame_count_(0), frame_duration_ms_(21), frame_offset_in_batch_(0), frame_samples_(1024) {
     LOG_INFO("AACEncoder constructor");
 }
 
@@ -55,27 +55,36 @@ AVCodecParameters* AACEncoder::get_codec_parameters() const {
 }
 
 AVRational AACEncoder::get_time_base() const {
-    // ✅ 返回与 codec_ctx_->time_base 一致的值
-    // AAC 编码器使用采样数作为时间单位
-    return AVRational{1, config_.sample_rate};
+    // ✅ FLV 容器使用毫秒作为 time_base (1/1000)
+    // 为了避免转换错误，直接使用毫秒作为编码器时间基
+    // PTS 单位是毫秒，duration 也是毫秒（每帧 1024采样 @ 48kHz ≈ 21.33ms）
+    return AVRational{1, 1000};
 }
 
 ErrorCode AACEncoder::ensure_swr() {
+    std::lock_guard<std::mutex> lock(encoder_mutex_);
+
     if (swr_) {
         return ErrorCode::SUCCESS;
     }
 
-    // 输入格式为 S16（与原项目一致）
+    // 输入格式：AudioFrame 使用交错格式 float
+    // 注意：注释说 AudioFrame 是交错格式 (LRLRLR)，所以应该用 FLT 而不是 FLTP
     AVChannelLayout in_layout = make_channel_layout(config_.channels);
     AVChannelLayout out_layout = codec_ctx_->ch_layout;
+
+    // 🔧 诊断：打印采样率配置
+    LOG_INFO("[AACEncoder] ensure_swr: input_sample_rate=" + std::to_string(config_.sample_rate) +
+             ", output_sample_rate=" + std::to_string(codec_ctx_->sample_rate) +
+             ", channels=" + std::to_string(config_.channels));
 
     if (swr_alloc_set_opts2(
             &swr_,
             &out_layout,
-            AV_SAMPLE_FMT_FLTP,  // AAC需要 FLTP 格式
+            AV_SAMPLE_FMT_FLTP,  // AAC需要 FLTP 格式 (输出)
             codec_ctx_->sample_rate,
             &in_layout,
-            AV_SAMPLE_FMT_S16,   // 输入为 S16 格式
+            AV_SAMPLE_FMT_FLTP,   // 输入也是 FLTP（我们在 convert_input_data 中已转为平面格式）
             config_.sample_rate,
             0,
             nullptr) < 0) {
@@ -87,9 +96,12 @@ ErrorCode AACEncoder::ensure_swr() {
         if (swr_) {
             swr_free(&swr_);
         }
+        swr_ = nullptr;
         LOG_ERROR("Failed to init swr");
         return ErrorCode::INIT_FAILED;
     }
+
+    LOG_INFO("[AACEncoder] Swr initialized successfully, swr_=" + std::to_string(reinterpret_cast<uint64_t>(swr_)));
 
     return ErrorCode::SUCCESS;
 }
@@ -116,10 +128,15 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     codec_ctx_->codec_id = AV_CODEC_ID_AAC;
     codec_ctx_->bit_rate = config_.bitrate;
     codec_ctx_->sample_rate = config_.sample_rate;
-    codec_ctx_->time_base = AVRational{1, config_.sample_rate};
+    // ✅ 设置 codec_ctx_->time_base 为毫秒，与 FLV 容器一致
+    // 这样 avcodec_send_frame 时使用的 PTS 单位就是毫秒
+    codec_ctx_->time_base = AVRational{1, 1000};
 
     codec_ctx_->ch_layout = make_channel_layout(config_.channels);
     codec_ctx_->sample_fmt = AV_SAMPLE_FMT_FLTP;  // AAC编码必须使用 FLTP
+
+    // 🔧 诊断：打印 frame_size
+    LOG_INFO("[AACEncoder] codec_ctx_->frame_size before open: " + std::to_string(codec_ctx_->frame_size));
 
     codec_ctx_->profile = FF_PROFILE_AAC_LOW;
 
@@ -140,6 +157,9 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     }
     av_dict_free(&opts);
 
+    // 🔧 诊断：打印 frame_size 在打开编码器之后
+    LOG_INFO("[AACEncoder] codec_ctx_->frame_size after open: " + std::to_string(codec_ctx_->frame_size));
+
     frame_ = av_frame_alloc();
     if (!frame_) {
         LOG_ERROR("Failed to alloc audio frame");
@@ -156,6 +176,15 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
         return ErrorCode::INIT_FAILED;
     }
 
+    // 🔧 验证 frame 缓冲区是否正确分配
+    if (!frame_->data[0]) {
+        LOG_ERROR("Frame buffer allocation failed - data[0] is null");
+        return ErrorCode::INIT_FAILED;
+    }
+
+    LOG_INFO("[AACEncoder] Frame buffer allocated: nb_samples=" + std::to_string(frame_->nb_samples) +
+             ", data[0]=" + std::to_string(reinterpret_cast<uint64_t>(frame_->data[0])));
+
     packet_ = av_packet_alloc();
     if (!packet_) {
         LOG_ERROR("Failed to alloc audio packet");
@@ -166,6 +195,15 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     if (swr_ret != ErrorCode::SUCCESS) {
         return swr_ret;
     }
+
+    // 🔧 初始化帧持续时间（毫秒）
+    // 每帧 1024 采样 @ 48kHz ≈ 21.33ms
+    frame_samples_ = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 1024;
+    frame_duration_ms_ = frame_samples_ * 1000 / codec_ctx_->sample_rate;
+    LOG_INFO("  - frame_duration_ms: " + std::to_string(frame_duration_ms_));
+
+    // 🔧 重置输出帧计数器
+    output_frame_count_ = 0;
 
     // Log detailed codec configuration
     LOG_INFO("[AACEncoder] Initialized successfully:");
@@ -182,6 +220,9 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
 }
 
 ErrorCode AACEncoder::shutdown() {
+    // 🔧 线程安全：获取互斥锁，确保没有其他线程正在使用 swr_
+    std::lock_guard<std::mutex> lock(encoder_mutex_);
+
     initialized_ = false;
 
     if (packet_) {
@@ -207,6 +248,7 @@ ErrorCode AACEncoder::shutdown() {
     codec_ = nullptr;
     last_audio_timestamp_ = -1;
     input_buffer_.clear();
+    output_frame_count_ = 0;
 
     return ErrorCode::SUCCESS;
 }
@@ -215,6 +257,32 @@ ErrorCode AACEncoder::shutdown() {
 void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     if (!initialized_ || data.isEmpty()) {
         return;
+    }
+
+    // 🔧 线程安全：获取互斥锁，保护 swr_ 和 codec_ctx_ 的访问
+    std::lock_guard<std::mutex> lock(encoder_mutex_);
+
+    // 🔧 诊断：检查输入音频数据的实际值
+    static int data_diag_count = 0;
+    data_diag_count++;
+    if (data_diag_count <= 3) {
+        const float* float_data = reinterpret_cast<const float*>(data.constData());
+        int check_samples = std::min((int)data.size() / (int)sizeof(float), 10);
+        float first_val = float_data[0];
+        float second_val = check_samples > 1 ? float_data[1] : 0;
+        float fifth_val = check_samples > 4 ? float_data[4] : 0;
+        // 计算 RMS
+        double sum_squares = 0;
+        for (int i = 0; i < check_samples; i++) {
+            sum_squares += float_data[i] * float_data[i];
+        }
+        double rms = std::sqrt(sum_squares / check_samples);
+        LOG_INFO("[AACEncoder] Input data #" + std::to_string(data_diag_count) +
+                 ": size=" + std::to_string(data.size()) +
+                 ", first=" + std::to_string(first_val) +
+                 ", second=" + std::to_string(second_val) +
+                 ", fifth=" + std::to_string(fifth_val) +
+                 ", RMS=" + std::to_string(rms));
     }
 
     static int64_t first_timestamp = -1;
@@ -240,7 +308,7 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
             LOG_WARNING("[AACEncoder] Large timestamp regression: " +
                         std::to_string(regression) + "ms, clearing buffer");
             input_buffer_.clear();
-            first_frame_timestamp_ms_ = -1;  // 重置基准
+            output_frame_count_ = 0;  // 🔧 重置帧计数
         }
         // 小幅度回绕忽略，继续处理
     }
@@ -255,18 +323,37 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     // 添加数据到输入缓冲区
     input_buffer_.append(data.constData(), data.size());
 
-    // 防止缓冲区无限增长 - 限制最大5秒的音频数据
-    size_t max_buffer_size = config_.sample_rate * sizeof(int16_t) * config_.channels * 5;
+    // 防止缓冲区无限增长 - 限制最大3秒的音频数据，丢弃最旧的数据而不是全部清空
+    size_t max_buffer_size = config_.sample_rate * sizeof(float) * config_.channels * 3;
     if (input_buffer_.size() > static_cast<int>(max_buffer_size)) {
-        LOG_WARNING("[AACEncoder] Input buffer too large (" + std::to_string(input_buffer_.size()) +
-                   " bytes), clearing to prevent memory growth");
-        input_buffer_.clear();
-        first_frame_timestamp_ms_ = -1;
+        // 计算需要丢弃多少字节（超过3秒的部分）
+        size_t target_size = max_buffer_size;
+        size_t discard_size = input_buffer_.size() - target_size;
+        
+        // 丢弃最旧的数据（头部），保留最新的数据
+        input_buffer_.remove(0, discard_size);
+        
+        LOG_WARNING("[AACEncoder] Buffer overflow: discarded " + std::to_string(discard_size) + 
+                   " bytes of old audio, kept " + std::to_string(target_size) + " bytes");
+        
+        // ❌ 不要重置 output_frame_count_，PTS 应该继续累加
+        // 如果重置会导致音频 PTS 突然跳回 0，造成音视频不同步
     }
 
-    // 确保使用正确的输入格式（S16格式）
-    int input_bytes_per_sample = sizeof(int16_t);
-    int bytes_per_frame = codec_ctx_->frame_size * input_bytes_per_sample * config_.channels;
+    // 确保使用正确的输入格式（FLTP格式：32-bit float）
+    int input_bytes_per_sample = sizeof(float);
+    // 使用与 frame_->nb_samples 相同的逻辑
+    int frame_samples = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 1024;
+    int bytes_per_frame = frame_samples * input_bytes_per_sample * config_.channels;
+
+    // 🔧 诊断：打印关键值
+    static int debug_count = 0;
+    debug_count++;
+    if (debug_count <= 3) {
+        LOG_INFO("[AACEncoder] bytes_per_frame calc: frame_size=" + std::to_string(codec_ctx_->frame_size) +
+                 ", frame_samples=" + std::to_string(frame_samples) +
+                 ", bytes_per_frame=" + std::to_string(bytes_per_frame));
+    }
 
     if (bytes_per_frame <= 0) {
         if (encode_count % 500 == 0) {
@@ -279,10 +366,13 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     int max_frames_per_call = 2;
     int frames_processed = 0;
 
-    // 计算当前帧应该对应的时间戳（基于编码器帧大小）
-    // 每帧1024采样，在48000Hz下约21.33ms
-    int64_t frame_duration_ms = (codec_ctx_->frame_size * 1000) / codec_ctx_->sample_rate;
-
+    // 🔧 修复：使用传入的 timestamp 参数来计算 PTS
+    // 这样可以确保 PTS 与实际时间保持同步，避免跳跃
+    // 每帧持续时间在 initialize 时计算
+    int64_t frame_duration_ms = frame_duration_ms_;
+    
+    int64_t base_timestamp = timestamp;
+    
     while (input_buffer_.size() >= bytes_per_frame && frames_processed < max_frames_per_call) {
         QByteArray frame_data = input_buffer_.left(bytes_per_frame);
         input_buffer_.remove(0, bytes_per_frame);
@@ -301,19 +391,8 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
             continue;
         }
 
-        // ✅ 修复：将毫秒时间戳转换为采样数作为 PTS
-        // time_base 是 {1, sample_rate}，所以 PTS 应该是采样数
-        // 例如：23ms @ 48000Hz = 23 * 48000 / 1000 = 1104 采样
-        // 🔧 确保第一帧从 0 开始，避免播放器等待同步
-        if (first_frame_timestamp_ms_ == -1) {
-            first_frame_timestamp_ms_ = timestamp;
-            LOG_INFO("[AACEncoder] First audio frame timestamp: " + std::to_string(timestamp) + "ms");
-        }
-        int64_t relative_timestamp_ms = timestamp - first_frame_timestamp_ms_;
-        frame_->pts = (relative_timestamp_ms * codec_ctx_->sample_rate) / 1000;
-
-        // 更新时间戳用于下一帧（每帧约21.33ms @ 48kHz）
-        timestamp += frame_duration_ms;
+        // 🔧 不再设置 frame_->pts，改用输出时的帧计数
+        // 编码器可能会修改 PTS，所以我们不在输入时设置
 
         // 发送帧到编码器
         int ret = avcodec_send_frame(codec_ctx_, frame_);
@@ -340,21 +419,18 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
                 break;
             }
 
-            // 发送编码完成信号（过滤6字节异常帧，与原项目一致）
+            // 发送编码完成信号
             if (packet_->size > 0) {
-                // 过滤掉已知的6字节异常帧（会导致杂音）
-                if (packet_->size == 6) {
-                    LOG_DEBUG("[AACEncoder] Filtered abnormal 6-byte AAC frame");
-                } else {
-                    // ✅ 设置 duration（AAC 编码器通常为 1024 采样）
-                    if (packet_->duration <= 0) {
-                        packet_->duration = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 1024;
-                    }
-                    // ✅ 使用编码器输出的 PTS（packet->pts），因为编码器可能会修改 PTS
-                    // 例如 AAC 编码器可能有延迟或填充，导致输出 PTS 与输入不同
-                    emit audio_encoded(packet_->data, packet_->size, packet_->pts);
-                    frames_processed++;
+                if (packet_->duration <= 0) {
+                    packet_->duration = frame_duration_ms_;
                 }
+                
+                int64_t pts_to_emit = output_frame_count_ * frame_duration_ms_;
+                
+                packet_->pts = pts_to_emit;
+                
+                emit audio_encoded(packet_->data, packet_->size, pts_to_emit);
+                output_frame_count_++;
             }
             av_packet_unref(packet_);
         }
@@ -363,22 +439,113 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
 
 // 转换输入数据（与原项目的 convertInputData 对应）
 int AACEncoder::convert_input_data(const uint8_t* input_data, int input_size, AVFrame* frame) {
-    if (!input_data || input_size <= 0 || !frame) return 0;
-
-    if (!swr_) {
-        LOG_ERROR("[AACEncoder] Resampler not initialized");
+    if (!input_data || input_size <= 0 || !frame) {
+        LOG_ERROR("[AACEncoder] convert_input_data: invalid parameters - input_data=" +
+                  std::to_string(reinterpret_cast<uint64_t>(input_data)) +
+                  ", input_size=" + std::to_string(input_size) +
+                  ", frame=" + std::to_string(reinterpret_cast<uint64_t>(frame)));
         return 0;
     }
 
-    int bytes_per_sample = sizeof(int16_t);
+    if (!swr_) {
+        LOG_ERROR("[AACEncoder] Resampler not initialized (swr_ is null), attempting to reinitialize...");
+        // 尝试重新初始化 swr
+        ErrorCode ret = ensure_swr();
+        if (ret != ErrorCode::SUCCESS || !swr_) {
+            LOG_ERROR("[AACEncoder] Failed to reinitialize resampler");
+            return 0;
+        }
+        LOG_INFO("[AACEncoder] Resampler reinitialized successfully");
+    }
+
+    // 🔧 诊断：检查 frame 的关键属性
+    LOG_DEBUG("[AACEncoder] convert_input_data: frame->format=" + std::to_string(frame->format) +
+              ", frame->ch_layout.nb_channels=" + std::to_string(frame->ch_layout.nb_channels) +
+              ", frame->nb_samples=" + std::to_string(frame->nb_samples) +
+              ", config_.channels=" + std::to_string(config_.channels));
+
+    // 检查 frame->data 是否有效
+    if (!frame->data[0]) {
+        LOG_ERROR("[AACEncoder] Frame data buffer not allocated - frame->data[0]=" +
+                  std::to_string(reinterpret_cast<uint64_t>(frame->data[0])) +
+                  ", nb_samples=" + std::to_string(frame->nb_samples));
+        return 0;
+    }
+
+    int bytes_per_sample = sizeof(float);
     int input_samples = input_size / (bytes_per_sample * config_.channels);
 
     if (input_samples <= 0) {
-        LOG_WARNING("[AACEncoder] Invalid input sample count");
+        LOG_WARNING("[AACEncoder] Invalid input sample count: input_size=" + std::to_string(input_size) +
+                   ", bytes_per_sample=" + std::to_string(bytes_per_sample) +
+                   ", channels=" + std::to_string(config_.channels));
         return 0;
     }
 
-    const uint8_t* input_data_arr[1] = {input_data};
+    // 检查 frame->nb_samples 是否有效
+    if (frame->nb_samples <= 0) {
+        LOG_ERROR("[AACEncoder] Invalid frame nb_samples: " + std::to_string(frame->nb_samples));
+        return 0;
+    }
+
+    // 🔧 额外检查：确保输入数据指针在合理范围内
+    if (reinterpret_cast<uint64_t>(input_data) < 0x1000) {
+        LOG_ERROR("[AACEncoder] Suspicious input_data pointer: " +
+                  std::to_string(reinterpret_cast<uint64_t>(input_data)));
+        return 0;
+    }
+
+    // 🔧 输入是交错格式 (FLT)，需要转换为平面格式 (FLTP) 供 swr 使用
+    // 先创建一个临时缓冲区
+    static thread_local std::vector<float> planar_buffer;
+    planar_buffer.resize(input_samples * config_.channels);
+    
+    // 将交错格式 LRLRLR 转为平面格式 LLLLRRRR
+    // 正确：左声道连续存储，然后是右声道
+    const float* src = reinterpret_cast<const float*>(input_data);
+    for (int ch = 0; ch < config_.channels; ch++) {
+        for (int i = 0; i < input_samples; i++) {
+            // planar_buffer[ch * input_samples + i] = 第 ch 个通道的第 i 个样本
+            // src[i * config_.channels + ch] = 第 i 个采样点的第 ch 个通道
+            planar_buffer[ch * input_samples + i] = src[i * config_.channels + ch];
+        }
+    }
+    
+    const uint8_t* input_data_arr[8] = {nullptr};
+    for (int ch = 0; ch < config_.channels; ch++) {
+        input_data_arr[ch] = reinterpret_cast<const uint8_t*>(planar_buffer.data() + ch * input_samples);
+    }
+
+    // 🔧 额外安全检查：确保 frame->data 数组中的所有通道都有效
+    for (int ch = 0; ch < frame->ch_layout.nb_channels; ch++) {
+        if (!frame->data[ch]) {
+            LOG_ERROR("[AACEncoder] Frame data channel " + std::to_string(ch) + " is null");
+            return 0;
+        }
+    }
+
+    // 🔧 添加诊断：打印关键指针信息
+    LOG_DEBUG("[AACEncoder] swr_convert: input_samples=" + std::to_string(input_samples) +
+              ", frame->nb_samples=" + std::to_string(frame->nb_samples) +
+              ", channels=" + std::to_string(config_.channels) +
+              ", swr_=" + std::to_string(reinterpret_cast<uint64_t>(swr_)) +
+              ", frame->data[0]=" + std::to_string(reinterpret_cast<uint64_t>(frame->data[0])) +
+              ", input_data=" + std::to_string(reinterpret_cast<uint64_t>(input_data)));
+
+    // 🔧 诊断：在调用 swr_convert 前验证所有参数
+    if (!swr_) {
+        LOG_ERROR("[AACEncoder] FATAL: swr_ is null before swr_convert!");
+        return 0;
+    }
+    if (!frame->data[0]) {
+        LOG_ERROR("[AACEncoder] FATAL: frame->data[0] is null before swr_convert!");
+        return 0;
+    }
+    if (!input_data) {
+        LOG_ERROR("[AACEncoder] FATAL: input_data is null before swr_convert!");
+        return 0;
+    }
+
     int ret = swr_convert(
         swr_,
         frame->data,
@@ -386,6 +553,9 @@ int AACEncoder::convert_input_data(const uint8_t* input_data, int input_size, AV
         input_data_arr,
         input_samples
     );
+
+    // 🔧 诊断：swr_convert 返回后立即记录
+    LOG_DEBUG("[AACEncoder] swr_convert returned: ret=" + std::to_string(ret));
 
     if (ret < 0) {
         LOG_WARNING("[AACEncoder] swr_convert failed, ret=" + std::to_string(ret));
@@ -408,14 +578,14 @@ int AACEncoder::convert_input_data(const uint8_t* input_data, int input_size, AV
 }
 
 ErrorCode AACEncoder::send_frame_internal(const std::shared_ptr<AudioFrame>& in) {
-    // 保留此方法以兼容旧接口，内部转换为新的处理方式
-    if (!in || !in->raw_data) {
+    // 保留此方法以兼容旧接口，直接使用 float 格式
+    if (!in || !in->data) {
         return ErrorCode::INVALID_PARAM;
     }
 
-    // 将 AudioFrame 转换为 QByteArray
-    int data_size = in->samples * in->channels * sizeof(int16_t);
-    QByteArray data(reinterpret_cast<const char*>(in->raw_data), data_size);
+    // 直接使用 float 格式（32-bit）
+    int num_samples = in->samples * in->channels;
+    QByteArray data(reinterpret_cast<const char*>(in->data), num_samples * sizeof(float));
 
     // 使用新的处理方式
     encode_audio_data(data, in->timestamp_ms);
@@ -478,7 +648,8 @@ ErrorCode AACEncoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
         out->dts = pkt->dts;
 
         if (pkt->duration <= 0 && codec_ctx_->frame_size > 0) {
-            out->duration = codec_ctx_->frame_size;
+            // duration 已经是毫秒
+            out->duration = codec_ctx_->frame_size * 1000 / codec_ctx_->sample_rate;
         } else {
             out->duration = pkt->duration;
         }
@@ -542,12 +713,51 @@ ErrorCode AACEncoder::set_bitrate(int bitrate) {
 }
 
 ErrorCode AACEncoder::reset() {
+    // 🔧 线程安全：获取互斥锁，确保没有其他线程正在使用 swr_
+    std::lock_guard<std::mutex> lock(encoder_mutex_);
+
     if (!initialized_) {
         return ErrorCode::INIT_FAILED;
     }
 
     // 清空输入缓冲区
     input_buffer_.clear();
+
+    // 🔧 重新初始化 swr，确保重采样器状态正确
+    if (swr_) {
+        swr_free(&swr_);
+        swr_ = nullptr;
+    }
+
+    // 🔧 注意：ensure_swr 内部也会尝试获取锁，所以这里直接调用会死锁
+    // 改为直接在这里初始化 swr，而不是调用 ensure_swr
+    AVChannelLayout in_layout = make_channel_layout(config_.channels);
+    AVChannelLayout out_layout = codec_ctx_->ch_layout;
+
+    if (swr_alloc_set_opts2(
+            &swr_,
+            &out_layout,
+            AV_SAMPLE_FMT_FLTP,
+            codec_ctx_->sample_rate,
+            &in_layout,
+            AV_SAMPLE_FMT_FLTP,
+            config_.sample_rate,
+            0,
+            nullptr) < 0) {
+        LOG_ERROR("[AACEncoder] Failed to alloc swr in reset()");
+        return ErrorCode::INIT_FAILED;
+    }
+
+    if (!swr_ || swr_init(swr_) < 0) {
+        if (swr_) {
+            swr_free(&swr_);
+        }
+        swr_ = nullptr;
+        LOG_ERROR("[AACEncoder] Failed to init swr in reset()");
+        return ErrorCode::INIT_FAILED;
+    }
+
+    LOG_INFO("[AACEncoder] Swr reinitialized successfully in reset(), swr_=" + std::to_string(reinterpret_cast<uint64_t>(swr_)));
 
     // 刷新编码器缓冲区
     if (codec_ctx_) {
@@ -570,9 +780,10 @@ ErrorCode AACEncoder::reset() {
         LOG_INFO("[AACEncoder] Flushed " + std::to_string(total_flushed) + " residual packets");
     }
 
-    // 重置时间戳计数器
     last_audio_timestamp_ = -1;
-    first_frame_timestamp_ms_ = -1;  // 重置第一帧时间戳基准
+    output_frame_count_ = 0;
+
+    frame_offset_in_batch_ = 0;
 
     LOG_INFO("[AACEncoder] Reset complete");
     return ErrorCode::SUCCESS;

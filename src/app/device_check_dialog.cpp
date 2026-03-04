@@ -170,15 +170,12 @@ DeviceCheckDialog::~DeviceCheckDialog() {
     stopCameraPreview();
     stopMicrophoneTest();
 
-    // 释放FFT资源（注意顺序：先释放输出，再释放配置，最后释放内存块）
+    // 释放FFT资源（因为我们自己管理内存，不调用kiss_fftr_free）
     if (fftOut_) {
         free(fftOut_);
         fftOut_ = nullptr;
     }
-    if (fftCfg_) {
-        kiss_fftr_free(static_cast<kiss_fftr_cfg>(fftCfg_));
-        fftCfg_ = nullptr;
-    }
+    fftCfg_ = nullptr;  // fftCfg_ 指向 fftMem_，不需要单独释放
     if (fftMem_) {
         free(fftMem_);
         fftMem_ = nullptr;
