@@ -40,6 +40,24 @@ CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=/Zi /O2 /Ob1 /DNDEBUG
 //Libraries linked by default with all C++ applications.
 CMAKE_CXX_STANDARD_LIBRARIES:STRING=kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
 
+//Flags used by the C compiler during all build types.
+CMAKE_C_FLAGS:STRING=/DWIN32 /D_WINDOWS
+
+//Flags used by the C compiler during DEBUG builds.
+CMAKE_C_FLAGS_DEBUG:STRING=/Zi /Ob0 /Od /RTC1
+
+//Flags used by the C compiler during MINSIZEREL builds.
+CMAKE_C_FLAGS_MINSIZEREL:STRING=/O1 /Ob1 /DNDEBUG
+
+//Flags used by the C compiler during RELEASE builds.
+CMAKE_C_FLAGS_RELEASE:STRING=/O2 /Ob2 /DNDEBUG
+
+//Flags used by the C compiler during RELWITHDEBINFO builds.
+CMAKE_C_FLAGS_RELWITHDEBINFO:STRING=/Zi /O2 /Ob1 /DNDEBUG
+
+//Libraries linked by default with all C applications.
+CMAKE_C_STANDARD_LIBRARIES:STRING=kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
+
 //Flags used by the linker during all build types.
 CMAKE_EXE_LINKER_FLAGS:STRING=/machine:x64
 
@@ -134,9 +152,6 @@ CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO:STRING=/debug /INCREMENTAL
 
 //Path to a program.
 CMAKE_MT:FILEPATH=C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/mt.exe
-
-//No help, variable specified on the command line.
-CMAKE_PREFIX_PATH:UNINITIALIZED=C:/Qt/6.5.3/msvc2019_64
 
 //Value Computed by CMake
 CMAKE_PROJECT_COMPAT_VERSION:STATIC=
@@ -233,6 +248,9 @@ CMAKE_STATIC_LINKER_FLAGS_RELWITHDEBINFO:STRING=
 //Suppress developer warnings
 CMAKE_SUPPRESS_DEVELOPER_WARNINGS:BOOL=ON
 
+//No help, variable specified on the command line.
+CMAKE_SYSTEM_VERSION:UNINITIALIZED=10
+
 //If this value is on, makefiles will be generated without the
 // .SILENT directive, and all commands will be echoed to the console
 // during the make.  This is useful for debugging only. With Visual
@@ -264,9 +282,6 @@ Qt6Core_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Core
 //The directory containing a CMake configuration file for Qt6EntryPointPrivate.
 Qt6EntryPointPrivate_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6EntryPointPrivate
 
-//The directory containing a CMake configuration file for Qt6GraphicalEffects.
-Qt6GraphicalEffects_DIR:PATH=Qt6GraphicalEffects_DIR-NOTFOUND
-
 //The directory containing a CMake configuration file for Qt6GuiTools.
 Qt6GuiTools_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6GuiTools
 
@@ -284,6 +299,9 @@ Qt6Network_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Network
 
 //The directory containing a CMake configuration file for Qt6OpenGL.
 Qt6OpenGL_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6OpenGL
+
+//The directory containing a CMake configuration file for Qt6Positioning.
+Qt6Positioning_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Positioning
 
 //The directory containing a CMake configuration file for Qt6PrintSupport.
 Qt6PrintSupport_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6PrintSupport
@@ -308,6 +326,18 @@ Qt6QuickWidgets_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6QuickWidgets
 
 //The directory containing a CMake configuration file for Qt6Quick.
 Qt6Quick_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Quick
+
+//The directory containing a CMake configuration file for Qt6WebChannel.
+Qt6WebChannel_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6WebChannel
+
+//The directory containing a CMake configuration file for Qt6WebEngineCoreTools.
+Qt6WebEngineCoreTools_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6WebEngineCoreTools
+
+//The directory containing a CMake configuration file for Qt6WebEngineCore.
+Qt6WebEngineCore_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6WebEngineCore
+
+//The directory containing a CMake configuration file for Qt6WebEngineWidgets.
+Qt6WebEngineWidgets_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6WebEngineWidgets
 
 //The directory containing a CMake configuration file for Qt6WebSockets.
 Qt6WebSockets_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6WebSockets
@@ -372,6 +402,18 @@ CMAKE_CXX_FLAGS_RELEASE-ADVANCED:INTERNAL=1
 CMAKE_CXX_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_CXX_STANDARD_LIBRARIES
 CMAKE_CXX_STANDARD_LIBRARIES-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_C_FLAGS
+CMAKE_C_FLAGS-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_C_FLAGS_DEBUG
+CMAKE_C_FLAGS_DEBUG-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_C_FLAGS_MINSIZEREL
+CMAKE_C_FLAGS_MINSIZEREL-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_C_FLAGS_RELEASE
+CMAKE_C_FLAGS_RELEASE-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_C_FLAGS_RELWITHDEBINFO
+CMAKE_C_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: CMAKE_C_STANDARD_LIBRARIES
+CMAKE_C_STANDARD_LIBRARIES-ADVANCED:INTERNAL=1
 //Executable file format
 CMAKE_EXECUTABLE_FORMAT:INTERNAL=Unknown
 //ADVANCED property for variable: CMAKE_EXE_LINKER_FLAGS
@@ -810,6 +852,8 @@ QT_FEATURE_gstreamer_photography:INTERNAL=OFF
 QT_FEATURE_gtk3:INTERNAL=OFF
 //Qt feature: gui (from target Qt6::Core)
 QT_FEATURE_gui:INTERNAL=ON
+//Qt feature: gypsy (from target Qt6::Positioning)
+QT_FEATURE_gypsy:INTERNAL=OFF
 //Qt feature: harfbuzz (from target Qt6::Gui)
 QT_FEATURE_harfbuzz:INTERNAL=ON
 //Qt feature: headersclean (from target Qt6::Core)
@@ -1366,6 +1410,42 @@ QT_FEATURE_wasm:INTERNAL=OFF
 QT_FEATURE_wasm_exceptions:INTERNAL=OFF
 //Qt feature: wasm_simd128 (from target Qt6::Core)
 QT_FEATURE_wasm_simd128:INTERNAL=OFF
+//Qt feature: webengine_embedded_build (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_embedded_build:INTERNAL=OFF
+//Qt feature: webengine_extensions (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_extensions:INTERNAL=ON
+//Qt feature: webengine_full_debug_info (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_full_debug_info:INTERNAL=OFF
+//Qt feature: webengine_geolocation (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_geolocation:INTERNAL=ON
+//Qt feature: webengine_kerberos (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_kerberos:INTERNAL=ON
+//Qt feature: webengine_native_spellchecker (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_native_spellchecker:INTERNAL=OFF
+//Qt feature: webengine_pepper_plugins (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_pepper_plugins:INTERNAL=ON
+//Qt feature: webengine_printing_and_pdf (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_printing_and_pdf:INTERNAL=ON
+//Qt feature: webengine_proprietary_codecs (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_proprietary_codecs:INTERNAL=OFF
+//Qt feature: webengine_sanitizer (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_sanitizer:INTERNAL=OFF
+//Qt feature: webengine_spellchecker (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_spellchecker:INTERNAL=ON
+//Qt feature: webengine_system_alsa (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_system_alsa:INTERNAL=OFF
+//Qt feature: webengine_system_poppler (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_system_poppler:INTERNAL=OFF
+//Qt feature: webengine_system_pulseaudio (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_system_pulseaudio:INTERNAL=OFF
+//Qt feature: webengine_vulkan (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_vulkan:INTERNAL=ON
+//Qt feature: webengine_webchannel (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_webchannel:INTERNAL=ON
+//Qt feature: webengine_webrtc (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_webrtc:INTERNAL=ON
+//Qt feature: webengine_webrtc_pipewire (from target Qt6::WebEngineCore)
+QT_FEATURE_webengine_webrtc_pipewire:INTERNAL=OFF
 //Qt feature: whatsthis (from target Qt6::Gui)
 QT_FEATURE_whatsthis:INTERNAL=ON
 //Qt feature: wheelevent (from target Qt6::Gui)
@@ -1374,6 +1454,8 @@ QT_FEATURE_wheelevent:INTERNAL=ON
 QT_FEATURE_widgets:INTERNAL=ON
 //Qt feature: widgettextcontrol (from target Qt6::Widgets)
 QT_FEATURE_widgettextcontrol:INTERNAL=ON
+//Qt feature: winrt_geolocation (from target Qt6::Positioning)
+QT_FEATURE_winrt_geolocation:INTERNAL=ON
 //Qt feature: wizard (from target Qt6::Widgets)
 QT_FEATURE_wizard:INTERNAL=ON
 //Qt feature: wmf (from target Qt6::Multimedia)

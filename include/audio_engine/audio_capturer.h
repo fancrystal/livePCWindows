@@ -1,20 +1,29 @@
 #pragma once
 
 #include <QObject>
-#include <QAudioFormat>
-#include <QIODevice>
 #include <QAudioDevice>
-#include <QAudioSource>
 #include <memory>
 #include <QStringList>
+#include "wasapi_capturer.h"
 
 namespace live_assistant {
 
+// 前向声明
+class QtNativeAudioCapturer;
+
 /**
- * @brief 纯音频捕获类（从原项目移植）
+ * @brief 音频采集模式
+ */
+enum class AudioCaptureMode {
+    QT_CALLBACK,    // Qt 默认方式：数据驱动，帧大小不固定
+    FN_STYLE        // FN 方式：WASAPI 采集，固定帧大小
+};
+
+/**
+ * @brief 纯音频捕获类
  *
  * 负责：
- * - 使用 QAudioSource 进行音频捕获
+ * - 使用 WASAPI 或 QtNativeAudioCapturer 进行音频捕获
  * - 发射 dataCaptured 信号传递 QByteArray
  *
  * 不负责：
@@ -49,26 +58,64 @@ public:
     int get_channels() const { return channels_; }
     int get_sample_size() const { return sample_size_; }
 
-    // 设置音频设备
+    // 设置音频设备（暂未实现）
     void set_audio_device(const QAudioDevice& audio_device);
 
-    // 获取当前设备
-    QAudioDevice get_audio_device() const { return audio_device_; }
+    // 获取当前设备（暂未实现）
+    QAudioDevice get_audio_device() const { return QAudioDevice(); }
+    
+    // 设置采集模式
+    void set_capture_mode(AudioCaptureMode mode) { capture_mode_ = mode; }
+    AudioCaptureMode get_capture_mode() const { return capture_mode_; }
+    
+    // 设置 WASAPI 设备 ID（FN 模式使用）
+    void set_wasapi_device_id(const std::string& device_id) { wasapi_device_id_ = device_id; }
+    
+    // 获取 WASAPI 设备列表
+    static std::vector<AudioDeviceInfo> get_wasapi_devices();
 
 signals:
-    // 音频数据捕获信号
+    // 音频数据捕获信号（麦克风）
     // 参数：音频数据(QByteArray移动语义)、时间戳
     void data_captured(QByteArray data, int64_t timestamp);
-
-private slots:
-    // 处理音频数据就绪事件
-    void on_audio_ready_read();
+    
+    // 音频数据捕获信号（扬声器/桌面音频）
+    // 参数：音频数据(QByteArray移动语义)、时间戳
+    void speaker_data_captured(QByteArray data, int64_t timestamp);
 
 private:
-    std::unique_ptr<QAudioSource> audio_input_;
-    QAudioDevice audio_device_;
-    QIODevice* audio_io_device_ = nullptr;
-    QAudioFormat audio_format_;
+    // 初始化 WASAPI 采集
+    bool init_wasapi_capture();
+    
+    // 初始化 Qt Native 音频采集
+    bool init_qt_native_capture();
+    
+    // 音频数据回调（麦克风）
+    void on_wasapi_data(const float* data, uint32_t frames, 
+                        uint32_t sample_rate, uint32_t channels,
+                        int64_t timestamp);
+    
+    // 音频数据回调（扬声器/桌面音频）
+    void on_speaker_data(const float* data, uint32_t frames,
+                         uint32_t sample_rate, uint32_t channels,
+                         int64_t timestamp);
+
+public:
+    // 设置扬声器采集开关
+    void set_speaker_capture_enabled(bool enabled) { speaker_capture_enabled_ = enabled; }
+    bool is_speaker_capture_enabled() const { return speaker_capture_enabled_; }
+
+private:
+    // WASAPI 音频采集（默认）- 麦克风
+    std::unique_ptr<WASAPICapturer> wasapi_capturer_;
+    std::string wasapi_device_id_;
+    
+    // WASAPI 音频采集 - 扬声器（桌面音频）
+    std::unique_ptr<WASAPICapturer> speaker_capturer_;
+    bool speaker_capture_enabled_ = true;  // 默认采集扬声器
+    
+    // Qt Native 音频采集（可选）
+    std::unique_ptr<QtNativeAudioCapturer> qt_native_capturer_;
 
     int current_device_index_ = -1;
     bool is_capturing_ = false;
@@ -76,6 +123,12 @@ private:
     int sample_rate_ = 0;
     int channels_ = 0;
     int sample_size_ = 0;
+    
+    // 采集模式（默认使用 FN_STYLE）
+    AudioCaptureMode capture_mode_ = AudioCaptureMode::FN_STYLE;
+    
+    // 固定帧大小
+    static constexpr int AUDIO_FRAMES_PER_CALLBACK = 1024;
 };
 
 } // namespace live_assistant

@@ -13,6 +13,7 @@ class LoginWorker : public QObject
 public:
     explicit LoginWorker(const QString& loginUrl, const QString& apiKey,
                          const QString& username, const QString& password,
+                         bool remember = true,
                          QObject* parent = nullptr);
     ~LoginWorker();
 
@@ -28,6 +29,7 @@ private:
     QString apiKey_;
     QString username_;
     QString password_;
+    bool remember_;
     QSettings settings_;
 };
 

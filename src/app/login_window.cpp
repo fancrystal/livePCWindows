@@ -83,8 +83,14 @@ LoginWindow::~LoginWindow() {
 
 // ========== QML调用方法 ==========
 
-void LoginWindow::qmlLogin(const QString& username, const QString& password) {
-    LOG_INFO("qmlLogin called: username=" + username.toStdString());
+void LoginWindow::qmlLogin(const QString& username, const QString& password, bool remember) {
+    LOG_INFO("qmlLogin called: username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
+
+    if (isLoggingIn_) {
+        LOG_WARNING("Login already in progress, ignoring duplicate request");
+        emit login_failed("登录正在进行中，请稍候");
+        return;
+    }
 
     // 注意：QML端已经做了格式验证，这里只做基本的参数检查
     if (username.isEmpty() || password.isEmpty()) {
@@ -92,18 +98,19 @@ void LoginWindow::qmlLogin(const QString& username, const QString& password) {
         return;
     }
 
+    isLoggingIn_ = true;
     emit login_status_changed("正在登录...");
-    
+
     LOG_INFO("创建登录线程...");
-    
+
     // 清理之前的登录线程
     cleanupLoginThread();
-    
+
     // 创建后台线程执行登录
     loginThread_ = new QThread(this);
-    LoginWorker* worker = new LoginWorker(login_url_, api_key_, username, password);
+    LoginWorker* worker = new LoginWorker(login_url_, api_key_, username, password, remember);
     worker->moveToThread(loginThread_);
-    
+
     // 连接信号槽 - 注意连接顺序，先处理结果再删除worker
     connect(loginThread_, &QThread::started, worker, &LoginWorker::startLogin);
     connect(worker, &LoginWorker::loginSuccess, this, &LoginWindow::onLoginSuccess);
@@ -111,7 +118,7 @@ void LoginWindow::qmlLogin(const QString& username, const QString& password) {
     connect(loginThread_, &QThread::finished, worker, &QObject::deleteLater);  // 线程结束时删除worker
     connect(loginThread_, &QThread::finished, loginThread_, &QThread::deleteLater);
     connect(loginThread_, &QThread::finished, this, &LoginWindow::cleanupLoginThread);
-    
+
     LOG_INFO("启动登录线程...");
     // 启动线程
     loginThread_->start();
@@ -119,14 +126,15 @@ void LoginWindow::qmlLogin(const QString& username, const QString& password) {
 
 void LoginWindow::onLoginSuccess(const QString& userId, const QString& token, const QString& loginKey) {
     LOG_INFO(QString("收到登录成功信号: userId=%1").arg(userId).toStdString());
-    
+
     user_id_ = userId;
     token_ = token;
     login_key_ = loginKey;
-    
+
+    isLoggingIn_ = false;
     emit login_status_changed("登录成功！");
     emit login_success();
-    
+
     // 延迟关闭
     QTimer::singleShot(500, this, [this]() {
         close();
@@ -135,33 +143,21 @@ void LoginWindow::onLoginSuccess(const QString& userId, const QString& token, co
 
 void LoginWindow::onLoginFailed(const QString& errorMessage) {
     LOG_INFO(QString("C++ onLoginFailed: %1").arg(errorMessage).toStdString());
+
+    isLoggingIn_ = false;
     emit login_failed(errorMessage);
-
-    // 使用QTimer::singleShot确保在主线程中执行
-    QTimer::singleShot(0, this, [this, errorMessage]() {
-        QObject* rootObj = qobject_cast<QObject*>(qmlWidget_->rootObject());
-        if (rootObj) {
-            LOG_INFO(QString("Setting QML properties directly").toStdString());
-            rootObj->setProperty("isLoggingIn", false);
-            rootObj->setProperty("loginError", errorMessage);
-
-            // 直接设置statusText的属性
-            QObject* statusText = rootObj->findChild<QObject*>("statusText");
-            if (statusText) {
-                statusText->setProperty("text", errorMessage);
-                statusText->setProperty("color", "#ff6b6b");
-                LOG_INFO("Directly updated statusText");
-            }
-        }
-    });
 }
 
 void LoginWindow::cleanupLoginThread() {
     if (loginThread_ && loginThread_->isRunning()) {
+        LOG_INFO("Cleaning up login thread...");
         loginThread_->quit();
-        if (!loginThread_->wait(1000)) {
+        if (!loginThread_->wait(3000)) {
+            LOG_WARNING("Login thread did not finish gracefully, forcing termination");
             loginThread_->terminate();
             loginThread_->wait();
+        } else {
+            LOG_INFO("Login thread finished gracefully");
         }
     }
     loginThread_ = nullptr;

@@ -39,7 +39,14 @@ bool ClientService::login(const QString &logUrl,  const QString &key, const QStr
 
     // 发送POST请求
     HttpClient* client = HttpClient::instance();
-    QJsonObject response = client->post(url, postData);
+    QString httpErrMsg;
+    QJsonObject response = client->post(url, postData, httpErrMsg);
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        LOG_WARNING(QString("Login HTTP request failed: %1").arg(httpErrMsg).toStdString());
+        return false;
+    }
 
     // 处理响应结果
     if(response["code"].toInt() == 200) {
@@ -146,8 +153,16 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
     client->addHeader(&headers, "Content-Type", "application/json");
     
     // 使用带自定义headers的post方法
-    QJsonObject response = client->post(url, reqData, headers);
+    QString httpErrMsg;
+    QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
     client->freeHeaders(headers);
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("获取直播列表HTTP请求失败: %1").arg(errMessage).toStdString());
+        return false;
+    }
 
     QJsonDocument doc(response);
     LOG_DEBUG(QString("获取直播列表响应: %1").arg(QString(doc.toJson(QJsonDocument::Compact))).toStdString());
@@ -212,8 +227,16 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     client->addHeader(&headers, "Content-Type", "application/json");
 
     // 使用带自定义headers的post方法
-    QJsonObject response = client->post(url, reqData, headers);
+    QString httpErrMsg;
+    QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
     client->freeHeaders(headers);
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("获取插播视频列表HTTP请求失败: %1").arg(errMessage).toStdString());
+        return false;
+    }
 
     // 打印响应
     QJsonDocument doc(response);
@@ -350,8 +373,16 @@ bool ClientService::getInsertFile(const QString& sassUrl, const QString& userId,
     client->addHeader(&headers, "Content-Type", "application/json");
     
     // 使用带自定义headers的post方法
-    QJsonObject response = client->post(url, reqData, headers);
+    QString httpErrMsg;
+    QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
     client->freeHeaders(headers);
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("获取插播视频详情HTTP请求失败: %1").arg(errMessage).toStdString());
+        return false;
+    }
 
     // 解析响应状态
     if (response["code"].toInt() != 200) {
@@ -400,9 +431,9 @@ void ClientService::parseLiveListJson(const QJsonObject& json, QList<LiveItem>& 
 
         int videoScreenMode = recordJson["videoScreenMode"].toInt();        // 1=横屏
         if (videoScreenMode == 2) {                                         // 2=竖屏
-            liveItem.isVerticalScreen = true;
+            liveItem.canvasOrientation = "portrait";
         } else {
-            liveItem.isVerticalScreen = false;
+            liveItem.canvasOrientation = "landscape";
         }
 
         liveList.append(liveItem);
@@ -434,9 +465,17 @@ bool ClientService::genOnceLoginKey(const QString& baseUrl, const QString& userI
     client->addHeader(&headers, "Content-Type", "application/json");
     
     // 使用带自定义headers的get方法
-    QJsonObject response = client->get(url, headers);
+    QString httpErrMsg;
+    QJsonObject response = client->get(url, headers, httpErrMsg);
     client->freeHeaders(headers);
-    
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("Generate once login key HTTP request failed: %1").arg(errMessage).toStdString());
+        return false;
+    }
+
     // 处理响应结果
     if (response["code"].toInt() == 200) {
         // 从响应数据中获取一次性登录密钥

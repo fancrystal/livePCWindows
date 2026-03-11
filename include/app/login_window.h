@@ -19,11 +19,10 @@ signals:
     void login_success();
     void login_failed(const QString& errorMessage);
     void login_status_changed(const QString& status);
-    void login_state_changed(bool isLoggingIn, const QString& errorMessage);
 
 public:
     // QML调用方法
-    Q_INVOKABLE void qmlLogin(const QString& username, const QString& password);
+    Q_INVOKABLE void qmlLogin(const QString& username, const QString& password, bool remember = true);
     Q_INVOKABLE void qmlSetStatus(const QString& status);
     Q_INVOKABLE void qmlSetLoginFailed(const QString& errorMessage);
     Q_INVOKABLE bool qmlHasSavedCredentials();
@@ -66,6 +65,9 @@ private:
 
     // 登录线程
     QThread* loginThread_ = nullptr;
+
+    // 登录状态
+    bool isLoggingIn_ = false;
 
     // 设置
     QSettings settings_;

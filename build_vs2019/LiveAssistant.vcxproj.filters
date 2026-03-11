@@ -13,6 +13,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\config.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\customwebengineview.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\device_check_dialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -61,6 +64,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\settings_dialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\common\circular_buffer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\config_manager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -73,7 +79,13 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\media_clock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\common\simple_av_sync.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\system_monitor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\common\timestamp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\http\network_manager.cpp">
@@ -136,10 +148,22 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\video_engine\video_engine.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\QtNativeAudioCapturer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\audio_capturer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\audio_engine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\audio_mixer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\audio_resampler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\audio_engine\wasapi_capturer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\encoder\audio_encoder.cpp">
@@ -255,6 +279,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\settings_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\common\circular_buffer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\config_manager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -273,7 +300,13 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\module_lifecycle.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\common\simple_av_sync.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\system_monitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\common\timestamp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\http\network_manager.h">
@@ -333,10 +366,22 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\wgc_capture_stub.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\QtNativeAudioCapturer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\audio_capturer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\audio_engine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\audio_mixer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\audio_resampler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\audio_engine\wasapi_capturer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\encoder\audio_encoder.h">

@@ -38,6 +38,11 @@ struct StreamConfig {
     
     // 低延迟模式
     bool low_latency = true;
+    
+    // 使用交错写入模式 (av_interleaved_write_frame)
+    // true = av_interleaved_write_frame (默认，更稳定，有延迟)
+    // false = av_write_frame (更低延迟，可能不稳定)
+    bool use_interleaved_write = true;
 };
 
 } // namespace live_assistant

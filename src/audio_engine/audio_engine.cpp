@@ -5,7 +5,11 @@
 #include <QMediaDevices>
 #include <QAudioDevice>
 #include <QMutex>
+#include <QFile>
+#include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <thread>
 
 // Windows Speaker volume control
 #ifdef _WIN32
@@ -18,13 +22,50 @@
 
 namespace live_assistant {
 
+// 🔧 诊断：保存音频帧到文件
+static QFile* g_media_audio_file = nullptr;
+static QFile* g_mixed_audio_file = nullptr;
+static int g_media_audio_save_count = 0;
+static int g_mixed_audio_save_count = 0;
+
+static void save_audio_to_file(const float* data, int samples, int channels, QFile*& file, const char* filename, int& save_count, int max_save) {
+    if (!file) {
+        file = new QFile(filename);
+        if (file->open(QIODevice::WriteOnly)) {
+            LOG_INFO("[AudioDiag] Opened audio file: " + std::string(filename));
+        } else {
+            LOG_ERROR("[AudioDiag] Failed to open audio file: " + std::string(filename));
+            delete file;
+            file = nullptr;
+            return;
+        }
+    }
+    
+    if (save_count < max_save && file->isOpen()) {
+        // 保存为原始 float 数据
+        file->write(reinterpret_cast<const char*>(data), samples * channels * sizeof(float));
+        save_count++;
+        if (save_count <= 3) {
+            float first = data[0];
+            float second = data[1];
+            LOG_INFO("[AudioDiag] Saved audio to " + std::string(filename) + 
+                     ": samples=" + std::to_string(samples) + 
+                     ", first_sample=" + std::to_string(first));
+        }
+    }
+}
+
 AudioEngine::AudioEngine() : QObject(nullptr) {
     // 创建音频捕获器
     audio_capturer_ = std::make_unique<AudioCapturer>(this);
 
-    // 连接信号
+    // 连接信号（麦克风数据）
     connect(audio_capturer_.get(), &AudioCapturer::data_captured,
             this, &AudioEngine::on_data_captured);
+    
+    // 连接信号（扬声器/桌面音频数据）
+    connect(audio_capturer_.get(), &AudioCapturer::speaker_data_captured,
+            this, &AudioEngine::on_speaker_data_captured);
 
     LOG_INFO("[AudioEngine] Created (using AudioCapturer)");
 }
@@ -98,6 +139,14 @@ bool AudioEngine::start_capture() {
         LOG_INFO("[AudioEngine]   Format: " + std::to_string(sample_rate_) + "Hz, " +
                  std::to_string(channels_) + " ch, Int16");
         LOG_INFO("[AudioEngine]   Volume: " + std::to_string(volume * 100) + "%, Muted: " + (muted ? "YES" : "NO"));
+
+        // 🔧 修复：混音线程在音频引擎初始化时就启动，不依赖是否推流
+        // 参照OBS的实现方式，混音线程独立运行
+        if (!mix_thread_running_.load()) {
+            mix_thread_running_.store(true);
+            mix_thread_ = std::thread(&AudioEngine::mixThreadFunc, this);
+            LOG_INFO("[AudioEngine] Mix thread started");
+        }
     }
 
     return result;
@@ -114,6 +163,13 @@ bool AudioEngine::stop_capture() {
     audio_capturer_->stop_capture();
     is_capturing_ = false;
 
+    // 停止混音线程
+    mix_thread_running_.store(false);
+    if (mix_thread_.joinable()) {
+        mix_thread_.join();
+        LOG_INFO("[AudioEngine] Mix thread stopped");
+    }
+
     LOG_INFO("[AudioEngine] Capture STOPPED");
     return true;
 }
@@ -123,105 +179,63 @@ void AudioEngine::on_data_captured(QByteArray data, int64_t timestamp) {
         return;
     }
 
-    // 🔧 诊断：打印原始数据的第一个样本值
-    static int dump_counter = 0;
-    dump_counter++;
-    if (dump_counter <= 3) {
-        const float* raw_data = reinterpret_cast<const float*>(data.constData());
-        float first_sample = raw_data[0];
-        float second_sample = raw_data[1];
-        float fifth_sample = (data.size() >= 20) ? raw_data[5] : 0;
-        LOG_INFO("[AudioEngine] RAW data dump #" + std::to_string(dump_counter) +
-                 ": data_size=" + std::to_string(data.size()) +
-                 ", first_sample=" + std::to_string(first_sample) +
-                 ", second=" + std::to_string(second_sample) +
-                 ", fifth=" + std::to_string(fifth_sample));
-    }
-
     // 数据格式：32-bit Float (从 WASAPI 传来)
-    // WASAPI 输出的是 float 格式，每个样本 4 字节
     int bytes_per_sample = sizeof(float);
     int total_samples = data.size() / (channels_ * bytes_per_sample);
 
-    // 创建音频帧（float 格式）
+    // 创建音频帧
     auto frame = std::make_shared<AudioFrame>(sample_rate_, channels_, total_samples);
 
     if (frame->data) {
-        // 应用音量控制和静音处理
-        float volume = microphone_volume_;
-        bool muted = microphone_muted_;
-
-        // 直接使用 float 格式，不转换
+        // 复制数据
         const float* src_data = reinterpret_cast<const float*>(data.constData());
         int total = total_samples * channels_;
 
         for (int i = 0; i < total; ++i) {
             float float_sample = src_data[i];
-            
-            // 应用音量
-            if (!muted) {
-                float_sample *= volume;
-            } else {
-                float_sample = 0.0f;
-            }
-            
-            // 限制范围
-            if (float_sample > 1.0f) float_sample = 1.0f;
-            if (float_sample < -1.0f) float_sample = -1.0f;
-            
             frame->data[i] = float_sample;
         }
 
         // 设置时间戳
         frame->timestamp_ms = timestamp;
+
+        // 推入麦克风队列
+        pushFrameToQueue(microphone_queue_, microphone_mutex_, frame);
+    }
+}
+
+void AudioEngine::on_speaker_data_captured(QByteArray data, int64_t timestamp) {
+    // 检查是否启用了扬声器采集
+    if (!audio_capturer_ || !audio_capturer_->is_speaker_capture_enabled()) {
+        return;
+    }
+    
+    if (data.isEmpty()) {
+        return;
     }
 
-    // 发送信号通知编码器有新数据（直接传递 QByteArray）
-    emit audio_data_ready(data, timestamp);
+    // 数据格式：32-bit Float (从 WASAPI 传来)
+    int bytes_per_sample = sizeof(float);
+    int total_samples = data.size() / (channels_ * bytes_per_sample);
 
-    // 将帧放入队列（保留用于其他可能的用途）
-    {
-        std::lock_guard<std::mutex> lock(frame_mutex_);
-        frame_queue_.push(frame);
-    }
-    frame_cv_.notify_one();
+    // 创建音频帧
+    auto frame = std::make_shared<AudioFrame>(sample_rate_, channels_, total_samples);
 
-    // 诊断日志（简化版）
-    static int frame_count = 0;
-    static int64_t total_samples_processed = 0;
-    static int silent_frame_count = 0;
-
-    frame_count++;
-    total_samples_processed += (int64_t)total_samples;
-
-    // 计算音量统计（使用 float 格式）
-    double rms = 0.0;
-    double peak = 0.0;
     if (frame->data) {
-        double sum_squares = 0.0;
-        int total = frame->samples * frame->channels;
+        // 复制数据
+        const float* src_data = reinterpret_cast<const float*>(data.constData());
+        int total = total_samples * channels_;
+
         for (int i = 0; i < total; ++i) {
-            double sample = static_cast<double>(frame->data[i]);
-            sum_squares += sample * sample;
-            double abs_sample = std::abs(sample);
-            if (abs_sample > peak) peak = abs_sample;
+            float float_sample = src_data[i];
+            frame->data[i] = float_sample;
         }
-        rms = std::sqrt(sum_squares / total);
-    }
 
-    bool is_silent = (rms < 0.001);
-    if (is_silent) {
-        silent_frame_count++;
-    }
+        // 设置时间戳
+        frame->timestamp_ms = timestamp;
 
-    // 每100帧打印一次统计
-    if (frame_count % 100 == 0) {
-        double silent_percent = (silent_frame_count * 100.0) / frame_count;
-        LOG_INFO("[AudioEngine] Stats: frames=" + std::to_string(frame_count) +
-                 ", samples=" + std::to_string(total_samples_processed) +
-                 ", RMS=" + std::to_string(static_cast<int>(rms)) +
-                 ", peak=" + std::to_string(static_cast<int>(peak)) +
-                 ", silent=" + std::to_string(static_cast<int>(silent_percent)) + "%");
+        // 推入扬声器队列
+        pushFrameToQueue(speaker_queue_, speaker_mutex_, frame);
     }
 }
 
@@ -649,6 +663,15 @@ AudioMixMode AudioEngine::getMixMode() const {
     return mix_mode_;
 }
 
+void AudioEngine::pushMediaFrame(std::shared_ptr<AudioFrame> frame) {
+    // 混音线程未启动时（推流尚未开始），丢弃媒体帧
+    // 避免在推流前积压大量帧导致 media_queue_ 溢出、后续音频卡顿
+    if (!mix_thread_running_.load()) {
+        return;
+    }
+    pushFrameToQueue(media_queue_, media_mutex_, frame);
+}
+
 //=============================================================================
 // 自定义音频源扩展
 //=============================================================================
@@ -671,50 +694,88 @@ void AudioEngine::unregisterAudioSource(const QString& sourceId) {
 //=============================================================================
 
 std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
-    const QList<std::shared_ptr<AudioFrame>>& sources) {
+    const QList<std::shared_ptr<AudioFrame>>& sources,
+    const QList<AudioSourceType>& source_types
+) {
 
+    // 🔧 严格检查：sources 列表
     if (sources.isEmpty()) {
+        LOG_ERROR("[AudioMixer] ERROR: sources list is empty!");
         return nullptr;
     }
 
     // 获取第一个帧的参数作为输出参数
     std::shared_ptr<AudioFrame> firstFrame = sources.first();
+    
+    // 🔧 严格检查：firstFrame 有效性
+    if (!firstFrame) {
+        LOG_ERROR("[AudioMixer] ERROR: firstFrame is nullptr!");
+        return nullptr;
+    }
+    
+    if (!firstFrame->data) {
+        LOG_ERROR("[AudioMixer] ERROR: firstFrame->data is null!");
+        return nullptr;
+    }
+    
     int out_sample_rate = firstFrame->sample_rate;
     int out_channels = firstFrame->channels;
     int out_samples = firstFrame->samples;
-
+    
     // 创建输出帧
     auto output = std::make_shared<AudioFrame>(out_sample_rate, out_channels, out_samples);
 
     if (!output->data) {
+        LOG_ERROR("[AudioMixer] ERROR: Failed to allocate output frame data!");
         return nullptr;
     }
 
-    // 初始化输出为0
+    // 初始化输出为 0
     std::fill_n(output->data, out_samples * out_channels, 0.0f);
-
+    
     // 遍历所有源并混音
-    for (const auto& frame : sources) {
+    for (int i = 0; i < sources.size(); ++i) {
+        const auto& frame = sources[i];
+        AudioSourceType source_type = source_types[i];
+        
         if (!frame || !frame->data) continue;
 
-        // 确保参数匹配
+        // 🔧 修复：处理采样数不匹配的情况
+        // 使用两个帧中较小的样本数
+        int mix_samples = (out_samples < frame->samples) ? out_samples : frame->samples;
         if (frame->sample_rate != out_sample_rate ||
-            frame->channels != out_channels ||
-            frame->samples != out_samples) {
-            // 参数不匹配时跳过（实际项目中应该重采样）
+            frame->channels != out_channels) {
+            // 采样率或声道数不匹配时跳过
+            LOG_ERROR("[AudioMixer] Skipping frame: rate/channels mismatch");
             continue;
         }
 
-        // 应用音量
-        float volume = 1.0f; // 默认音量
-        // 可以根据源类型设置不同音量
+        // 🔧 根据源类型应用正确的音量
+        float volume = 1.0f;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            switch (source_type) {
+                case AudioSourceType::MICROPHONE:
+                    volume = microphone_muted_ ? 0.0f : microphone_volume_;
+                    break;
+                case AudioSourceType::MEDIA:
+                    volume = media_muted_ ? 0.0f : media_volume_;
+                    break;
+                case AudioSourceType::SPEAKER:
+                    volume = speaker_muted_ ? 0.0f : speaker_volume_;
+                    break;
+                default:
+                    volume = 1.0f;
+                    break;
+            }
+        }
 
-        for (int i = 0; i < out_samples * out_channels; ++i) {
-            float mixed = output->data[i] + frame->data[i] * volume;
+        for (int j = 0; j < mix_samples * out_channels; ++j) {
+            float mixed = output->data[j] + frame->data[j] * volume;
             // 限制在有效范围内
             if (mixed > 1.0f) mixed = 1.0f;
             if (mixed < -1.0f) mixed = -1.0f;
-            output->data[i] = mixed;
+            output->data[j] = mixed;
         }
     }
 
@@ -726,17 +787,8 @@ std::shared_ptr<AudioFrame> AudioEngine::getAudioFrameByType(AudioSourceType typ
     case AudioSourceType::MICROPHONE:
         return get_microphone_frame();
     case AudioSourceType::MEDIA: {
-        // 从自定义回调获取媒体音频
-        std::lock_guard<std::mutex> lock(custom_sources_mutex_);
-        for (auto it = custom_source_callbacks_.begin(); it != custom_source_callbacks_.end(); ++it) {
-            if (it.value()) {
-                auto frame = it.value()();
-                if (frame) {
-                    return frame;
-                }
-            }
-        }
-        return nullptr;
+        // 从媒体队列获取帧
+        return getFrameFromQueue(media_queue_, media_mutex_);
     }
     case AudioSourceType::SPEAKER:
     case AudioSourceType::CUSTOM:
@@ -811,6 +863,147 @@ AudioFrame& AudioFrame::operator=(AudioFrame&& other) noexcept {
         other.data = nullptr;
     }
     return *this;
+}
+
+//=============================================================================
+// 独立混音线程实现（重构）
+//=============================================================================
+
+void AudioEngine::mixThreadFunc() {
+    LOG_INFO("[AudioMixer] Mix thread started");
+
+    while (mix_thread_running_.load()) {
+        auto start_time = std::chrono::steady_clock::now();
+
+        // 获取当前混音模式
+        AudioMixMode current_mode = getMixMode();
+
+        // 根据混音模式获取需要混音的源
+        QList<AudioSourceType> active_sources = getActiveSourcesByMode(current_mode);
+
+        // 准备混音源列表
+        QList<std::shared_ptr<AudioFrame>> sources;
+        sources_types_.clear();  // 清空之前的源类型列表
+
+        // 🔧 诊断：打印混音模式和活动源
+        static int mix_debug_count = 0;
+        if (mix_debug_count < 10) {
+            LOG_INFO("[AudioMixer] Mix mode: " + std::to_string(static_cast<int>(current_mode)) +
+                     ", active sources: " + std::to_string(active_sources.size()));
+            mix_debug_count++;
+        }
+
+        // 获取各源的音频帧
+        for (AudioSourceType type : active_sources) {
+            std::shared_ptr<AudioFrame> frame = nullptr;
+
+            switch (type) {
+                case AudioSourceType::MICROPHONE:
+                    frame = getFrameFromQueue(microphone_queue_, microphone_mutex_);
+                    break;
+                case AudioSourceType::MEDIA:
+                    frame = getFrameFromQueue(media_queue_, media_mutex_);
+                    break;
+                case AudioSourceType::SPEAKER:
+                    frame = getFrameFromQueue(speaker_queue_, speaker_mutex_);
+                    break;
+                default:
+                    break;
+            }
+
+            if (frame) {
+                // 为帧添加来源类型标记（通过混音模式推断）
+                // 这里我们直接使用 type 来确定音量
+                sources.append(frame);
+                sources_types_.append(type);
+            } else {
+                // 🔧 诊断：打印获取帧失败
+                static int get_frame_fail_count = 0;
+                if (get_frame_fail_count < 10) {
+                    LOG_INFO("[AudioMixer] Failed to get frame for source type: " + 
+                             std::to_string(static_cast<int>(type)));
+                    get_frame_fail_count++;
+                }
+            }
+        }
+
+        // 执行混音
+        std::shared_ptr<AudioFrame> mixed_frame = nullptr;
+        if (!sources.isEmpty()) {
+            mixed_frame = mixMultipleSources(sources, sources_types_);
+        } else {
+            // 🔧 修复：所有源都为空，生成静音帧（带时间戳）
+            mixed_frame = std::make_shared<AudioFrame>(48000, 2, 1024);
+            if (mixed_frame && mixed_frame->data) {
+                std::fill_n(mixed_frame->data, 1024 * 2, 0.0f);
+                // 🔧 时间戳对齐：使用系统时间
+                int64_t current_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                mixed_frame->timestamp_ms = current_time_ms;
+            }
+        }
+
+        // 发送混音结果
+        if (mixed_frame && mixed_frame->data) {
+            // 转换为 QByteArray
+            int data_size = mixed_frame->samples * mixed_frame->channels * sizeof(float);
+            QByteArray data(reinterpret_cast<const char*>(mixed_frame->data), data_size);
+
+            // 发送信号
+            emit audio_data_ready(data, mixed_frame->timestamp_ms);
+        }
+
+        // 计算休眠时间
+        auto end_time = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+
+        if (elapsed < MIX_THREAD_INTERVAL_MS) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(MIX_THREAD_INTERVAL_MS - elapsed));
+        }
+    }
+
+    LOG_INFO("[AudioMixer] Mix thread stopped");
+}
+
+std::shared_ptr<AudioFrame> AudioEngine::getFrameFromQueue(
+    std::queue<std::shared_ptr<AudioFrame>>& queue,
+    std::mutex& mutex
+) {
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (queue.empty()) {
+        return nullptr;
+    }
+
+    auto frame = queue.front();
+    queue.pop();
+    return frame;
+}
+
+void AudioEngine::pushFrameToQueue(
+    std::queue<std::shared_ptr<AudioFrame>>& queue,
+    std::mutex& mutex,
+    std::shared_ptr<AudioFrame> frame
+) {
+    if (!frame) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex);
+
+    // 限制队列大小
+    if (queue.size() >= MAX_QUEUE_SIZE) {
+        // 队列满，丢弃最旧的帧
+        queue.pop();
+        static int drop_count = 0;
+        drop_count++;
+        if (drop_count <= 10) {
+            LOG_WARNING("[AudioMixer] Queue full, dropping oldest frame (total dropped: " + 
+                      std::to_string(drop_count) + ")");
+        }
+    }
+
+    queue.push(frame);
 }
 
 } // namespace live_assistant

@@ -162,7 +162,13 @@ private:
     int audio_sample_rate_ = 48000;
     int audio_channels_ = 2;
 
-    // ========== 目标输出参数（与主直播匹配） ==========
+    // ========== 音频重采样缓冲区（实现固定1024样本输出）==========
+    static const int TARGET_AUDIO_SAMPLES = 1024;  // 与麦克风采样数匹配
+    std::vector<float> audio_resample_buffer_;       // 累积重采样数据
+    int64_t audio_resample_timestamp_ms_ = 0;       // 缓冲区对应的时间戳
+    size_t audio_resample_buffer_size_before_ = 0;  // 记录处理前的缓冲区大小
+
+    // ========== 目标输出参数（与主直播匹配）==========
     int target_width_ = 1280;
     int target_height_ = 720;
     int target_sample_rate_ = 48000;

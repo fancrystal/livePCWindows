@@ -43,6 +43,10 @@ class SettingsPanel;
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
+signals:
+    // 用户请求返回直播列表（离开当前直播间）
+    void request_return_to_live_list();
+
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
@@ -61,6 +65,14 @@ public:
     // 画布配置管理
     void set_canvas_config(const CanvasConfig& config);
     const CanvasConfig& get_canvas_config() const;
+
+    // 画布方向切换（横屏/竖屏）
+    void set_landscape_mode();   // 设置为横屏 16:9 (1920x1080)
+    void set_portrait_mode();    // 设置为竖屏 9:16 (1080x1920)
+    void toggle_canvas_orientation();  // 切换横竖屏
+
+    // 根据服务器配置设置画布方向（预留接口）
+    void apply_server_canvas_config(const QString& orientation);
 
 private slots:
     void update_preview();
@@ -103,6 +115,7 @@ private:
 
     // Canvas widget
     QPointer<CanvasWidget> canvas_widget_;
+    QWidget* canvasContainer_ = nullptr;  // 画布容器，用于保持宽高比
     // Stage placeholder container (visual only until canvas is attached)
     QPointer<QWidget> stageContainer_ = nullptr;
     QPointer<QPushButton> stageAddButton_ = nullptr;
@@ -140,6 +153,10 @@ private:
 
     // Canvas configuration
     CanvasConfig canvas_config_ = CanvasConfig::get_default();
+    bool is_portrait_mode_ = false;  // 当前是否为竖屏模式
+
+    // 服务器配置字段（预留）
+    QString server_canvas_orientation_;  // 服务器返回的画布方向: "landscape" | "portrait"
 
     // Live ID
     QString live_id_;
@@ -150,6 +167,7 @@ private:
     QString token_;
     QString live_url_;
     QString once_key_;
+    QString domain_;  // 从socket_url提取的域名
 
     // 当前直播项信息
     LiveItem current_live_item_;
@@ -195,6 +213,7 @@ private:
     QMenu* system_tray_menu_ = nullptr;
     QAction* tray_action_show_ = nullptr;
     QAction* tray_action_exit_ = nullptr;
+    bool tray_icon_initializing_ = false;  // 防止托盘图标初始化时误触发显示窗口
 
     // Exit dialog preference (0: ask, 1: minimize, 2: exit)
     int exit_preference_ = 0;
@@ -207,6 +226,8 @@ private:
     void setup_canvas_widget();
     void setupTitleBarButtons();
     void setupBottomButtonsStyle();
+    void initWebEngineUI();     // 初始化WebView UI属性
+    void initWebEngineViews();  // 初始化WebView控件（加载URL）
 
     // System tray methods
     void setupSystemTray();
@@ -256,6 +277,11 @@ private:
     void update_speaker_ui();
     void show_speaker_menu(const QPoint& pos);
 
+    // Audio volume settings persistence
+    void saveAudioVolumeSettings();
+    void loadAudioVolumeSettings();
+    void playVolumeFeedbackSound();
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void changeEvent(QEvent* event) override; // 处理窗口状态变化
@@ -275,6 +301,12 @@ protected:
     // Stage window controls
     void toggleStageMaximize();
     void restoreStage();
+
+    // 画布方向切换辅助方法
+    void apply_canvas_config_change();           // 应用画布配置变更
+    void adjust_scene_items_for_canvas_change(); // 调整场景项适配新画布
+    void update_canvas_orientation_ui();         // 更新画布方向 UI
+    void update_stage_container_aspect_ratio();  // 根据画布方向调整舞台容器宽高比
 };
 
 } // namespace live_assistant

@@ -4,12 +4,14 @@
 
 LoginWorker::LoginWorker(const QString& loginUrl, const QString& apiKey,
                          const QString& username, const QString& password,
+                         bool remember,
                          QObject* parent)
     : QObject(parent)
     , loginUrl_(loginUrl)
     , apiKey_(apiKey)
     , username_(username)
     , password_(password)
+    , remember_(remember)
     , settings_("LiveAssistant", "Login")
 {
 }
@@ -42,9 +44,13 @@ void LoginWorker::startLogin()
 
         // 保存登录凭据
         settings_.setValue("username", username_);
-        settings_.setValue("password", password_);
-        settings_.setValue("remember", true);
-        LOG_INFO("后台线程保存登录凭据成功");
+        if (remember_) {
+            settings_.setValue("password", password_);
+        } else {
+            settings_.remove("password");
+        }
+        settings_.setValue("remember", remember_);
+        LOG_INFO(QString("后台线程保存登录凭据成功: remember=%1").arg(remember_).toStdString());
 
         LOG_INFO(QString("后台线程登录成功: userId=%1").arg(userId).toStdString());
         emit loginSuccess(userId, token, loginKey);

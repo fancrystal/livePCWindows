@@ -14,31 +14,31 @@
    <string>摄像头设置</string>
   </property>
   <property name="styleSheet">
-   <string notr="true">QDialog { background-color: #1e1e2e; color: #cdd6f4; }
-QWidget { background-color: #1e1e2e; color: #cdd6f4; font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; font-size: 14px; }
-QPushButton { background-color: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 8px; padding: 10px 20px; font-weight: 500; }
-QPushButton:hover { background-color: #45475a; border-color: #89b4fa; }
-QPushButton:pressed { background-color: #585b70; }
-QPushButton:checked { background-color: #313244; border-color: #89b4fa; color: #89b4fa; font-weight: 600; }
-QLabel { color: #cdd6f4; font-weight: 500; }
-QCheckBox { color: #cdd6f4; spacing: 8px; }
-QCheckBox::indicator { width: 20px; height: 20px; border: 2px solid #45475a; border-radius: 4px; background-color: #313244; }
-QCheckBox::indicator:hover { border-color: #89b4fa; }
-QCheckBox::indicator:checked { background-color: #89b4fa; border-color: #89b4fa; }
-QCheckBox::indicator:checked::after { content: '✓'; color: #1e1e2e; font-weight: bold; }
-QComboBox { background-color: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 6px; padding: 8px 12px; min-height: 32px; }
-QComboBox:hover { border-color: #89b4fa; }
-QComboBox:focus { border-color: #89b4fa; }
-QComboBox::drop-down { border: none; width: 32px; background-color: #313244; border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
-QComboBox::down-arrow { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #cdd6f4; margin-top: 2px; }
-QComboBox QAbstractItemView { background-color: #313244; border: 1px solid #45475a; border-radius: 6px; selection-background-color: #45475a; selection-color: #cdd6f4; outline: none; }
+   <string notr="true">QDialog { background-color: #2a2a2a; color: #ffffff; }
+QWidget { background-color: #2a2a2a; color: #ffffff; font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; font-size: 14px; }
+QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 8px; padding: 10px 20px; font-weight: 500; }
+QPushButton:hover { background-color: #444444; border-color: #4a6ef0; }
+QPushButton:pressed { background-color: #555555; }
+QPushButton:checked { background-color: #333333; border-color: #4a6ef0; color: #4a6ef0; font-weight: 600; }
+QLabel { color: #ffffff; font-weight: 500; }
+QCheckBox { color: #ffffff; spacing: 8px; }
+QCheckBox::indicator { width: 20px; height: 20px; border: 2px solid #444444; border-radius: 4px; background-color: #333333; }
+QCheckBox::indicator:hover { border-color: #4a6ef0; }
+QCheckBox::indicator:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
+QCheckBox::indicator:checked::after { content: '✓'; color: #2a2a2a; font-weight: bold; }
+QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 6px; padding: 8px 12px; min-height: 32px; combobox-popup: 0; }
+QComboBox:hover { border-color: #4a6ef0; }
+QComboBox:focus { border-color: #4a6ef0; }
+QComboBox::drop-down { width: 20px; border: none; }
+QComboBox::down-arrow { image: url(:/images/Frame_Tri.png); width: 10px; height: 10px; }
+QComboBox QAbstractItemView { background-color: #333333; border: 1px solid #444444; border-radius: 6px; selection-background-color: #444444; selection-color: #ffffff; outline: none; }
 QComboBox QAbstractItemView::item { padding: 8px 12px; min-height: 28px; }
-QComboBox QAbstractItemView::item:hover { background-color: #45475a; }
-QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-radius: 8px; }
+QComboBox QAbstractItemView::item:hover { background-color: #444444; }
+QStackedWidget { background-color: #2a2a2a; border: 1px solid #444444; border-radius: 8px; }
 /* 左侧标签按钮样式 */
-#leftPanel QPushButton { background-color: transparent; color: #cdd6f4; border: none; border-right: 3px solid transparent; padding: 14px 16px; text-align: left; font-size: 14px; font-weight: 500; }
-#leftPanel QPushButton:hover { background-color: #313244; color: #cdd6f4; }
-#leftPanel QPushButton:checked { background-color: #313244; border-right: 3px solid #89b4fa; color: #89b4fa; font-weight: 600; }</string>
+#leftPanel QPushButton { background-color: transparent; color: #cccccc; border: none; border-right: 3px solid transparent; padding: 14px 16px; text-align: left; font-size: 14px; font-weight: 500; }
+#leftPanel QPushButton:hover { background-color: #333333; color: #ffffff; }
+#leftPanel QPushButton:checked { background-color: #333333; border-right: 3px solid #4a6ef0; color: #4a6ef0; font-weight: 600; }</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
@@ -74,7 +74,7 @@ QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-ra
         </size>
        </property>
        <property name="styleSheet">
-        <string notr="true">background-color: #181825;</string>
+        <string notr="true">background-color: #222222;</string>
        </property>
        <layout class="QVBoxLayout" name="verticalLayout_left">
         <property name="spacing">
@@ -106,17 +106,7 @@ QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-ra
           </property>
          </widget>
         </item>
-        <!-- 摄像头按钮 -->
-        <item>
-         <widget class="QPushButton" name="pushButton_camera">
-          <property name="text">
-           <string>摄像头</string>
-          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
+
         <!-- 美颜设置按钮 -->
         <item>
          <widget class="QPushButton" name="pushButton_beauty">
@@ -435,6 +425,26 @@ QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-ra
            </item>
           </layout>
          </item>
+         <!-- 摄像头实时预览区域 -->
+         <item>
+          <widget class="QLabel" name="label_preview">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>200</height>
+            </size>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">background-color: #222222; border-radius: 8px; border: 1px solid #444444;</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+           <property name="text">
+            <string>请选择摄像头</string>
+           </property>
+          </widget>
+         </item>
          <!-- 画面镜像 -->
          <item>
           <layout class="QHBoxLayout" name="horizontalLayout_mirror">
@@ -454,91 +464,12 @@ QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-ra
            <item>
             <widget class="QCheckBox" name="checkBox_mirror">
              <property name="text">
-              <string/>
+              <string>水平镜像</string>
              </property>
             </widget>
            </item>
            <item>
             <spacer name="horizontalSpacer_5">
-             <property name="orientation">
-              <enum>Qt::Horizontal</enum>
-             </property>
-             <property name="sizeHint" stdset="0">
-              <size>
-               <width>40</width>
-               <height>20</height>
-              </size>
-             </property>
-            </spacer>
-           </item>
-          </layout>
-         </item>
-         <!-- 摄像头开关 -->
-         <item>
-          <layout class="QHBoxLayout" name="horizontalLayout_toggle">
-           <item>
-            <widget class="QLabel" name="label_toggle">
-             <property name="text">
-              <string>摄像头开关</string>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>80</width>
-               <height>0</height>
-              </size>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="checkBox_toggle">
-             <property name="text">
-              <string/>
-             </property>
-             <property name="checked">
-              <bool>true</bool>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <spacer name="horizontalSpacer_6">
-             <property name="orientation">
-              <enum>Qt::Horizontal</enum>
-             </property>
-             <property name="sizeHint" stdset="0">
-              <size>
-               <width>40</width>
-               <height>20</height>
-              </size>
-             </property>
-            </spacer>
-           </item>
-          </layout>
-         </item>
-         <!-- 圆角 -->
-         <item>
-          <layout class="QHBoxLayout" name="horizontalLayout_corner">
-           <item>
-            <widget class="QLabel" name="label_corner">
-             <property name="text">
-              <string>圆角</string>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>80</width>
-               <height>0</height>
-              </size>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="checkBox_corner">
-             <property name="text">
-              <string/>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <spacer name="horizontalSpacer_7">
              <property name="orientation">
               <enum>Qt::Horizontal</enum>
              </property>
@@ -599,20 +530,7 @@ QStackedWidget { background-color: #1e1e2e; border: 1px solid #45475a; border-ra
          </item>
         </layout>
        </widget>
-       <widget class="QWidget" name="page_camera">
-        <layout class="QVBoxLayout" name="verticalLayout_camera">
-         <item>
-          <widget class="QLabel" name="label_camera_page">
-           <property name="text">
-            <string>摄像头设置页面</string>
-           </property>
-           <property name="alignment">
-            <set>Qt::AlignCenter</set>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
+
        <widget class="QWidget" name="page_beauty">
         <layout class="QVBoxLayout" name="verticalLayout_beauty">
          <item>

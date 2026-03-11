@@ -302,7 +302,7 @@ Rectangle {
 
         // 调用C++登录
         if (typeof loginWindow !== 'undefined' && loginWindow.qmlLogin) {
-            loginWindow.qmlLogin(phone, password)
+            loginWindow.qmlLogin(phone, password, rememberBox.checked)
         }
     }
 
@@ -333,29 +333,9 @@ Rectangle {
     Connections {
         target: loginWindow
 
-        function onLoginStateChanged(loggingIn, errorMsg) {
-            console.log("QML onLoginStateChanged: loggingIn=" + loggingIn + ", error=" + errorMsg)
-            isLoggingIn = loggingIn
-            if (!loggingIn && errorMsg && errorMsg !== "") {
-                loginError = errorMsg
-                statusText.text = errorMsg
-                statusText.color = "#ff6b6b"
-            }
-        }
-
         function onLoginFailed(errorMsg) {
             console.log("QML onLoginFailed: " + errorMsg)
             handleLoginFailed(errorMsg)
-        }
-
-        function onLoginStatusChanged(status) {
-            console.log("QML onLoginStatusChanged: " + status)
-            if (status === "登录成功！") {
-                isLoggingIn = false
-                loginStatus = status
-                statusText.text = status
-                statusText.color = "#4aa6ff"
-            }
         }
 
         function onLoginSuccess() {
@@ -367,22 +347,11 @@ Rectangle {
         }
     }
 
-    // 处理登录失败 - C++直接调用此方法
-    function onCppLoginFailed(errorMsg) {
-        console.log("QML onCppLoginFailed called: " + errorMsg)
-        handleLoginFailed(errorMsg)
-    }
-
-    // 处理登录失败
-    function onLoginFailed(errorMsg) {
-        console.log("QML onLoginFailed called: " + errorMsg)
-        handleLoginFailed(errorMsg)
-    }
-
     // 统一的登录失败处理
     function handleLoginFailed(errorMsg) {
         isLoggingIn = false
         loginError = errorMsg
+        loginStatus = ""
         statusText.text = errorMsg
         statusText.color = "#ff6b6b"
         console.log("handleLoginFailed: isLoggingIn=" + isLoggingIn + ", error=" + errorMsg)

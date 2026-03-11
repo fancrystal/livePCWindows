@@ -40,6 +40,8 @@ public:
     virtual int get_bitrate() const = 0;
 
     virtual ErrorCode force_keyframe() = 0;
+    
+    virtual ErrorCode reset() { return ErrorCode::SUCCESS; }
 };
 
 class H264Encoder : public VideoEncoder {
@@ -64,8 +66,8 @@ public:
     }
 
     ErrorCode force_keyframe() override;
+    ErrorCode reset() override;
 
-    // Flush internal encoder buffers and return remaining packets.
     ErrorCode flush(std::vector<EncodedPacketPtr>& packets);
 
 private:
@@ -79,14 +81,14 @@ private:
     VideoEncoderConfig config_;
     bool initialized_ = false;
     bool force_keyframe_ = false;
-    int64_t first_frame_timestamp_us_ = -1;  // 记录第一帧时间戳，确保从0开始
+    int64_t total_frames_ = 0;
+    bool first_keyframe_sent_ = false;
 
-    // 🔧 运行时故障切换
-    std::vector<std::string> encoder_candidates_;  // 编码器候选列表
-    int current_encoder_index_ = 0;  // 当前使用的编码器索引
+    std::vector<std::string> encoder_candidates_;
+    int current_encoder_index_ = 0;
     int consecutive_errors_ = 0;
-    static const int MAX_CONSECUTIVE_ERRORS = 5;  // 连续5次错误后切换
-    bool has_exhausted_encoders_ = false;  // 是否已经尝试了所有编码器
+    static const int MAX_CONSECUTIVE_ERRORS = 5;
+    bool has_exhausted_encoders_ = false;
 
     const AVCodec* codec_ = nullptr;
     AVCodecContext* codec_ctx_ = nullptr;

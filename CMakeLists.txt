@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(LiveAssistant VERSION 0.1 LANGUAGES CXX)
+project(LiveAssistant VERSION 0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,7 +24,7 @@ if(WIN32)
 endif()
 
 # Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture, MultimediaWidgets for QVideoWidget, PrintSupport for QCustomPlot)
-find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport)
+find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport WebEngineWidgets)
 qt_standard_project_setup()
 
 # Third-party library paths
@@ -48,7 +48,7 @@ include_directories(${VLC_DIR}/include)   # VLC include directory
 file(GLOB_RECURSE APP_SOURCES "src/app/*.cpp")
 file(GLOB_RECURSE APP_HEADERS "include/app/*.h")
 list(APPEND APP_SOURCES 
-    src/app/add_material_dialog.cpp 
+    src/app/add_material_dialog.cpp
     src/app/scene_item_row.cpp
     src/app/login_worker.cpp
     src/app/config.cpp
@@ -137,6 +137,7 @@ target_link_libraries(LiveAssistant PRIVATE
     Qt6::Multimedia
     Qt6::MultimediaWidgets
     Qt6::PrintSupport
+    Qt6::WebEngineWidgets
     # FFmpeg libraries
     ${FFMPEG_DIR}/lib/x64/avformat.lib
     ${FFMPEG_DIR}/lib/x64/avcodec.lib

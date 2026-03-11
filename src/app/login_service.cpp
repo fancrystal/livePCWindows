@@ -44,8 +44,16 @@ bool LoginService::login(const QString &loginUrl, const QString &key, const QStr
     // 发送POST请求
     HttpClient* client = HttpClient::instance();
     LOG_INFO(QString("Sending login request to: %1").arg(url).toStdString());
-    QJsonObject response = client->post(url, postData);
-    
+    QString httpErrMsg;
+    QJsonObject response = client->post(url, postData, httpErrMsg);
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("Login HTTP request failed: %1").arg(errMessage).toStdString());
+        return false;
+    }
+
     LOG_INFO(QString("Login response: %1").arg(QJsonDocument(response).toJson(QJsonDocument::Compact).constData()).toStdString());
 
     // 处理响应结果
@@ -79,8 +87,16 @@ bool LoginService::genOnceLoginKey(const QString &baseUrl, const QString &userId
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
     client->addHeader(&headers, "Content-Type", "application/json");
 
-    QJsonObject response = client->get(url, headers);
+    QString httpErrMsg;
+    QJsonObject response = client->get(url, headers, httpErrMsg);
     client->freeHeaders(headers);
+
+    // 如果HTTP请求失败，返回HTTP错误信息
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("Generate login key HTTP request failed: %1").arg(errMessage).toStdString());
+        return false;
+    }
 
     // 处理响应结果
     if (response["code"].toInt() == 200) {

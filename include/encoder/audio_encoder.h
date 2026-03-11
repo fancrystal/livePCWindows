@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <mutex>
 
 #include <QByteArray>
 #include <QObject>
@@ -42,8 +43,6 @@ public:
 
     virtual ErrorCode set_bitrate(int bitrate) = 0;
     virtual int get_bitrate() const = 0;
-
-    // Reset encoder state (for new streaming session)
     virtual ErrorCode reset() { return ErrorCode::SUCCESS; }
 };
 
@@ -99,10 +98,23 @@ private:
 
     SwrContext* swr_ = nullptr;
 
+    // 🔧 互斥锁：保护 swr_ 和相关资源的线程安全访问
+    mutable std::mutex encoder_mutex_;
+
     // 新增：简单的字节缓冲区（与原项目一致）
     QByteArray input_buffer_;
-    int64_t last_audio_timestamp_ = -1;  // 用于单调递增保护
-    int64_t first_frame_timestamp_ms_ = -1;  // 记录第一帧时间戳，用于确保从0开始
+    int64_t last_audio_timestamp_ = -1;  // 用于单调递增保护和时间戳回绕检测
+    
+    // 🔧 新增：输出帧计数器，用于计算单调递增的 PTS
+    // AAC 编码器可能有缓冲/延迟，不能依赖输入 timestamp 或编码器返回的 PTS
+    // 我们用帧计数 * 每帧时长来计算 PTS，保证单调递增
+    int64_t output_frame_count_;
+    
+    int64_t frame_duration_ms_;
+    
+    int64_t frame_offset_in_batch_;
+    
+    int frame_samples_;
 };
 
 } // namespace live_assistant

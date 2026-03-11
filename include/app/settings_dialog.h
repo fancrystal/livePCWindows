@@ -58,6 +58,9 @@ public:
     std::string get_camera_resolution() const;
     int get_camera_fps() const;
     bool is_camera_mirror() const;
+    
+    // 设置视频引擎用于摄像头预览
+    void set_video_engine(std::shared_ptr<VideoEngine> engine);
 
     // ===== 背景设置 =====
     void set_background_type(const QString& type);

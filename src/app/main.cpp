@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QIcon>
+#include <QTimer>
 #include "app/login_window.h"
 #include "app/live_list_window.h"
 #include "app/main_window.h"
@@ -57,6 +58,21 @@ int main(int argc, char *argv[]) {
             // 创建或获取主窗口
             if (!main_window) {
                 main_window = new live_assistant::MainWindow();
+
+                // 连接返回直播列表信号
+                QObject::connect(main_window, &live_assistant::MainWindow::request_return_to_live_list,
+                    [main_window, &live_list_window]() {
+                    LOG_INFO("User requested to return to live list");
+
+                    // 隐藏主窗口
+                    main_window->hide();
+
+                    // 显示直播列表窗口
+                    if (live_list_window) {
+                        live_list_window->show();
+                        live_list_window->activateWindow();
+                    }
+                });
             }
 
             // 设置凭证信息
@@ -98,11 +114,19 @@ int main(int argc, char *argv[]) {
             // 设置直播项信息
             main_window->setLiveItem(liveItem);
 
-            // 设置直播ID
+            // 先显示窗口（禁用更新），避免初始化过程中的闪烁
+            main_window->show();
+            main_window->setUpdatesEnabled(false);
+
+            // 设置直播ID（会触发所有模块初始化）
             main_window->set_live_id(live_id);
 
-            // 显示主窗口
-            main_window->show();
+            // 延迟启用窗口更新，等所有初始化完成后再显示
+            QTimer::singleShot(0, main_window, [main_window]() {
+                main_window->setUpdatesEnabled(true);
+                main_window->update();
+                LOG_INFO("Window updates enabled after all initialization completed");
+            });
         });
 
         // 显示直播列表窗口

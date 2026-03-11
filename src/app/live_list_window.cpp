@@ -64,7 +64,6 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         ui->createLiveButton->setStyleSheet(
             "QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4a6ef0, stop:1 #f05a6a); color: white; border-radius: 6px; padding: 6px 12px; }"
         );
-        // 给createLiveButton左边加一个spacer，确保它不会太靠右
         // pagination and grid spacing
         if (ui->gridLayout) {
             ui->gridLayout->setHorizontalSpacing(18);
@@ -192,10 +191,15 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     if (ui && ui->headerWidget) {
         QPushButton* closeBtn = ui->headerWidget->findChild<QPushButton*>("winCloseBtn");
         QPushButton* miniBtn = ui->headerWidget->findChild<QPushButton*>("winMinBtn");
-        
+
+        // 隐藏新建直播按钮（功能未实现）
+        if (ui->createLiveButton) {
+            ui->createLiveButton->hide();
+        }
+
         // 从最右边往左计算位置
         int x = ui->headerWidget->width() - 8;
-        
+
         if (closeBtn) {
             x -= closeBtn->width();
             closeBtn->move(x, 8);
@@ -780,9 +784,14 @@ bool LiveListWindow::eventFilter(QObject* watched, QEvent* event) {
             // reposition control buttons to top-right corner
             QPushButton* closeBtn = ui->headerWidget->findChild<QPushButton*>("winCloseBtn");
             QPushButton* miniBtn = ui->headerWidget->findChild<QPushButton*>("winMinBtn");
-            
+
+            // 隐藏新建直播按钮（功能未实现）
+            if (ui->createLiveButton) {
+                ui->createLiveButton->hide();
+            }
+
             int x = ui->headerWidget->width() - 8;
-            
+
             if (closeBtn) {
                 x -= closeBtn->width();
                 closeBtn->move(x, 8);

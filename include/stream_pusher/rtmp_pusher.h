@@ -103,6 +103,9 @@ private:
     
     // Whether we've sent the first video keyframe yet
     bool have_sent_first_key_ = false;
+    
+    // Whether this is the first video packet (for PTS adjustment)
+    bool is_first_video_packet_ = true;
 };
 
 } // namespace live_assistant

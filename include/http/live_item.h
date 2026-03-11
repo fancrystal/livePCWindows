@@ -97,8 +97,13 @@ struct LiveItem {
     int reserveCount;                   // 预约人数
     int viewCount;                      // 观看人数
     bool isSelected = false;            // 是否被勾选
-    bool isVerticalScreen = false;      // 是否是竖屏直播
+    QString canvasOrientation;          // 画布方向: "landscape"(横屏16:9) | "portrait"(竖屏9:16), 默认横屏
     QList<InsertFileItem> insertFiles;  // 该直播的插播文件列表
+
+    // 便捷方法：检查是否为竖屏模式
+    bool isPortraitMode() const {
+        return canvasOrientation.toLower() == "portrait";
+    }
 };
 
 // 状态转字符串（用于UI显示和接口参数）

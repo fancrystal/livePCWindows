@@ -69,6 +69,9 @@ public:
     bool start_capture();
     bool stop_capture();
 
+    // 检查是否正在采集
+    bool is_capturing() const { return is_capturing_; }
+
     struct AudioDeviceInfo {
         std::string id;     // Qt device id (UTF-8)
         std::string name;   // Friendly name (UTF-8)
@@ -88,6 +91,9 @@ public:
 
     std::shared_ptr<AudioFrame> get_audio_frame();
 
+    // 🔧 新增：获取单独的麦克风帧
+    std::shared_ptr<AudioFrame> get_microphone_frame();
+
     // Volume control (0.0 to 1.0)
     bool set_microphone_volume(float volume);
     float get_microphone_volume();
@@ -96,12 +102,21 @@ public:
     bool set_microphone_mute(bool mute);
     bool get_microphone_mute();
 
+    // 🔧 降噪功能
+    bool set_noise_suppression(bool enabled);
+    bool get_noise_suppression() const;
+    bool set_noise_suppression_level(float level);  // 0.0 - 1.0
+    float get_noise_suppression_level() const;
+
     // Speaker volume control (system level)
     bool set_speaker_volume(float volume);
     float get_speaker_volume();
 
     bool set_speaker_mute(bool mute);
     bool get_speaker_mute();
+    
+    // 获取音频采集器（用于控制扬声器采集）
+    AudioCapturer* get_audio_capturer() const { return audio_capturer_.get(); }
 
     bool add_audio_source(std::shared_ptr<AudioEngine> source);
     bool remove_audio_source(std::shared_ptr<AudioEngine> source);
@@ -115,6 +130,9 @@ public:
     // ========== 混音模式控制 ==========
     void setMixMode(AudioMixMode mode);
     AudioMixMode getMixMode() const;
+
+    // ========== 媒体音频推送（重构）==========
+    void pushMediaFrame(std::shared_ptr<AudioFrame> frame);
 
     // ========== 预留扩展接口 ==========
 
@@ -190,8 +208,11 @@ signals:
     void mixModeChanged(AudioMixMode mode);
 
 public slots:
-    // 处理 AudioCapturer 的数据捕获信号
+    // 处理 AudioCapturer 的数据捕获信号（麦克风）
     void on_data_captured(QByteArray data, int64_t timestamp);
+    
+    // 处理 AudioCapturer 的数据捕获信号（扬声器/桌面音频）
+    void on_speaker_data_captured(QByteArray data, int64_t timestamp);
 
 private:
 
@@ -200,10 +221,12 @@ private:
     /**
      * @brief 混音处理（核心方法）
      * @param sources 输入音频源列表
+     * @param source_types 音频源类型列表
      * @return 混音后的音频帧
      */
     std::shared_ptr<AudioFrame> mixMultipleSources(
-        const QList<std::shared_ptr<AudioFrame>>& sources
+        const QList<std::shared_ptr<AudioFrame>>& sources,
+        const QList<AudioSourceType>& source_types
     );
 
     /**
@@ -218,7 +241,7 @@ private:
 
     // ========== 数据成员 ==========
 
-    // 当前混音模式
+    // 当前混音模式（默认：只麦克风）
     AudioMixMode mix_mode_ = AudioMixMode::MIC_ONLY;
 
     // 各音频源配置
@@ -260,12 +283,53 @@ private:
     // Volume control (protected by state_mutex_)
     float microphone_volume_protected_ = 1.0f;
     bool microphone_muted_protected_ = false;
+
+    // 🔧 降噪功能
+    float noise_suppression_level_ = 0.5f;
+    int16_t noise_gate_threshold_ = 500;
     float speaker_volume_protected_ = 1.0f;
     bool speaker_muted_protected_ = false;
 
     std::mutex frame_mutex_;
     std::condition_variable frame_cv_;
     std::queue<std::shared_ptr<AudioFrame>> frame_queue_;
+
+    // ========== 独立混音线程（重构）==========
+    std::thread mix_thread_;
+    std::atomic<bool> mix_thread_running_{false};
+    static const int MIX_THREAD_INTERVAL_MS = 21;  // 48kHz / 1024 samples ≈ 21.33ms
+
+    // 各音频源独立队列（FIFO）
+    std::queue<std::shared_ptr<AudioFrame>> microphone_queue_;
+    std::queue<std::shared_ptr<AudioFrame>> media_queue_;
+    std::queue<std::shared_ptr<AudioFrame>> speaker_queue_;
+    
+    // 队列互斥锁
+    std::mutex microphone_mutex_;
+    std::mutex media_mutex_;
+    std::mutex speaker_mutex_;
+
+    // 队列大小限制：10 帧约 210ms，为混音线程提供足够缓冲避免爆音
+    static const size_t MAX_QUEUE_SIZE = 10;
+
+    // 当前混音的源类型列表（用于音量控制）
+    QList<AudioSourceType> sources_types_;
+
+    // 混音线程主函数
+    void mixThreadFunc();
+
+    // 从队列获取帧（FIFO）
+    std::shared_ptr<AudioFrame> getFrameFromQueue(
+        std::queue<std::shared_ptr<AudioFrame>>& queue,
+        std::mutex& mutex
+    );
+
+    // 将帧推入队列
+    void pushFrameToQueue(
+        std::queue<std::shared_ptr<AudioFrame>>& queue,
+        std::mutex& mutex,
+        std::shared_ptr<AudioFrame> frame
+    );
 
     // Protects state variables that may be accessed from multiple threads
     mutable std::mutex state_mutex_;
@@ -275,16 +339,15 @@ private:
 };
 
 struct AudioFrame {
-    float* data = nullptr;
-    int16_t* raw_data = nullptr;
+    float* data = nullptr;          // float 格式音频数据 (交错格式)
+                                     // 范围: -1.0 到 1.0
 
-    MediaTimestamp timestamp;
-
+    // 🔧 统一使用毫秒时间戳 (timestamp_ms)
     int64_t timestamp_ms = 0;
 
     int sample_rate = 0;
     int channels = 0;
-    int samples = 0;
+    int samples = 0;                // 每个通道的样本数
 
     AudioFrame() = default;
     AudioFrame(int sample_rate, int channels, int samples);
@@ -296,8 +359,8 @@ struct AudioFrame {
     AudioFrame(AudioFrame&& other) noexcept;
     AudioFrame& operator=(AudioFrame&& other) noexcept;
 
-    void convert_raw_to_float();
-    void convert_float_to_raw();
+    // 获取数据大小（字节）
+    size_t data_size() const { return samples * channels * sizeof(float); }
 };
 
 } // namespace live_assistant

@@ -2,22 +2,51 @@
 
 #include <memory>
 #include <mutex>
+#include <deque>
+#include <map>
+#include <vector>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 #include <QTimer>
 #include <QObject>
-#include <QOpenGLContext>
-#include <QOffscreenSurface>
 
 #include "scene_manager/compositor.h"
 #include "encoder/encoder.h"
 #include "stream_pusher/stream_pusher.h"
 #include "common/media_clock.h"
+#include "common/timestamp.h"
+#include "audio_engine/audio_resampler.h"
+#include "audio_engine/audio_engine.h"  // 包含 AudioSourceType
+#include "video_engine/video_engine.h"  // 包含 VideoFrame 定义
 
-// Forward declarations
 namespace live_assistant {
-class AudioEngine;
-}
 
-namespace live_assistant {
+// 🔧 编码前视频帧结构（用于编码队列）
+struct PreEncodeVideoFrame {
+    std::shared_ptr<VideoFrame> frame;
+    int64_t pts_ms;           // PTS（毫秒）
+    int64_t wallclock_us;     // 壁挂钟时间（微秒）
+    int64_t frame_count;      // 帧序号
+};
+
+// 音频缓冲区数据（照搬 OBS）
+struct AudioBufferData {
+    std::vector<uint8_t> data;
+    int64_t timestamp_ms;
+    uint32_t sample_rate = 48000;
+    uint32_t channels = 2;
+};
+
+// 音频源信息（用于混音）
+struct MixAudioSource {
+    std::string source_id;
+    AudioSourceType type;
+    std::deque<AudioBufferData> buffer;  // 每个源独立的缓冲区
+    std::unique_ptr<AudioResampler> resampler;  // 重采样器
+    bool active = false;
+    float volume = 1.0f;  // 音量控制（混音用）
+};
 
 class CompositorEncoderBridge : public QObject {
     Q_OBJECT
@@ -52,6 +81,13 @@ public:
     void enable_adaptive_quality(bool enable);
     void set_quality_thresholds(int min_fps, int max_fps);
 
+    // 🔧 音频源管理（照搬 OBS 的多路音频支持）
+    void register_audio_source(const std::string& source_id, AudioSourceType type);
+    void unregister_audio_source(const std::string& source_id);
+    void set_audio_source_volume(const std::string& source_id, float volume);
+    bool push_audio_data(const std::string& source_id, const QByteArray& data, 
+                         int64_t timestamp, uint32_t sample_rate = 48000);
+
 signals:
     void frame_encoded(const std::vector<uint8_t>& data);
     void quality_degraded(const QString& reason);
@@ -63,9 +99,8 @@ signals:
     void streaming_error(const QString& error);
 
 private slots:
-    void on_compositor_frame_ready();
     void on_encode_timer();
-    // 处理音频引擎的原始数据（直接转发给编码器）
+    // 处理音频引擎的原始数据（提交到混音器）
     void on_audio_data_ready(const QByteArray& data, int64_t timestamp);
     // 处理编码后的音频数据（推送到流）
     void on_audio_encoded(const uint8_t* data, int size, int64_t timestamp);
@@ -73,7 +108,14 @@ private slots:
 private:
     void encode_and_push_frame();
     std::shared_ptr<VideoFrame> capture_compositor_frame();
-    void initialize_opengl_context();
+
+    // 音频处理（照搬 OBS）
+    void process_audio_buffer();  // 音频缓冲区处理
+    void generate_silent_audio(std::vector<int16_t>& output, uint32_t frames);  // 生成静音帧
+    bool validate_audio_format(uint32_t sample_rate, uint32_t channels, uint32_t bits_per_sample);
+
+    // 🔧 降级策略处理
+    void check_and_adjust_quality(int64_t encode_time_ms);
 
     // 组件
     std::shared_ptr<Compositor> compositor_;
@@ -97,12 +139,98 @@ private:
     MediaClock media_clock_;
     bool silent_audio_enabled_ = false;
 
+    int64_t video_frame_count_ = 0;
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🔧 异步编码架构：编码队列 + 独立编码线程
+    // ═══════════════════════════════════════════════════════════════
+    
+    // 启动/停止编码线程池
+    void start_encoder_threads();
+    void stop_encoder_threads();
+    
+    // 捕获帧并加入编码队列（定时器回调）
+    void capture_and_queue_frame();
+    
+    // 编码前视频帧队列（线程安全）
+    // 🔧 编码队列大小：增加到 20 帧（约 600ms @ 30fps）
+    // 之前只有 5 帧导致频繁溢出丢帧
+    static constexpr size_t MAX_ENCODE_QUEUE_SIZE = 20;
+    std::deque<PreEncodeVideoFrame> pre_encode_queue_;
+    std::mutex encode_queue_mutex_;
+    std::condition_variable encode_queue_cv_;
+    
+    // 编码线程池（目前只用1个线程，保证 PTS 顺序）
+    static constexpr int MAX_ENCODER_THREADS = 1;
+    std::vector<std::thread> encoder_threads_;
+    std::atomic<bool> encoder_threads_running_{false};
+    
+    // 编码线程工作函数
+    void encoder_thread_func(int thread_id);
+    
+    // 将帧加入编码队列（满了丢弃最旧的）
+    void push_to_encode_queue(const PreEncodeVideoFrame& frame);
+    
+    // 从编码队列取帧（阻塞等待）
+    bool pop_from_encode_queue(PreEncodeVideoFrame& frame);
+
+    // 🔧 多路音频系统（照搬 OBS obs-output.c）
+    std::mutex audio_sources_mutex_;
+    std::map<std::string, std::unique_ptr<MixAudioSource>> audio_sources_;  // 多路音频源
+    
+    // 混音输出缓冲区（float 格式，与 OBS 一致）
+    std::mutex mix_buffer_mutex_;
+    std::vector<float> mix_accumulated_data_;  // 累积的混音数据
+    uint64_t total_audio_samples_ = 0;  // 累计音频样本数
+    int64_t audio_start_ts_ = 0;        // 音频开始时间戳
+    bool audio_started_ = false;
+    
+    // 🔧 音频时间戳偏移（微秒），用于计算每帧的 PTS
+    int64_t audio_timestamp_offset_us_ = 0;
+    
+    // 🔧 第一帧音频的时间戳偏移（毫秒），用于让时间戳从0开始
+    int64_t first_audio_timestamp_ms_ = -1;
+    
+    // 🔧 记录 media_clock 在推流开始时的起始时间戳（微秒）
+    int64_t media_clock_start_us_ = 0;
+
+    // SWS 上下文缓存（用于 RGBA 到 NV12 转换）
+    void* sws_context_ = nullptr;
+    int cached_width_ = 0;
+    int cached_height_ = 0;
+
+    // SWS 上下文管理
+    void initialize_opengl_context();
+    void* get_or_create_sws_context(int src_width, int src_height);
+    void release_sws_context();
+
+    // 合成器帧回调
+    void on_compositor_frame_ready();
+
+    // 🔧 视频时间戳
+    int64_t video_start_ts_ = 0;
+    bool video_started_ = false;
+    
+    // 🔧 OBS 风格 PTS 偏移归零（确保第一帧 PTS=0）
+    int64_t first_video_pts_ms_ = -1;      // 第一帧音/视频的 PTS（毫秒），音视频共用
+    bool streaming_pts_initialized_ = false;  // 推流 PTS 是否已初始化
+
     // 线程安全：保护状态变量的互斥锁
     mutable std::mutex state_mutex_;
 
-    // 音频时间戳基准（用于将绝对时间戳转换为相对时间戳）
-    int64_t audio_timestamp_base_ = 0;
-    bool audio_timestamp_base_initialized_ = false;
+    // 🔧 性能监控
+    struct PerformanceStats {
+        int64_t video_frames_encoded = 0;
+        int64_t audio_frames_encoded = 0;
+        int64_t video_frames_dropped = 0;
+        int64_t audio_frames_dropped = 0;
+        double avg_encode_time_ms = 0.0;
+        double max_encode_time_ms = 0.0;
+        int64_t last_log_time = 0;
+        // 🔧 降级策略用
+        std::deque<int64_t> encode_times_;  // 最近编码时间记录
+        static constexpr size_t MAX_ENCODE_TIME_HISTORY = 30;
+    } perf_stats_;
 
     // 降级策略
     bool adaptive_quality_enabled_ = true;
@@ -111,15 +239,6 @@ private:
     bool quality_degraded_ = false;
     int original_fps_ = 30;
     int degraded_fps_ = 15;
-
-    // SWS context cache for RGBA to NV12 conversion (cached for performance)
-    void* sws_context_ = nullptr;
-    int cached_width_ = 0;
-    int cached_height_ = 0;
-
-    // Helper method to get or create SWS context
-    void* get_or_create_sws_context(int src_width, int src_height);
-    void release_sws_context();
 };
 
 } // namespace live_assistant

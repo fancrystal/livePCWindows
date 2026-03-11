@@ -102,9 +102,11 @@ void SceneItemRow::set_move_up_enabled(bool enabled) {
 }
 
 void SceneItemRow::update_eye_icon() {
-    btnEye_->setIcon(style()->standardIcon(item_->is_visible() ?
-                                           QStyle::SP_DialogYesButton :
-                                           QStyle::SP_DialogNoButton));
+    // 使用自定义图标：显示/隐藏
+    QString icon_path = item_->is_visible() ? 
+                        ":/images/Preview-open(1).png" : 
+                        ":/images/Preview-close(1).png";
+    btnEye_->setIcon(QIcon(icon_path));
 }
 
 } // namespace live_assistant

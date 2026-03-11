@@ -21,10 +21,11 @@ QCheckBox { color: #ffffff; }
 QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #555555; border-radius: 3px; background-color: #333333; }
 QCheckBox::indicator:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
 QSpinBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 4px; }
-QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; min-width: 120px; }
+QComboBox { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 6px; min-width: 120px; combobox-popup: 0; }
 QComboBox::drop-down { width: 20px; border: none; }
+QComboBox::down-arrow { image: url(:/images/Frame_Tri.png); width: 10px; height: 10px; }
 QPushButton { background-color: #333333; color: #ffffff; border: 1px solid #444444; border-radius: 4px; padding: 8px 16px; min-width: 60px; }
-QPushButton:hover { background-color: #444444; }
+QPushButton:hover { background-color: #444444; border-color: #4a6ef0; }
 QPushButton:pressed { background-color: #555555; }
 QPushButton:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
 #navWidget { background-color: #222222; }

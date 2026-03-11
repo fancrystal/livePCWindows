@@ -30,6 +30,7 @@ struct VideoEngineConfig {
     std::string camera_resolution = "640x360";
     int camera_fps = 30;
     std::string camera_pixel_format = "PIXEL_FORMAT_YUY2";
+    bool camera_mirror = false;
 };
 
 class VideoEngine {
@@ -69,6 +70,7 @@ public:
     bool set_camera_resolution(const std::string& resolution);
     bool set_camera_fps(int fps);
     bool set_camera_pixel_format(const std::string& pixel_format);
+    bool set_camera_mirror(bool mirror);
     
     // 设置要渲染的场景
     void set_current_scene(std::shared_ptr<Scene> scene);
@@ -87,6 +89,7 @@ public:
     std::string get_camera_resolution() const;
     int get_camera_fps() const;
     std::string get_camera_pixel_format() const;
+    bool get_camera_mirror() const;
     
 private:
     bool initialize_ffmpeg();
@@ -105,6 +108,7 @@ private:
     std::string camera_resolution_ = "640x360";
     int camera_fps_ = 30;
     std::string camera_pixel_format_ = "PIXEL_FORMAT_YUY2";
+    bool camera_mirror_ = false;
     
     std::shared_ptr<Scene> current_scene_;
     bool is_capturing_ = false;
@@ -148,8 +152,8 @@ struct VideoFrame {
     int stride = 0;
     int stride_uv = 0;
 
-    MediaTimestamp timestamp;
-
+    // 🔧 统一使用毫秒时间戳 (timestamp_ms)
+    // 之前有 timestamp (微秒) 和 timestamp_ms (毫秒) 两个字段，容易混淆
     int64_t timestamp_ms = 0;
 
     VideoFrame() = default;

@@ -16,7 +16,7 @@ class Transform;
 class Transform {
 public:
     Transform() = default;
-    Transform(int x, int y, int width, int height, float rotation = 0.0f, float opacity = 1.0f);
+    Transform(int x, int y, int width, int height, float rotation = 0.0f, float opacity = 1.0f, bool mirror = false);
     
     int x = 0;
     int y = 0;
@@ -24,6 +24,7 @@ public:
     int height = 0;
     float rotation = 0.0f;
     float opacity = 1.0f;
+    bool mirror = false;
 };
 
 // SceneItem表示Scene中的Source实例

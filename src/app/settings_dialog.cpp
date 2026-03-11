@@ -297,6 +297,12 @@ bool SettingsPanel::is_camera_mirror() const {
     return ui->checkBox_mirror->isChecked();
 }
 
+void SettingsPanel::set_video_engine(std::shared_ptr<VideoEngine> engine) {
+    // 视频引擎在SettingsPanel中不直接使用
+    // 如果需要摄像头预览功能，可以通过信号/槽机制传递给CameraSettingsDialog
+    // 目前先保留接口，后续可以扩展实现
+}
+
 // ===== 背景设置 =====
 
 void SettingsPanel::set_background_type(const QString& type) {

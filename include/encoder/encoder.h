@@ -59,8 +59,8 @@ public:
     // Force the next video frame to be a keyframe (IDR)
     ErrorCode force_keyframe();
 
-    // Reset encoder state for new streaming session
     ErrorCode reset_audio_encoder();
+    ErrorCode reset_video_encoder();
 
     // 获取音频编码器（用于直接连接信号）
     AudioEncoder* get_audio_encoder() const;

@@ -88,6 +88,7 @@ private:
     bool is_maximized_ = false;
     std::string maximized_source_id_;
     QRectF saved_item_rect_;
+    Transform saved_transform_; // 保存完整的Transform（包括镜像、旋转、不透明度等）
 
 
     // 辅助方法

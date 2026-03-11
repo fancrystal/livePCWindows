@@ -7,7 +7,9 @@
 #include "app/insert_video_widget.h"
 #include "app/insert_file_manager.h"
 #include "app/add_material_dialog.h"
+#include "customwebengineview.h"
 #include "http/network_manager.h"
+#include <QWebEngineSettings>
 #include "http/live_item.h"
 #include "media_pipeline/media_file_source.h"
 #include "ui_main_window.h"
@@ -18,6 +20,7 @@
 #include "scene_manager/compositor_encoder_bridge.h"
 #include "video_engine/video_engine.h"
 #include "audio_engine/audio_engine.h"
+#include "audio_engine/audio_capturer.h"
 #include "scene_manager/wgc_capture_stub.h"
 #include "scene_manager/capture_factory.h"
 #include "scene_manager/capture_manager_iface.h"
@@ -313,8 +316,11 @@ MainWindow::MainWindow(QWidget *parent) :
     // 加载退出偏好设置
     loadExitPreference();
 
-    // 初始化系统托盘图标
-    setupSystemTray();
+    // 延迟初始化系统托盘图标（延迟 1 秒，让窗口先稳定显示）
+    QTimer::singleShot(1000, this, [this]() {
+        setupSystemTray();
+        LOG_INFO("System tray initialized after delay");
+    });
 
     // 初始化网络连接
     setupNetworkConnections();
@@ -339,7 +345,99 @@ MainWindow::MainWindow(QWidget *parent) :
         });
     }
 
+    // 初始化WebView控件（在设置直播间信息后）
+    // initWebEngineViews() 将在 setLiveItem 中被调用
+
+    // 初始化WebView UI属性（按照旧项目逻辑）
+    initWebEngineUI();
+
     LOG_INFO("MainWindow created");
+}
+
+void MainWindow::initWebEngineUI()
+{
+    if (!ui->webEngineView_chat || !ui->webEngineView_product) {
+        return;
+    }
+
+    // 设置WebEngine native属性（按照旧项目）
+    ui->webEngineView_chat->setAttribute(Qt::WA_NativeWindow, false);
+    ui->webEngineView_chat->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
+    ui->webEngineView_product->setAttribute(Qt::WA_NativeWindow, false);
+    ui->webEngineView_product->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
+
+    // 允许触摸事件
+    ui->webEngineView_chat->setAttribute(Qt::WA_AcceptTouchEvents, true);
+    ui->webEngineView_product->setAttribute(Qt::WA_AcceptTouchEvents, true);
+
+    // 启用插件
+    ui->webEngineView_chat->settings()->setAttribute(QWebEngineSettings::PluginsEnabled, true);
+    ui->webEngineView_product->settings()->setAttribute(QWebEngineSettings::PluginsEnabled, true);
+
+    // 配置WebView自适应布局
+    auto configWebView = [&](QWebEngineView* webView) {
+        webView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        webView->setMinimumSize(0, 0);
+        webView->settings()->setAttribute(QWebEngineSettings::ShowScrollBars, true);
+    };
+
+    configWebView(ui->webEngineView_chat);
+    configWebView(ui->webEngineView_product);
+
+    LOG_INFO("WebEngine UI initialized");
+}
+
+void MainWindow::initWebEngineViews() {
+    // WebView加载暂时注释掉，排查崩溃问题
+    LOG_INFO("initWebEngineViews called - WebView loading disabled for debugging");
+    return;
+
+    /*
+    if (!ui->webEngineView_chat || !ui->webEngineView_product) {
+        LOG_WARNING("WebEngineView controls not found");
+        return;
+    }
+
+    // 防止重复初始化：检查是否已经加载过URL
+    if (!ui->webEngineView_chat->url().isEmpty() || !ui->webEngineView_product->url().isEmpty()) {
+        LOG_INFO("WebEngineViews already initialized, skipping...");
+        return;
+    }
+
+    // 处理token，去掉Bearer前缀（如果有）
+    QString token = token_;
+    if (token.startsWith("Bearer ")) {
+        token = token.mid(7);
+    }
+
+    LOG_INFO("Initializing WebEngineViews with domain: " + domain_.toStdString());
+
+    // 使用lambda函数简化CustomWebEngineView初始化（按照旧项目逻辑）
+    auto initCustomWebEngine = [this, token](QWebEngineView* webView, const QString& urlStr) {
+        // 转换为CustomWebEngineView
+        CustomWebEngineView* customWebView = dynamic_cast<CustomWebEngineView*>(webView);
+        if (customWebView) {
+            // 设置Authorization Token和域名
+            customWebView->setAuthorizationToken(token, domain_);
+            // 设置URL
+            customWebView->setCustomUrl(QUrl(urlStr));
+        }
+    };
+
+    // 初始化聊天互动WebView
+    if (!current_live_item_.liveId.isEmpty()) {
+        QString chatUrl = "https://" + domain_ + "/livesaas/liveStream/livedetails?roomInfoId=" + current_live_item_.liveId + "&embed=onlyInfo&tab=chat";
+        LOG_INFO("Chat WebView URL: " + chatUrl.toStdString());
+        initCustomWebEngine(ui->webEngineView_chat, chatUrl);
+    }
+
+    // 初始化商品卡片WebView
+    if (!current_live_item_.liveId.isEmpty()) {
+        QString goodsUrl = "https://" + domain_ + "/livesaas/liveStream/livedetails?roomInfoId=" + current_live_item_.liveId + "&embed=onlyInfo&tab=goods";
+        LOG_INFO("Product WebView URL: " + goodsUrl.toStdString());
+        initCustomWebEngine(ui->webEngineView_product, goodsUrl);
+    }
+    */
 }
 
 MainWindow::~MainWindow() {
@@ -559,11 +657,33 @@ void MainWindow::setCredentials(const QString& socketUrl, const QString& userId,
     live_url_ = liveurl;
     once_key_ = oncekey;
 
+    // 从socket_url提取domain（按照旧项目逻辑）
+    {
+        int protocolEndPos = socket_url_.indexOf("://");
+        if (protocolEndPos == -1) {
+            protocolEndPos = 0;
+        } else {
+            protocolEndPos += 3;
+        }
+
+        int portSepPos = socket_url_.indexOf(":", protocolEndPos);
+        if (portSepPos != -1) {
+            domain_ = socket_url_.mid(protocolEndPos, portSepPos - protocolEndPos);
+        } else {
+            domain_ = socket_url_.mid(protocolEndPos);
+        }
+
+        // 硬编码覆盖（和旧项目一致）
+        domain_ = "b-test.lxi-tech.com";
+        LOG_INFO("Extracted domain: " + domain_.toStdString());
+    }
+
     LOG_INFO(QString("Credentials set - userId: %1, liveUrl: %2, socketUrl: %3")
         .arg(userId).arg(liveurl).arg(socketUrl).toStdString());
 }
 
 void MainWindow::setLiveItem(const LiveItem& liveItem) {
+    LOG_INFO("========== setLiveItem START ==========");
     current_live_item_ = liveItem;
 
     LOG_INFO(QString("LiveItem set - liveId: %1, title: %2, status: %3")
@@ -581,9 +701,35 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
         // 这里可以根据需要进一步解析 server_url 和 stream_key
         rtmp_server_url_ = rtmpUrl;
     }
+
+    // 根据服务器配置设置画布方向（当前默认使用横屏，忽略服务器竖屏配置）
+    // 后续服务器API准备好后可以取消注释下面的代码
+    /*
+    if (!liveItem.canvasOrientation.isEmpty()) {
+        LOG_INFO(QString("Server canvas orientation: %1").arg(liveItem.canvasOrientation).toStdString());
+        apply_server_canvas_config(liveItem.canvasOrientation);
+    } else {
+        LOG_INFO("No canvas orientation from server, using default landscape mode");
+        // 默认使用横屏
+        apply_server_canvas_config("landscape");
+    }
+    */
+    // 临时：强制使用横屏模式，等待服务器API完善
+    LOG_INFO("Using default landscape mode (ignoring server config for now)");
+    apply_server_canvas_config("landscape");
+
+    // 更新切换按钮文本
+    if (ui->pushButton_toggleOrientation) {
+        ui->pushButton_toggleOrientation->setText(is_portrait_mode_ ? "竖屏" : "横屏");
+    }
+
+    // 初始化WebView控件
+    initWebEngineViews();
+    LOG_INFO("========== setLiveItem END ==========");
 }
 
 void MainWindow::initialize_modules() {
+    LOG_INFO("========== initialize_modules START ==========");
     scene_manager_ = std::make_shared<SceneManager>();
     video_engine_ = std::make_shared<VideoEngine>();
     audio_engine_ = std::make_shared<AudioEngine>();
@@ -595,7 +741,10 @@ void MainWindow::initialize_modules() {
 
     capture_manager_ = std::make_shared<CaptureManagerIface>();
 
-    video_engine_->initialize(1920, 1080, 30);
+    // 使用当前画布配置的分辨率初始化视频引擎
+    LOG_INFO(QString("Initializing VideoEngine with resolution: %1x%2")
+        .arg(canvas_config_.get_width()).arg(canvas_config_.get_height()).toStdString());
+    video_engine_->initialize(canvas_config_.get_width(), canvas_config_.get_height(), 30);
     audio_engine_->initialize(48000, 2);
     // 进入直播间时不立即启动麦克风采集，等点击"开始直播"时再采集
     // 这样可以避免持续占用麦克风资源
@@ -607,6 +756,9 @@ void MainWindow::initialize_modules() {
         encoder_bridge_->set_silent_audio(true);  // 默认静音，等开始直播后开启
     }
 
+    // 加载保存的音量设置（如果有），否则使用系统当前音量
+    loadAudioVolumeSettings();
+
     // 初始化音频控件UI（同步滑块值）
     update_microphone_ui();
     update_speaker_ui();
@@ -614,12 +766,14 @@ void MainWindow::initialize_modules() {
     video_engine_->set_current_scene(scene_manager_->get_current_scene());
 
     VideoEncoderConfig video_config;
-    video_config.width = 1920;
-    video_config.height = 1080;
+    // 使用当前画布配置的分辨率初始化编码器
+    video_config.width = canvas_config_.get_width();
+    video_config.height = canvas_config_.get_height();
     video_config.fps = 30;
-    video_config.bitrate = 2500000;
+    video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏适当降低码率
     video_config.gop = 60; // Reduce GOP size for faster keyframe interval (2 seconds at 30fps)
     video_config.b_frames_enabled = false;
+    LOG_INFO(QString("Initializing video encoder: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
     encoder_->initialize_video_encoder(video_config);
 
     // 使用音频引擎的实际采样率和声道数（设备原生格式）
@@ -673,6 +827,7 @@ void MainWindow::initialize_modules() {
     connect(system_log_timer_, &QTimer::timeout, [this]() {
         log_system_stats_periodically();
     });
+    LOG_INFO("========== initialize_modules END ==========");
 }
 
 void MainWindow::setup_ui_connections() {
@@ -702,6 +857,7 @@ void MainWindow::setup_ui_connections() {
         // 设置摄像头列表
         if (video_engine_) {
             dlg.set_available_cameras(video_engine_->get_available_camera_choices());
+            dlg.set_video_engine(video_engine_);
         }
 
         if (dlg.exec() == QDialog::Accepted) {
@@ -720,6 +876,17 @@ void MainWindow::setup_ui_connections() {
     if (ui->label_status) {
         ui->label_status->setText("预览中");
         ui->label_status->setObjectName("labelPreviewStatus");
+    }
+
+    // 横竖屏切换按钮连接
+    if (ui->pushButton_toggleOrientation) {
+        connect(ui->pushButton_toggleOrientation, &QPushButton::clicked, this, [this]() {
+            toggle_canvas_orientation();
+            // 更新按钮文本
+            if (ui->pushButton_toggleOrientation) {
+                ui->pushButton_toggleOrientation->setText(is_portrait_mode_ ? "竖屏" : "横屏");
+            }
+        });
     }
 
     if (ui->pushButton_addMaterial) {
@@ -773,6 +940,15 @@ void MainWindow::setup_ui_connections() {
                         audio_engine_->stop_capture();
                     }
                     ui->pushButton_startLive->setText("开始直播");
+                    // 启用画布切换按钮
+                    if (ui->pushButton_toggleOrientation) {
+                        ui->pushButton_toggleOrientation->setEnabled(true);
+                        ui->pushButton_toggleOrientation->setStyleSheet(
+                            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4a6ef0, stop:1 #6a8ef0); color: white; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; }"
+                            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a7ef0, stop:1 #7a9ef0); }"
+                            "QPushButton:disabled { background: #666666; color: #999999; }"
+                        );
+                    }
                     if (ui->label_status) {
                         ui->label_status->setText("推流结束");
                     }
@@ -842,6 +1018,13 @@ void MainWindow::setup_ui_connections() {
                         }
                     }
                     ui->pushButton_startLive->setText("停止直播");
+                    // 禁用画布切换按钮
+                    if (ui->pushButton_toggleOrientation) {
+                        ui->pushButton_toggleOrientation->setEnabled(false);
+                        ui->pushButton_toggleOrientation->setStyleSheet(
+                            "QPushButton { background: #666666; color: #999999; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; }"
+                        );
+                    }
                     if (ui->label_status) {
                         ui->label_status->setText("正在推流");
                     }
@@ -1081,6 +1264,13 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
     // 设置循环播放
     mediaSource->set_loop_enabled(loopEnabled);
 
+    // 设置音频回调：直接推送到 AudioEngine 队列
+    mediaSource->set_audio_ready_callback([this, source_id](std::shared_ptr<AudioFrame> frame) {
+        if (audio_engine_ && frame) {
+            audio_engine_->pushMediaFrame(frame);
+        }
+    });
+
     if (!mediaSource->initialize()) {
         LOG_ERROR("Failed to initialize media file source");
         QMessageBox::warning(this, "错误", "初始化插播视频源失败");
@@ -1146,17 +1336,6 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
             if (audio_engine_) {
                 audio_engine_->setMixMode(AudioMixMode::MIC_MEDIA);
                 audio_engine_->set_media_volume(0.7f);  // 默认插播音量为70%
-
-                // 注册插播音频源回调
-                audio_engine_->registerAudioSourceCallback(
-                    QString::fromStdString(source_id),
-                    [mediaSource]() -> std::shared_ptr<AudioFrame> {
-                        if (mediaSource && mediaSource->is_running()) {
-                            return mediaSource->get_audio_frame();
-                        }
-                        return nullptr;
-                    }
-                );
 
                 LOG_INFO("Audio mix mode set to MIC_MEDIA");
             }
@@ -1275,10 +1454,16 @@ void MainWindow::show_camera_selector() {
     }
 
     CameraSettingsDialog dialog(this);
-    dialog.set_available_cameras(camera_choices);
+    // 转换摄像头列表
+    std::vector<std::pair<std::string, std::string>> cameras;
+    for (const auto& choice : camera_choices) {
+        cameras.emplace_back(choice.display_name, choice.dshow_name);
+    }
+    dialog.set_available_cameras(cameras);
     dialog.set_resolution("640x360");
     dialog.set_fps(30);
     dialog.set_pixel_format("PIXEL_FORMAT_YUY2");
+    dialog.start_preview();
 
     if (dialog.exec() == QDialog::Accepted) {
         const std::string camera_device_id = dialog.get_camera_device_id();
@@ -1715,10 +1900,12 @@ void MainWindow::update_status(const QString& message) {
 }
 
 void MainWindow::setup_canvas_widget() {
+    LOG_INFO("========== setup_canvas_widget START ==========");
     canvas_widget_ = new CanvasWidget(this);
     canvas_widget_->set_scene_manager(scene_manager_);
     canvas_widget_->set_video_engine(video_engine_);
     // 使用默认的画布配置（横屏16:9）
+    LOG_INFO("Calling set_canvas_config from setup_canvas_widget");
     set_canvas_config(canvas_config_);
 
     canvas_widget_->set_compositor(compositor_);
@@ -1727,7 +1914,8 @@ void MainWindow::setup_canvas_widget() {
     encoder_bridge_->set_encoder(encoder_);
     encoder_bridge_->set_stream_pusher(stream_pusher_);
     encoder_bridge_->set_audio_engine(audio_engine_);
-    encoder_bridge_->set_resolution(1920, 1080);
+    // 使用当前画布配置的分辨率，而不是硬编码
+    encoder_bridge_->set_resolution(canvas_config_.get_width(), canvas_config_.get_height());
     // Start the encoder bridge so it begins capturing/compositing frames for streaming.
     if (encoder_ && encoder_bridge_) {
         encoder_bridge_->set_fps(static_cast<int>(encoder_->get_video_config().fps));
@@ -1770,11 +1958,35 @@ void MainWindow::setup_canvas_widget() {
         if (stageAddButton_) { delete stageAddButton_; stageAddButton_ = nullptr; }
     }
 
-    canvas_widget_->setParent(ui->centralWidget);
-    canvas_widget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    ui->verticalLayout_liveArea->insertWidget(0, canvas_widget_);
-    canvas_widget_->installEventFilter(this); // Install event filter to handle resize events
-    canvas_widget_->show();
+    // 创建画布容器，用于保持宽高比
+    if (!canvasContainer_) {
+        canvasContainer_ = new QWidget(ui->centralWidget);
+        canvasContainer_->setStyleSheet("background-color: #000000;");
+    }
+    ui->verticalLayout_liveArea->insertWidget(0, canvasContainer_);
+
+    // 将 canvas_widget_ 放入容器中
+    canvas_widget_->setParent(canvasContainer_);
+    // 初始时隐藏画布，等布局完成后再显示正确大小
+    canvas_widget_->hide();
+
+    // 强制布局更新，确保容器大小已计算完成
+    ui->liveArea->updateGeometry();
+    ui->liveArea->layout()->activate();
+    canvasContainer_->updateGeometry();
+
+    // 计算并设置正确的初始大小（基于容器大小）
+    QTimer::singleShot(0, this, [this]() {
+        // 先安装事件过滤器，再调整大小
+        if (canvasContainer_) {
+            canvasContainer_->installEventFilter(this);
+        }
+        update_stage_container_aspect_ratio();
+        if (canvas_widget_) {
+            canvas_widget_->show();
+            LOG_INFO("Canvas widget shown with correct size");
+        }
+    });
     // create placeholder overlays as children of the canvas so they stay on top and move/resize with it
     // Note: placeholderIcon_ (✚) is kept for backward compatibility but hidden, only + button is shown
     if (!placeholderIcon_) {
@@ -1835,6 +2047,7 @@ void MainWindow::setup_canvas_widget() {
     LOG_INFO("Canvas widget setup completed");
     // After canvas inserted, update placeholder visibility
     updateStagePlaceholderVisibility();
+    LOG_INFO("========== setup_canvas_widget END ==========");
 }
 
 void MainWindow::update_preview() {
@@ -1997,12 +2210,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         }
     }
     if (ui && watched == ui->liveArea && event->type() == QEvent::Resize) {
-        if (stageContainer_ && stagePlaceholderWidget_) {
-            // match the placeholder's geometry so stage fills the available area
-            QRect phGeom = stagePlaceholderWidget_->geometry();
-            stageContainer_->setGeometry(0, 0, phGeom.width(), phGeom.height());
-            if (canvas_widget_) canvas_widget_->setGeometry(stageContainer_->rect());
-        }
+        // 根据当前画布方向调整舞台容器宽高比
+        update_stage_container_aspect_ratio();
         // Reposition placeholder overlays when liveArea resizes
         repositionPlaceholderOverlays();
         return false;
@@ -2010,6 +2219,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     // Handle canvas widget resize to reposition placeholder overlays
     if (watched == canvas_widget_ && event->type() == QEvent::Resize) {
         repositionPlaceholderOverlays();
+        return false;
+    }
+    // Handle canvas container resize to update aspect ratio
+    if (watched == canvasContainer_ && event->type() == QEvent::Resize) {
+        update_stage_container_aspect_ratio();
         return false;
     }
     return QMainWindow::eventFilter(watched, event);
@@ -2035,15 +2249,15 @@ void MainWindow::toggleStageMaximize() {
         stageContainer_->setGeometry(targetLocal);
         stage_maximized_ = true;
         stageBtnRestore_->setVisible(true);
-        if (stageBtnMax_) { stageBtnMax_->setText("⧉"); stageBtnMax_->setToolTip("还原"); }
-        if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("⧉"); ui->pushButton_maximize->setToolTip("还原"); }
+        if (stageBtnMax_) { stageBtnMax_->setIcon(QIcon(":/images/Frame_recover@2x.png")); stageBtnMax_->setToolTip("还原"); }
+        if (ui->pushButton_maximize) { ui->pushButton_maximize->setIcon(QIcon(":/images/Frame_recover@2x.png")); ui->pushButton_maximize->setToolTip("还原"); }
     } else {
         // restore
         stageContainer_->setGeometry(stage_normal_geometry_);
         stage_maximized_ = false;
         stageBtnRestore_->setVisible(false);
-        if (stageBtnMax_) { stageBtnMax_->setText("□"); stageBtnMax_->setToolTip("最大化"); }
-        if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("□"); ui->pushButton_maximize->setToolTip("最大化"); }
+        if (stageBtnMax_) { stageBtnMax_->setIcon(QIcon(":/images/Frame_Max@2x.png")); stageBtnMax_->setToolTip("最大化"); }
+        if (ui->pushButton_maximize) { ui->pushButton_maximize->setIcon(QIcon(":/images/Frame_Max@2x.png")); ui->pushButton_maximize->setToolTip("最大化"); }
     }
 }
 
@@ -2052,8 +2266,8 @@ void MainWindow::restoreStage() {
     stageContainer_->setGeometry(stage_normal_geometry_);
     stage_maximized_ = false;
     stageBtnRestore_->setVisible(false);
-    if (stageBtnMax_) { stageBtnMax_->setText("□"); stageBtnMax_->setToolTip("最大化"); }
-    if (ui->pushButton_maximize) { ui->pushButton_maximize->setText("□"); ui->pushButton_maximize->setToolTip("最大化"); }
+    if (stageBtnMax_) { stageBtnMax_->setIcon(QIcon(":/images/Frame_Max@2x.png")); stageBtnMax_->setToolTip("最大化"); }
+    if (ui->pushButton_maximize) { ui->pushButton_maximize->setIcon(QIcon(":/images/Frame_Max@2x.png")); ui->pushButton_maximize->setToolTip("最大化"); }
 }
 // 新增：定期打印系统统计日志（每分钟打印一次）
 void MainWindow::log_system_stats_periodically() {
@@ -2435,12 +2649,11 @@ void MainWindow::update_microphone_ui() {
     if (ui->pushButton_mic) {
         ui->pushButton_mic->setText("");
         if (microphone_enabled_) {
-            ui->pushButton_mic->setStyleSheet("border: none; background: transparent;");
+            ui->pushButton_mic->setIcon(QIcon(":/images/Voice-on@2x.png"));
             ui->pushButton_mic->setToolTip(QString::fromUtf8("麦克风 (点击静音)\n右键选择设备"));
         } else {
-            // 静音状态：显示红色边框和半透明效果
-            ui->pushButton_mic->setStyleSheet(
-                "border: 2px solid #ff4444; border-radius: 4px; background: rgba(255, 68, 68, 0.2);");
+            // 静音状态：显示关闭录音图标
+            ui->pushButton_mic->setIcon(QIcon(":/images/Voice-off@2x.png"));
             ui->pushButton_mic->setToolTip(QString::fromUtf8("麦克风 (已静音)\n点击取消静音"));
         }
     }
@@ -2488,12 +2701,13 @@ void MainWindow::show_microphone_menu(const QPoint& pos) {
 
 void MainWindow::toggle_speaker() {
     speaker_enabled_ = !speaker_enabled_;
-    if (audio_engine_) {
-        audio_engine_->set_speaker_mute(!speaker_enabled_);
+    if (audio_engine_ && audio_engine_->get_audio_capturer()) {
+        // 控制扬声器采集开关（而不是静音）
+        audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
     }
     update_speaker_ui();
     saveAudioVolumeSettings();
-    LOG_INFO(std::string("Speaker ") + (speaker_enabled_ ? "enabled" : "disabled"));
+    LOG_INFO(std::string("Speaker capture ") + (speaker_enabled_ ? "enabled" : "disabled"));
 }
 
 void MainWindow::set_speaker_volume(float volume) {
@@ -2513,12 +2727,11 @@ void MainWindow::update_speaker_ui() {
     if (ui->pushButton_speaker) {
         ui->pushButton_speaker->setText("");
         if (speaker_enabled_) {
-            ui->pushButton_speaker->setStyleSheet("border: none; background: transparent;");
+            ui->pushButton_speaker->setIcon(QIcon(":/images/Volume@2x.png"));
             ui->pushButton_speaker->setToolTip(QString::fromUtf8("扬声器 (点击静音)\n右键选择设备"));
         } else {
-            // 静音状态：显示红色边框和半透明效果
-            ui->pushButton_speaker->setStyleSheet(
-                "border: 2px solid #ff4444; border-radius: 4px; background: rgba(255, 68, 68, 0.2);");
+            // 静音状态：显示静音图标
+            ui->pushButton_speaker->setIcon(QIcon(":/images/Volume-mute@2x.png"));
             ui->pushButton_speaker->setToolTip(QString::fromUtf8("扬声器 (已静音)\n点击取消静音"));
         }
     }
@@ -2613,36 +2826,346 @@ void MainWindow::on_streaming_error(const QString& error) {
 
 // 画布配置管理方法实现
 void MainWindow::set_canvas_config(const CanvasConfig& config) {
+    LOG_INFO("========== set_canvas_config START ==========");
+    LOG_INFO(QString("Config name: %1, Resolution: %2x%3")
+        .arg(QString::fromStdString(config.get_name()))
+        .arg(config.get_width())
+        .arg(config.get_height()).toStdString());
+    LOG_INFO(QString("canvas_widget_ exists: %1, encoder_ exists: %2, encoder_bridge_ exists: %3, canvasContainer_ exists: %4")
+        .arg(canvas_widget_ ? "yes" : "no")
+        .arg(encoder_ ? "yes" : "no")
+        .arg(encoder_bridge_ ? "yes" : "no")
+        .arg(canvasContainer_ ? "yes" : "no").toStdString());
+
     canvas_config_ = config;
 
     // 更新CanvasWidget
     if (canvas_widget_) {
+        LOG_INFO("Updating canvas_widget_ config");
         canvas_widget_->set_canvas_config(config);
     }
 
-    // 更新编码器配置
-    if (encoder_ && encoder_bridge_) {
+    // 更新编码器配置（仅在非初始化阶段，即canvas_widget_已存在时）
+    // 避免在setup_canvas_widget中重复初始化编码器
+    if (encoder_ && encoder_bridge_ && canvasContainer_) {
         int width = config.get_width();
         int height = config.get_height();
+        LOG_INFO(QString("Reinitializing encoder with resolution: %1x%2").arg(width).arg(height).toStdString());
 
         // 重新初始化视频编码器
         VideoEncoderConfig video_config;
         video_config.width = width;
         video_config.height = height;
         video_config.fps = 30;
-        video_config.bitrate = 2500000;
+        video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;
         video_config.gop = 60;
         video_config.b_frames_enabled = false;
 
         encoder_->reinitialize_video_encoder(video_config);
         encoder_bridge_->set_resolution(width, height);
+    } else {
+        LOG_INFO("Skipping encoder reinitialization (initialization phase)");
     }
 
     LOG_INFO("Canvas config updated to: " + config.get_name());
+    LOG_INFO("========== set_canvas_config END ==========");
 }
 
 const CanvasConfig& MainWindow::get_canvas_config() const {
     return canvas_config_;
+}
+
+// 设置为横屏模式 16:9 (1920x1080)
+void MainWindow::set_landscape_mode() {
+    LOG_INFO("========== set_landscape_mode START ==========");
+    if (!is_portrait_mode_) {
+        LOG_INFO("Already in landscape mode, returning");
+        return;
+    }
+
+    // 如果正在推流，禁止切换
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        LOG_INFO("Streaming in progress, cannot switch");
+        QMessageBox::warning(this, "画布切换",
+            "正在直播推流中，无法切换画布方向。\n"
+            "请先停止直播后再切换。");
+        return;
+    }
+
+    LOG_INFO("Switching to landscape mode (1920x1080)");
+
+    // 更新画布配置
+    canvas_config_ = CanvasConfig::get_default();
+    is_portrait_mode_ = false;
+
+    // 应用新的画布配置
+    apply_canvas_config_change();
+
+    LOG_INFO("Switched to landscape mode: 1920x1080");
+    LOG_INFO("========== set_landscape_mode END ==========");
+}
+
+// 设置为竖屏模式 9:16 (1080x1920)
+void MainWindow::set_portrait_mode() {
+    LOG_INFO("========== set_portrait_mode START ==========");
+    if (is_portrait_mode_) {
+        LOG_INFO("Already in portrait mode, returning");
+        return;
+    }
+
+    // 如果正在推流，禁止切换
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        LOG_INFO("Streaming in progress, cannot switch");
+        QMessageBox::warning(this, "画布切换",
+            "正在直播推流中，无法切换画布方向。\n"
+            "请先停止直播后再切换。");
+        return;
+    }
+
+    LOG_INFO("Switching to portrait mode (1080x1920)");
+
+    // 更新画布配置
+    canvas_config_ = CanvasConfig::get_portrait();
+    is_portrait_mode_ = true;
+
+    // 应用新的画布配置
+    apply_canvas_config_change();
+
+    LOG_INFO("Switched to portrait mode: 1080x1920");
+    LOG_INFO("========== set_portrait_mode END ==========");
+}
+
+// 切换横竖屏
+void MainWindow::toggle_canvas_orientation() {
+    if (is_portrait_mode_) {
+        set_landscape_mode();
+    } else {
+        set_portrait_mode();
+    }
+}
+
+// 应用服务器配置的画布方向（预留接口）
+void MainWindow::apply_server_canvas_config(const QString& orientation) {
+    LOG_INFO("========== apply_server_canvas_config START ==========");
+    server_canvas_orientation_ = orientation.toLower();
+
+    LOG_INFO("Applying server canvas config: " + server_canvas_orientation_.toStdString());
+    LOG_INFO(QString("Current mode before apply: %1").arg(is_portrait_mode_ ? "portrait" : "landscape").toStdString());
+
+    if (server_canvas_orientation_ == "portrait") {
+        set_portrait_mode();
+    } else {
+        // 默认横屏
+        set_landscape_mode();
+    }
+    LOG_INFO("========== apply_server_canvas_config END ==========");
+}
+
+// 辅助方法：应用画布配置变更
+void MainWindow::apply_canvas_config_change() {
+    LOG_INFO("========== apply_canvas_config_change START ==========");
+    int width = canvas_config_.get_width();
+    int height = canvas_config_.get_height();
+    LOG_INFO(QString("Applying canvas config: %1x%2, portrait=%3")
+        .arg(width).arg(height).arg(is_portrait_mode_).toStdString());
+
+    // 更新 CanvasWidget
+    if (canvas_widget_) {
+        LOG_INFO("Updating CanvasWidget");
+        canvas_widget_->set_canvas_config(canvas_config_);
+    }
+
+    // 更新 Compositor
+    if (compositor_) {
+        LOG_INFO("Updating Compositor");
+        compositor_->set_canvas_size(width, height);
+    }
+
+    // 更新 EncoderBridge
+    if (encoder_bridge_) {
+        LOG_INFO("Updating EncoderBridge");
+        encoder_bridge_->set_resolution(width, height);
+    }
+
+    // 更新 VideoEngine
+    if (video_engine_) {
+        LOG_INFO("Reinitializing VideoEngine");
+        video_engine_->initialize(width, height, 30);
+    }
+
+    // 更新编码器配置（如果不在推流中）
+    if (encoder_ && encoder_bridge_ && !encoder_bridge_->is_streaming()) {
+        LOG_INFO("Reinitializing video encoder");
+        VideoEncoderConfig video_config;
+        video_config.width = width;
+        video_config.height = height;
+        video_config.fps = 30;
+        video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏可以适当降低码率
+        video_config.gop = 60;
+        video_config.b_frames_enabled = false;
+
+        encoder_->reinitialize_video_encoder(video_config);
+        LOG_INFO("Video encoder reinitialized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
+                 " mode: " + std::to_string(width) + "x" + std::to_string(height));
+    } else {
+        LOG_INFO("Skipping encoder reinitialization (streaming or not ready)");
+    }
+
+    // 调整场景项位置适配新比例
+    LOG_INFO("Adjusting scene items");
+    adjust_scene_items_for_canvas_change();
+
+    // 更新 UI
+    LOG_INFO("Updating canvas orientation UI");
+    update_canvas_orientation_ui();
+    LOG_INFO("========== apply_canvas_config_change END ==========");
+}
+
+// 调整场景项位置以适配新的画布比例
+void MainWindow::adjust_scene_items_for_canvas_change() {
+    if (!scene_manager_ || !scene_manager_->get_current_scene()) {
+        return;
+    }
+
+    auto scene = scene_manager_->get_current_scene();
+    auto items = scene->get_all_scene_items();
+
+    int canvas_w = canvas_config_.get_width();
+    int canvas_h = canvas_config_.get_height();
+
+    for (auto& item : items) {
+        if (!item) continue;
+
+        auto transform = item->get_transform();
+
+        // 确保场景项在新画布范围内
+        if (transform.x + transform.width > canvas_w) {
+            transform.x = (std::max)(0, canvas_w - transform.width);
+        }
+        if (transform.y + transform.height > canvas_h) {
+            transform.y = (std::max)(0, canvas_h - transform.height);
+        }
+
+        // 如果场景项超出画布，缩小它
+        if (transform.width > canvas_w) {
+            transform.width = canvas_w / 2;
+        }
+        if (transform.height > canvas_h) {
+            transform.height = canvas_h / 2;
+        }
+
+        // 确保不超出边界
+        transform.x = (std::min)(transform.x, canvas_w - transform.width);
+        transform.y = (std::min)(transform.y, canvas_h - transform.height);
+
+        scene->set_transform(item, transform);
+    }
+
+    // 同步到 compositor
+    sync_scene_to_compositor();
+
+    // 刷新画布
+    if (canvas_widget_) {
+        canvas_widget_->refresh();
+    }
+
+    LOG_INFO("Scene items adjusted for new canvas size: " +
+             std::to_string(canvas_w) + "x" + std::to_string(canvas_h));
+}
+
+// 更新画布方向相关的 UI
+void MainWindow::update_canvas_orientation_ui() {
+    // 注意：不在 title/状态栏上显示横竖屏字样或分辨率
+    LOG_INFO("Canvas orientation UI updated");
+
+    // 调整画布容器大小以匹配新的宽高比
+    update_stage_container_aspect_ratio();
+}
+
+// 根据当前画布方向调整舞台容器的宽高比
+void MainWindow::update_stage_container_aspect_ratio() {
+    if (!ui || !ui->liveArea) {
+        return;
+    }
+
+    // 获取画布宽高比
+    double canvas_aspect = canvas_config_.get_aspect_ratio();
+
+    // 获取可用空间
+    int available_width, available_height;
+    if (canvasContainer_) {
+        QRect containerRect = canvasContainer_->rect();
+        available_width = containerRect.width();
+        available_height = containerRect.height();
+    } else if (stagePlaceholderWidget_) {
+        QRect placeholderRect = stagePlaceholderWidget_->rect();
+        available_width = placeholderRect.width();
+        available_height = placeholderRect.height();
+    } else {
+        QRect liveAreaRect = ui->liveArea->rect();
+        available_width = liveAreaRect.width();
+        available_height = liveAreaRect.height();
+    }
+
+    // 计算适应可用空间的最大画布尺寸（保持宽高比）
+    int target_width, target_height;
+
+    // 计算按宽度限制的高度
+    int height_by_width = static_cast<int>(available_width / canvas_aspect);
+    // 计算按高度限制的宽度
+    int width_by_height = static_cast<int>(available_height * canvas_aspect);
+
+    if (height_by_width <= available_height) {
+        // 按宽度限制
+        target_width = available_width;
+        target_height = height_by_width;
+    } else {
+        // 按高度限制
+        target_width = width_by_height;
+        target_height = available_height;
+    }
+
+    // 确保最小尺寸
+    target_width = qMax(target_width, 320);
+    target_height = qMax(target_height, 180);
+
+    // 居中放置
+    int x = (available_width - target_width) / 2;
+    int y = (available_height - target_height) / 2;
+
+    // 如果有 canvasContainer_（setup_canvas_widget 之后），使用它
+    if (canvasContainer_ && canvas_widget_) {
+        // 设置 canvas_widget_ 在容器中的位置和大小
+        canvas_widget_->setGeometry(x, y, target_width, target_height);
+
+        // 更新占位符位置
+        repositionPlaceholderOverlays();
+
+        LOG_INFO("Canvas widget resized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
+                 " mode: " + std::to_string(target_width) + "x" + std::to_string(target_height) +
+                 " (aspect: " + std::to_string(canvas_aspect) + ")");
+        return;
+    }
+
+    // 如果有 stageContainer_（初始化阶段），使用它
+    if (stageContainer_ && stagePlaceholderWidget_) {
+        // 设置舞台容器几何位置
+        stageContainer_->setGeometry(x, y, target_width, target_height);
+
+        // 同步更新画布控件
+        if (canvas_widget_) {
+            canvas_widget_->setGeometry(0, 0, target_width, target_height);
+        }
+
+        // 更新占位符按钮位置
+        if (stageAddButton_) {
+            stageAddButton_->setGeometry(stageContainer_->rect());
+        }
+    }
+
+    LOG_INFO("Stage container resized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
+             " mode: " + std::to_string(target_width) + "x" + std::to_string(target_height) +
+             " (aspect: " + std::to_string(canvas_aspect) + ")");
 }
 
 void MainWindow::changeEvent(QEvent* event) {
@@ -2651,10 +3174,10 @@ void MainWindow::changeEvent(QEvent* event) {
     if (event->type() == QEvent::WindowStateChange) {
         if (ui->pushButton_maximize) {
             if (isMaximized()) {
-                ui->pushButton_maximize->setText("◱");
+                ui->pushButton_maximize->setIcon(QIcon(":/images/Frame_recover@2x.png"));
                 ui->pushButton_maximize->setProperty("maximized", true);
             } else {
-                ui->pushButton_maximize->setText("⤡");
+                ui->pushButton_maximize->setIcon(QIcon(":/images/Frame_Max@2x.png"));
                 ui->pushButton_maximize->setProperty("maximized", false);
             }
             ui->pushButton_maximize->style()->unpolish(ui->pushButton_maximize);
@@ -2769,11 +3292,19 @@ void MainWindow::setupSystemTray() {
     system_tray_icon_->setContextMenu(system_tray_menu_);
     
     // 连接托盘图标激活信号
+    // 先设置标志，防止初始化时误触发显示窗口
+    tray_icon_initializing_ = true;
     connect(system_tray_icon_, &QSystemTrayIcon::activated,
             this, &MainWindow::onTrayIconActivated);
     
     // 显示托盘图标
     system_tray_icon_->show();
+    
+    // 延迟重置标志，确保托盘图标完全初始化后再响应用户点击
+    QTimer::singleShot(500, this, [this]() {
+        tray_icon_initializing_ = false;
+        LOG_INFO("Tray icon initialized, ready to respond to user clicks");
+    });
 
     LOG_INFO("System tray icon initialized");
 }
@@ -2837,6 +3368,12 @@ void MainWindow::cleanupSystemTray() {
 }
 
 void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
+    // 忽略初始化期间的托盘激活事件，防止窗口闪烁
+    if (tray_icon_initializing_) {
+        LOG_DEBUG("Ignoring tray icon activation during initialization");
+        return;
+    }
+    
     switch (reason) {
     case QSystemTrayIcon::Trigger:
     case QSystemTrayIcon::DoubleClick:
@@ -2882,37 +3419,9 @@ void MainWindow::onTrayExitAction() {
 }
 
 void MainWindow::handleExit() {
-    // 根据退出偏好设置处理退出
-    if (exit_preference_ == 1) {
-        // 记住最小化
-        LOG_INFO("Exit preference: minimize to tray");
-        showMinimized();
-        return;
-    } else if (exit_preference_ == 2) {
-        // 记住退出 - 直接退出，不显示对话框
-        LOG_INFO("Exit preference: direct exit");
-        is_exiting_ = true;
-        
-        // 停止所有定时器
-        if (live_duration_timer_) live_duration_timer_->stop();
-        if (stats_update_timer_) stats_update_timer_->stop();
-        if (system_info_timer_) system_info_timer_->stop();
-        if (encoding_timer_) encoding_timer_->stop();
-        
-        // 停止推流
-        if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
-            encoder_bridge_->stop_streaming();
-        }
-        
-        // 清理资源并退出
-        cleanupSystemTray();
-        close(); // 这会触发 closeEvent，但 is_exiting_ 为 true，所以会正常关闭
-        return;
-    }
-    
-    // 默认显示退出确认对话框 - closeEvent 会处理对话框
-    // 这里只需触发 closeEvent 即可
-    close();
+    LOG_INFO("User requested to exit live room - emit request_return_to_live_list signal");
+    // 发射信号通知 main.cpp 用户想要返回直播列表
+    emit request_return_to_live_list();
 }
 
 void MainWindow::loadExitPreference() {
@@ -2942,9 +3451,32 @@ void MainWindow::saveAudioVolumeSettings() {
 void MainWindow::loadAudioVolumeSettings() {
     QSettings settings("LiveAssistant", "Settings");
 
-    // 加载音量设置，默认40%
-    float micVolume = settings.value("microphoneVolume", 0.4f).toFloat();
-    float speakerVolume = settings.value("speakerVolume", 0.4f).toFloat();
+    // 检查是否有保存的音量配置
+    bool hasSavedMicVolume = settings.contains("microphoneVolume");
+    bool hasSavedSpeakerVolume = settings.contains("speakerVolume");
+
+    float micVolume;
+    float speakerVolume;
+
+    if (hasSavedMicVolume || hasSavedSpeakerVolume) {
+        // 有保存的配置，使用保存的值
+        micVolume = settings.value("microphoneVolume", 0.4f).toFloat();
+        speakerVolume = settings.value("speakerVolume", 0.4f).toFloat();
+        LOG_INFO("Using saved volume settings");
+    } else {
+        // 没有保存的配置，使用系统当前的音量设置
+        if (audio_engine_) {
+            micVolume = audio_engine_->get_microphone_volume();
+            speakerVolume = audio_engine_->get_speaker_volume();
+        } else {
+            // 默认40%
+            micVolume = 0.4f;
+            speakerVolume = 0.4f;
+        }
+        LOG_INFO("No saved volume settings, using system current volume");
+    }
+
+    // 加载静音状态（默认开启）
     microphone_enabled_ = settings.value("microphoneEnabled", true).toBool();
     speaker_enabled_ = settings.value("speakerEnabled", true).toBool();
 

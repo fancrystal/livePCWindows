@@ -80,13 +80,17 @@ void HttpClient::freeHeaders(struct curl_slist* headers)
     }
 }
 
-QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct curl_slist* headers)
+QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct curl_slist* headers, QString& errMsg)
 {
     QByteArray responseBuffer;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.toUtf8().constData());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBuffer);
+
+    // 🔧 添加超时设置（3秒）
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);  // 整体超时3秒
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);  // 连接超时3秒
 
     QString caCertPath = QCoreApplication::applicationDirPath() + "/resources/cacert.pem";
     curl_easy_setopt(curl, CURLOPT_CAINFO, caCertPath.toUtf8().constData());
@@ -100,6 +104,32 @@ QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct cu
     CURLcode res = curl_easy_perform(curl);
 
     if(res != CURLE_OK) {
+        QString errorMsg;
+        switch(res) {
+            case CURLE_OPERATION_TIMEDOUT:
+                errorMsg = "网络请求超时，请检查网络连接";
+                break;
+            case CURLE_COULDNT_CONNECT:
+                errorMsg = "无法连接到服务器，请检查网络";
+                break;
+            case CURLE_COULDNT_RESOLVE_HOST:
+                errorMsg = "无法解析服务器地址";
+                break;
+            case CURLE_SSL_CONNECT_ERROR:
+                errorMsg = "SSL连接失败";
+                break;
+            case CURLE_SSL_CERTPROBLEM:
+                errorMsg = "SSL证书问题";
+                break;
+            case CURLE_SSL_CACERT:
+                errorMsg = "SSL CA证书验证失败";
+                break;
+            default:
+                errorMsg = QString("网络错误: %1").arg(curl_easy_strerror(res));
+                break;
+        }
+        errMsg = errorMsg;
+        LOG_WARNING(QString("HTTP request failed: %1").arg(errorMsg).toStdString());
         return QJsonObject();
     }
 
@@ -107,21 +137,22 @@ QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct cu
     return doc.object();
 }
 
-QJsonObject HttpClient::post(const QString& url, const QJsonObject& data)
+QJsonObject HttpClient::post(const QString& url, const QJsonObject& data, QString& errMsg)
 {
     // 使用默认的Content-Type头
     struct curl_slist* headers = createHeaders();
     addHeader(&headers, "Content-Type", "application/json");
-    QJsonObject result = post(url, data, headers);
+    QJsonObject result = post(url, data, headers, errMsg);
     freeHeaders(headers);
     return result;
 }
 
 // 带自定义headers的POST请求
-QJsonObject HttpClient::post(const QString& url, const QJsonObject& data, struct curl_slist* headers)
+QJsonObject HttpClient::post(const QString& url, const QJsonObject& data, struct curl_slist* headers, QString& errMsg)
 {
     CURL* curl = curl_easy_init();
     if(!curl) {
+        errMsg = "Failed to initialize CURL";
         return QJsonObject();
     }
 
@@ -131,27 +162,28 @@ QJsonObject HttpClient::post(const QString& url, const QJsonObject& data, struct
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.constData());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, postData.size());
 
-    QJsonObject result = executeRequest(curl, url, headers);
-    
+    QJsonObject result = executeRequest(curl, url, headers, errMsg);
+
     curl_easy_cleanup(curl);
     return result;
 }
 
-QJsonObject HttpClient::get(const QString& url)
+QJsonObject HttpClient::get(const QString& url, QString& errMsg)
 {
-    return get(url, nullptr);
+    return get(url, nullptr, errMsg);
 }
 
 // 带自定义headers的GET请求
-QJsonObject HttpClient::get(const QString& url, struct curl_slist* headers)
+QJsonObject HttpClient::get(const QString& url, struct curl_slist* headers, QString& errMsg)
 {
     CURL* curl = curl_easy_init();
     if(!curl) {
+        errMsg = "Failed to initialize CURL";
         return QJsonObject();
     }
 
-    QJsonObject result = executeRequest(curl, url, headers);
-    
+    QJsonObject result = executeRequest(curl, url, headers, errMsg);
+
     curl_easy_cleanup(curl);
     return result;
 }
@@ -207,6 +239,10 @@ bool HttpClient::downloadFile(const QString& url, const QString& saveAsFilePath,
     // 设置写入回调
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeDataToFile);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
+
+    // 🔧 添加超时设置（下载文件30秒超时）
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);  // 整体超时30秒
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);  // 连接超时10秒
 
     // 支持 HTTPS 证书校验（可根据需要关闭验证，不推荐）
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -281,6 +317,10 @@ bool HttpClient::downloadFileWithProgress(const QString& url, const QString& sav
     curl_easy_setopt(curl, CURLOPT_URL, url.toUtf8().constData());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeDataToFile);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
+
+    // 🔧 添加超时设置（下载文件30秒超时）
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);  // 整体超时30秒
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);  // 连接超时10秒
 
     // 启用重定向跟随（对应命令行的-L）
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

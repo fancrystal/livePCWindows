@@ -262,6 +262,11 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     }
 
     video_frame_count_ = 0;
+    
+    // 🔧 OBS 风格 PTS 偏移归零：重置偏移变量，等待第一帧到达时重新记录
+    first_video_pts_ms_ = -1;
+    streaming_pts_initialized_ = false;
+    LOG_INFO("[BRIDGE] PTS offset reset, waiting for first frame");
 
     media_clock_.start();
     LOG_INFO("[BRIDGE] Media clock started");
@@ -389,19 +394,37 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
         
         auto current_pts_ms = media_clock_.get_elapsed_time_us() / 1000;
         
+        // 🔧 OBS 风格 PTS 偏移归零：记录第一帧视频 PTS 并应用偏移
+        // 注意：需要同时检查 video 和 audio 的 first_pts，确保任一帧到达时都能正确初始化
+        if (first_video_pts_ms_ == -1) {
+            first_video_pts_ms_ = current_pts_ms;
+            LOG_INFO("[BRIDGE] First video PTS recorded: " + std::to_string(first_video_pts_ms_) + "ms");
+        }
+        
+        // 如果 streaming_pts_initialized_ 还未初始化（音频未到达），现在初始化
+        if (!streaming_pts_initialized_) {
+            streaming_pts_initialized_ = true;
+            LOG_INFO("[BRIDGE] Streaming PTS initialized by video at: " + std::to_string(current_pts_ms) + "ms");
+        }
+        
+        // 应用 PTS 偏移，确保第一帧视频 PTS=0
+        int64_t adjusted_pts_ms = current_pts_ms - first_video_pts_ms_;
+        
         if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
             LOG_INFO("[BRIDGE] Video frame #" + std::to_string(video_frame_count_) + 
-                     ": pts=" + std::to_string(current_pts_ms) + "ms");
+                     ": raw_pts=" + std::to_string(current_pts_ms) + "ms, " +
+                     "adjusted_pts=" + std::to_string(adjusted_pts_ms) + "ms, " +
+                     "offset=" + std::to_string(first_video_pts_ms_) + "ms");
         }
 
         auto video_frame = capture_compositor_frame();
         if (video_frame) {
-            video_frame->timestamp_ms = current_pts_ms;
+            video_frame->timestamp_ms = adjusted_pts_ms;
 
             PreEncodeVideoFrame pre_frame;
             pre_frame.frame = video_frame;
-            pre_frame.pts_ms = current_pts_ms;
-            pre_frame.wallclock_us = current_pts_ms * 1000;
+            pre_frame.pts_ms = adjusted_pts_ms;
+            pre_frame.wallclock_us = adjusted_pts_ms * 1000;
             pre_frame.frame_count = video_frame_count_;
             
             push_to_encode_queue(pre_frame);
@@ -502,7 +525,7 @@ void CompositorEncoderBridge::release_sws_context() {
     }
 }
 
-// 新增：处理音频引擎的原始数据（使用media_clock确保与视频同步）
+// 新增：处理音频引擎的原始数据（使用 media_clock 确保与视频同步）
 void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_t timestamp) {
     if (!streaming_ || !encoder_) {
         return;
@@ -514,12 +537,29 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
     auto current_timestamp_us = media_clock_.get_elapsed_time_us();
     auto current_timestamp_ms = current_timestamp_us / 1000;
 
+    // 🔧 OBS 风格 PTS 偏移归零：记录第一帧音频 PTS 并应用偏移
+    // 注意：音频和视频必须使用同一个 PTS 基准（first_video_pts_ms_），确保音视频同步
+    if (first_video_pts_ms_ == -1) {
+        first_video_pts_ms_ = current_timestamp_ms;
+        LOG_INFO("[BRIDGE] First audio PTS recorded (video_pts): " + std::to_string(first_video_pts_ms_) + "ms");
+    }
+    
+    if (!streaming_pts_initialized_) {
+        streaming_pts_initialized_ = true;
+        LOG_INFO("[BRIDGE] Streaming PTS initialized by audio at: " + std::to_string(current_timestamp_ms) + "ms");
+    }
+    
+    // 应用 PTS 偏移，确保音视频使用同一个基准
+    int64_t adjusted_timestamp_ms = current_timestamp_ms - first_video_pts_ms_;
+
     static int audio_frame_count = 0;
     audio_frame_count++;
     if (audio_frame_count <= 3) {
         LOG_INFO("[BRIDGE] on_audio_data_ready #" + std::to_string(audio_frame_count) + 
-                 ": media_clock_ms=" + std::to_string(current_timestamp_ms) +
-                 ", data.size=" + std::to_string(data.size()));
+                 ": raw_pts=" + std::to_string(current_timestamp_ms) + "ms, " +
+                 "adjusted_pts=" + std::to_string(adjusted_timestamp_ms) + "ms, " +
+                 "offset=" + std::to_string(first_video_pts_ms_) + "ms, " +
+                 "data.size=" + std::to_string(data.size()));
     }
 
     auto* audio_encoder = dynamic_cast<AACEncoder*>(encoder_->get_audio_encoder());
@@ -527,7 +567,7 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
         return;
     }
 
-    audio_encoder->encode_audio_data(data, current_timestamp_ms);
+    audio_encoder->encode_audio_data(data, adjusted_timestamp_ms);
 }
 
 // 新增：处理编码后的音频数据（推送到流）

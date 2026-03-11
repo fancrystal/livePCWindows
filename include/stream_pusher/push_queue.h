@@ -55,12 +55,17 @@ private:
     // 优先级队列比较器
     struct PacketComparator {
         bool operator()(const EncodedPacketPtr& a, const EncodedPacketPtr& b) const {
+            // 🔧 修复：参照 OBS，按 PTS 排序而不是 wallclock
+            // 将 PTS 转换为微秒进行比较
+            int64_t a_pts_us = av_rescale_q(a->pts, a->encoder_time_base, AVRational{1, 1000000});
+            int64_t b_pts_us = av_rescale_q(b->pts, b->encoder_time_base, AVRational{1, 1000000});
+            
             // 优先级高的先处理
             if (a->priority != b->priority) {
                 return a->priority < b->priority;
             }
-            // 旧包先处理
-            return a->wallclock_us > b->wallclock_us;
+            // PTS 小的先处理（确保时间顺序）
+            return a_pts_us > b_pts_us;
         }
     };
     

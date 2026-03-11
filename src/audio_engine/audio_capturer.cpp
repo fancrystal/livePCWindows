@@ -96,11 +96,33 @@ bool AudioCapturer::init_wasapi_capture() {
         on_wasapi_data(data, frames, sample_rate, channels, timestamp);
     });
 
-    // 启动采集
+    // 启动麦克风采集
     if (!wasapi_capturer_->Start()) {
-        LOG_ERROR("[AudioCapturer] Failed to start WASAPI capture");
+        LOG_ERROR("[AudioCapturer] Failed to start WASAPI microphone capture");
         wasapi_capturer_.reset();
         return false;
+    }
+
+    // 如果启用了扬声器采集，启动扬声器采集
+    if (speaker_capture_enabled_) {
+        speaker_capturer_ = std::make_unique<WASAPICapturer>();
+        // 使用默认输出设备（桌面音频）
+        if (speaker_capturer_->Initialize(WASAPISourceType::DeviceOutput, "", true)) {
+            speaker_capturer_->SetCallback([this](const float* data, uint32_t frames,
+                                                  uint32_t sample_rate, uint32_t channels,
+                                                  int64_t timestamp) {
+                on_speaker_data(data, frames, sample_rate, channels, timestamp);
+            });
+            if (speaker_capturer_->Start()) {
+                LOG_INFO("[AudioCapturer] WASAPI speaker (desktop audio) capture started");
+            } else {
+                LOG_ERROR("[AudioCapturer] Failed to start WASAPI speaker capture");
+                speaker_capturer_.reset();
+            }
+        } else {
+            LOG_ERROR("[AudioCapturer] Failed to initialize WASAPI speaker capture");
+            speaker_capturer_.reset();
+        }
     }
 
     is_capturing_ = true;
@@ -147,30 +169,35 @@ bool AudioCapturer::init_qt_native_capture() {
 void AudioCapturer::on_wasapi_data(const float* data, uint32_t frames,
                                     uint32_t sample_rate, uint32_t channels,
                                     int64_t timestamp) {
-    // 输出统一为 32-bit float 格式
-    
+    // 麦克风数据回调
     // 计算数据大小：float 每个样本 4 字节
     size_t data_size = frames * channels * sizeof(float);
     
     // 转换纳秒时间戳为毫秒
     int64_t timestamp_ms = timestamp / 1000000;
     
-    // 调试日志
-    static int callback_counter = 0;
-    callback_counter++;
-    if (callback_counter <= 10 || callback_counter % 50 == 0) {
-        LOG_INFO("[AudioCapturer] Audio callback: frames=" + std::to_string(frames) +
-                 ", sample_rate=" + std::to_string(sample_rate) +
-                 ", channels=" + std::to_string(channels) +
-                 ", timestamp=" + std::to_string(timestamp_ms) + "ms" +
-                 ", data_size=" + std::to_string(data_size) + " bytes");
-    }
+    // 创建 QByteArray
+    QByteArray byte_data(reinterpret_cast<const char*>(data), static_cast<int>(data_size));
+    
+    // 发送麦克风数据信号
+    emit data_captured(std::move(byte_data), timestamp_ms);
+}
+
+void AudioCapturer::on_speaker_data(const float* data, uint32_t frames,
+                                     uint32_t sample_rate, uint32_t channels,
+                                     int64_t timestamp) {
+    // 扬声器（桌面音频）数据回调
+    // 计算数据大小：float 每个样本 4 字节
+    size_t data_size = frames * channels * sizeof(float);
+    
+    // 转换纳秒时间戳为毫秒
+    int64_t timestamp_ms = timestamp / 1000000;
     
     // 创建 QByteArray
     QByteArray byte_data(reinterpret_cast<const char*>(data), static_cast<int>(data_size));
     
-    // 发送信号
-    emit data_captured(std::move(byte_data), timestamp_ms);
+    // 发送扬声器数据信号
+    emit speaker_data_captured(std::move(byte_data), timestamp_ms);
 }
 
 void AudioCapturer::stop_capture() {
@@ -188,6 +215,12 @@ void AudioCapturer::stop_capture() {
     if (qt_native_capturer_) {
         qt_native_capturer_->Stop();
         qt_native_capturer_.reset();
+    }
+    
+    // 停止扬声器采集
+    if (speaker_capturer_) {
+        speaker_capturer_->Stop();
+        speaker_capturer_.reset();
     }
 
     is_capturing_ = false;

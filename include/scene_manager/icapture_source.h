@@ -22,6 +22,9 @@ struct CaptureConfig {
     // SCREEN/WINDOW options
     bool capture_cursor = true;
     bool capture_border = true;
+
+    // CAMERA options
+    bool mirror = false;
 };
 
 struct CaptureFrame {
