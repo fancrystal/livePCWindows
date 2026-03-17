@@ -273,6 +273,9 @@ QT_ADDITIONAL_HOST_PACKAGES_PREFIX_PATH:STRING=
 //Additional directories where find(Qt6 ...) components are searched
 QT_ADDITIONAL_PACKAGES_PREFIX_PATH:STRING=
 
+//The directory containing a CMake configuration file for Qt6Concurrent.
+Qt6Concurrent_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Concurrent
+
 //The directory containing a CMake configuration file for Qt6CoreTools.
 Qt6CoreTools_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6CoreTools
 
@@ -296,6 +299,9 @@ Qt6Multimedia_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Multimedia
 
 //The directory containing a CMake configuration file for Qt6Network.
 Qt6Network_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6Network
+
+//The directory containing a CMake configuration file for Qt6OpenGLWidgets.
+Qt6OpenGLWidgets_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6OpenGLWidgets
 
 //The directory containing a CMake configuration file for Qt6OpenGL.
 Qt6OpenGL_DIR:PATH=C:/Qt/6.5.3/msvc2019_64/lib/cmake/Qt6OpenGL

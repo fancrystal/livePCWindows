@@ -225,15 +225,38 @@ SystemMonitor::GPUInfo SystemMonitor::get_gpu_info_dxgi() {
             // 找到第一个独立的 GPU (NVIDIA or AMD)
             if (desc.VendorId == 0x10DE ||  // NVIDIA
                 desc.VendorId == 0x1002) {  // AMD
-                info.memory_total_bytes = desc.DedicatedVideoMemory;
-                // DXGI 不提供实时的内存使用情况，使用估算值
-                info.memory_used_bytes = desc.DedicatedVideoMemory / 2;  // 估算50%使用
-                info.memory_free_bytes = desc.DedicatedVideoMemory - info.memory_used_bytes;
-                info.memory_usage_percent = 50.0;
-                info.available = true;
+                // 优先使用 IDXGIAdapter3::QueryVideoMemoryInfo 获取实时显存占用
+                ComPtr<IDXGIAdapter3> adapter3;
+                if (SUCCEEDED(adapter.As(&adapter3)) && adapter3) {
+                    DXGI_QUERY_VIDEO_MEMORY_INFO mem_info{};
+                    if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(
+                            0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mem_info))) {
+                        // Budget 更接近“可用总量”，DedicatedVideoMemory 更接近“物理显存”
+                        const uint64_t total = (mem_info.Budget > 0) ? mem_info.Budget
+                                                                     : static_cast<uint64_t>(desc.DedicatedVideoMemory);
+                        const uint64_t used = static_cast<uint64_t>(mem_info.CurrentUsage);
+                        info.memory_total_bytes = total;
+                        info.memory_used_bytes = used;
+                        info.memory_free_bytes = (total > used) ? (total - used) : 0;
+                        info.memory_usage_percent = (total > 0)
+                            ? (static_cast<double>(used) * 100.0 / static_cast<double>(total))
+                            : 0.0;
+                        info.available = true;
 
-                // DXGI 不提供实时的 GPU 使用率，设置为0表示无法获取
-                info.usage_percent = 0.0;
+                        // DXGI 无法提供“GPU核心利用率”，这里用显存占用率填充 usage_percent 以便 UI 显示百分比
+                        info.usage_percent = info.memory_usage_percent;
+                    }
+                }
+
+                // 若 QueryVideoMemoryInfo 失败，退化为仅提供总显存（不再做 50% 估算）
+                if (!info.available) {
+                    info.memory_total_bytes = static_cast<uint64_t>(desc.DedicatedVideoMemory);
+                    info.memory_used_bytes = 0;
+                    info.memory_free_bytes = info.memory_total_bytes;
+                    info.memory_usage_percent = 0.0;
+                    info.usage_percent = 0.0;
+                    info.available = (info.memory_total_bytes > 0);
+                }
 
                 break;
             }

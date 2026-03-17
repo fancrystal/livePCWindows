@@ -64,6 +64,9 @@ public:
     void set_compositor(std::shared_ptr<Compositor> compositor);
     std::shared_ptr<Compositor> get_compositor() const;
     
+    // 获取 CanvasRenderer（用于推流捕获）
+    CanvasRenderer* get_renderer() const { return renderer_.get(); }
+    
 signals:
     // 场景项被选中时发出的信号
     void scene_item_selected(std::shared_ptr<SceneItem> item);
@@ -103,7 +106,10 @@ private:
     std::unique_ptr<CanvasRenderer> renderer_;
     std::shared_ptr<VideoEngine> video_engine_; // 视频引擎，用于显示摄像头帧
     std::shared_ptr<Compositor> compositor_;    // 合成器，用于多源渲染
-    
+
+    // 定时器：用于自动刷新画布（插播视频等被动数据源需要）
+    QTimer* refresh_timer_ = nullptr;
+
     // 画布属性
     CanvasConfig canvas_config_ = CanvasConfig::get_default();
     int canvas_width_ = 1920;
@@ -152,7 +158,13 @@ public:
     bool is_showing_bounding_boxes() const { return show_bounding_boxes_; }
     bool is_showing_resize_handles() const { return show_resize_handles_; }
     
+    // 设置 Compositor（用于从帧同步层获取插播视频帧）
+    void set_compositor(std::shared_ptr<Compositor> compositor) { compositor_ = compositor; }
+    
 private:
+    // Compositor（用于从帧同步层获取插播视频帧）
+    std::shared_ptr<Compositor> compositor_;
+    
     // 辅助方法
     void draw_bounding_box(QPainter& painter, const Transform& transform, bool selected);
     void draw_resize_handles(QPainter& painter, const Transform& transform);

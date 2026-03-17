@@ -11,7 +11,6 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <memory>
-#include "app/insert_file_item.h"
 #include "media_pipeline/vlc_player.h"
 
 namespace Ui {
@@ -57,6 +56,8 @@ private:
     void setupUI();
     void updateVideoTable();
     void updateButtonStates();
+    void updateVlcPrewarmUi();
+    void startVlcPrewarmMonitoring();
     QString formatDuration(qint64 durationMs) const;
     QString formatFileSize(qint64 bytes) const;
     QPixmap loadVideoThumbnail(const QString& coverUrl) const;
@@ -78,6 +79,8 @@ private:
     // VLC 播放器
     std::unique_ptr<VlcPlayer> vlc_player_;
     bool is_previewing_ = false;
+    QTimer* vlc_prewarm_timer_ = nullptr;
+    bool vlc_prewarm_started_ = false;
 
     // 数据
     QString sass_url_;

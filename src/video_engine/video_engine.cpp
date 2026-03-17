@@ -452,23 +452,24 @@ void VideoEngine::set_current_scene(std::shared_ptr<Scene> scene) {
 std::shared_ptr<VideoFrame> VideoEngine::render_frame() {
     // 如果没有当前场景，直接返回最新捕获的帧
     if (!current_scene_) {
-        LOG_INFO("No current scene, returning latest captured frame");
+        // LOG_INFO("No current scene, returning latest captured frame");
         return get_latest_frame();
     }
-    
+
     // 获取场景中的所有场景项
     std::vector<std::shared_ptr<SceneItem>> scene_items = current_scene_->get_all_scene_items();
-    
+
     // 如果场景中没有任何项，直接返回最新捕获的帧
-    if (scene_items.empty()&&rand() % 3==0) {
-        LOG_INFO("Current scene has no items, returning latest captured frame");
+    if (scene_items.empty() && rand() % 3 == 0) {
+        // LOG_INFO("Current scene has no items, returning latest captured frame");
         return get_latest_frame();
     }
-    
+
     // 获取最新捕获的帧作为背景
     auto rendered_frame = get_latest_frame();
-    
-    LOG_INFO("Rendering scene: " + current_scene_->get_name() + ", items: " + std::to_string(scene_items.size()));
+
+    // 每帧都打印会导致编码线程卡顿，仅调试时打开
+    // LOG_INFO("Rendering scene: " + current_scene_->get_name() + ", items: " + std::to_string(scene_items.size()));
     
     // TODO: 实现真正的场景渲染逻辑，包括:
     // 1. 按顺序渲染每个可见的SceneItem

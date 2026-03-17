@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/error.h"
-#include "common/module_lifecycle.h"
 #include "common/media_clock.h"
 #include <memory>
 #include <string>

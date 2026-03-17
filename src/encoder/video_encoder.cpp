@@ -823,6 +823,10 @@ ErrorCode H264Encoder::encode(const std::shared_ptr<VideoFrame>& frame, std::vec
 
     packets.clear();
 
+    // 🔧 添加编码耗时诊断
+    auto encode_start = std::chrono::high_resolution_clock::now();
+    auto pts_start = frame->timestamp_ms;
+
     ErrorCode sret = send_frame_internal(frame);
 
     // 🔧 运行时故障检测：检查编码错误
@@ -859,7 +863,27 @@ ErrorCode H264Encoder::encode(const std::shared_ptr<VideoFrame>& frame, std::vec
         return sret;
     }
 
-    return receive_packets(packets);
+    auto receive_start = std::chrono::high_resolution_clock::now();
+    ErrorCode rret = receive_packets(packets);
+
+    // 🔧 添加编码耗时诊断
+    auto encode_end = std::chrono::high_resolution_clock::now();
+    auto encode_duration = std::chrono::duration_cast<std::chrono::milliseconds>(encode_end - encode_start).count();
+    auto receive_duration = std::chrono::duration_cast<std::chrono::milliseconds>(encode_end - receive_start).count();
+
+    // 只在处理时间超过阈值或第一帧时记录日志
+    static int frame_count = 0;
+    frame_count++;
+    if (encode_duration > 50 || frame_count <= 3 || frame_count % 100 == 0) {
+        LOG_INFO("[H264Encoder] Encode #" + std::to_string(frame_count) +
+                 " pts=" + std::to_string(pts_start) + "ms" +
+                 " total=" + std::to_string(encode_duration) + "ms" +
+                 " (send=" + std::to_string(receive_duration) + "ms" +
+                 " recv=" + std::to_string(encode_duration - receive_duration) + "ms)" +
+                 " packets=" + std::to_string(packets.size()));
+    }
+
+    return rret;
 }
 
 ErrorCode H264Encoder::flush(std::vector<EncodedPacketPtr>& packets) {

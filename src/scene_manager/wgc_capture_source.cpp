@@ -40,7 +40,8 @@ bool WGCaptureSourceAdapter::shutdown() {
 bool WGCaptureSourceAdapter::is_running() const { return running_; }
 
 void WGCaptureSourceAdapter::on_image(const QImage& img) {
-    LOG_INFO("[DIAG] WGCaptureSourceAdapter::on_image - 收到图像，isNull: " + std::string(img.isNull() ? "true" : "false") +
+    // 每帧都打印会导致 UI 卡顿，仅在调试时打开
+    LOG_DEBUG("[DIAG] WGCaptureSourceAdapter::on_image - 收到图像，isNull: " + std::string(img.isNull() ? "true" : "false") +
              ", 尺寸: " + std::to_string(img.width()) + "x" + std::to_string(img.height()));
 
     if (img.isNull()) return;
@@ -51,7 +52,7 @@ void WGCaptureSourceAdapter::on_image(const QImage& img) {
     frame.height = img.height();
     frame.timestamp = MediaClock().now();
 
-    LOG_INFO("[DIAG] WGCaptureSourceAdapter::on_image - 发送frameReady信号，源ID: " + cfg_.target_id);
+    LOG_DEBUG("[DIAG] WGCaptureSourceAdapter::on_image - 发送frameReady信号，源ID: " + cfg_.target_id);
     emit frameReady(frame);
 }
 

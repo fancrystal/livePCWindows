@@ -24,7 +24,7 @@ if(WIN32)
 endif()
 
 # Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture, MultimediaWidgets for QVideoWidget, PrintSupport for QCustomPlot)
-find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport WebEngineWidgets)
+find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport WebEngineWidgets Concurrent)
 qt_standard_project_setup()
 
 # Third-party library paths
@@ -114,8 +114,13 @@ set(ALL_HEADERS
     ${MEDIA_PIPELINE_HEADERS}
 )
 
+# Windows 图标资源文件
+if(WIN32)
+    set(APP_ICON_RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/resources/app_icon.rc")
+endif()
+
 # Create executable with AUTOMOC enabled (handles Q_OBJECT automatically)
-qt_add_executable(LiveAssistant ${ALL_SOURCES} ${ALL_HEADERS} ${APP_UIS})
+qt_add_executable(LiveAssistant ${ALL_SOURCES} ${ALL_HEADERS} ${APP_UIS} ${APP_ICON_RESOURCE})
 
 # Add KissFFT C source files directly to the main project
 # Set source file properties to compile as C
@@ -138,6 +143,7 @@ target_link_libraries(LiveAssistant PRIVATE
     Qt6::MultimediaWidgets
     Qt6::PrintSupport
     Qt6::WebEngineWidgets
+    Qt6::Concurrent
     # FFmpeg libraries
     ${FFMPEG_DIR}/lib/x64/avformat.lib
     ${FFMPEG_DIR}/lib/x64/avcodec.lib

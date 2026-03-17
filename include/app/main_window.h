@@ -11,11 +11,13 @@
 #include <memory>
 #include <qlabel.h>
 #include <QPointer>
+#include <atomic>
 
 #include "common/media_clock.h"
 #include "common/config_manager.h"
 #include "common/system_monitor.h"
 #include "http/live_item.h"
+#include "media_pipeline/media_file_source.h"
 
 class ExitDialog;
 class InsertVideoWidget;
@@ -88,6 +90,7 @@ private slots:
     void on_insert_video_button_clicked();
     void on_start_insert_video(const QString& fileId, const QString& fileName, bool loopEnabled);
     void on_stop_insert_video();
+    void on_insert_video_frame_ready();  // 新增：处理同步器中的插播视频帧
 
     // 推流控制
     void on_streaming_started();
@@ -98,7 +101,6 @@ private:
     void setup_scene_list();
     void build_scene_list();
     void update_audio_status(const QString& text, const QString& color);
-    void update_streaming_stats();
     void update_system_info();
     void log_system_stats_periodically();  // 新增：定期打印系统统计日志
     QListWidget* listWidget_sceneItems_{nullptr};
@@ -174,9 +176,14 @@ private:
 
     // 插播视频相关
     InsertVideoWidget* insert_video_widget_ = nullptr;
-    std::shared_ptr<Source> current_insert_video_source_;
+    std::shared_ptr<MediaFileSource> current_insert_video_source_;  // 改为具体类型以便调用
     QString current_insert_video_file_id_;
     bool is_insert_video_playing_ = false;
+    QTimer* insert_video_timer_ = nullptr;  // 插播视频帧同步定时器
+
+    // Canvas orientation switch guards (prevent rapid toggles & re-entrancy)
+    std::atomic_bool canvas_config_changing_{false};
+    int64_t last_canvas_toggle_ms_ = 0;
 
     // Camera related
     bool is_camera_preview_ = false;
@@ -193,7 +200,6 @@ private:
     qint64 streaming_start_time_ms_ = 0;
 
     // Statistics display
-    QTimer* stats_update_timer_ = nullptr;
     QTimer* system_info_timer_ = nullptr;
     // 系统监控日志打印定时器（每分钟打印一次）
     QTimer* system_log_timer_ = nullptr;

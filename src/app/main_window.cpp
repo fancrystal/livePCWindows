@@ -12,6 +12,7 @@
 #include <QWebEngineSettings>
 #include "http/live_item.h"
 #include "media_pipeline/media_file_source.h"
+#include <QScopeGuard>
 #include "ui_main_window.h"
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/source_factory.h"
@@ -28,6 +29,7 @@
 #include "stream_pusher/stream_pusher.h"
 #include "common/log.h"
 #include "common/error.h"
+#include "common/video_frame_synchronizer.h"
 
 #include <QWindow>
 #include <QTimer>
@@ -447,9 +449,6 @@ MainWindow::~MainWindow() {
     cleanupSystemTray();
 
     // Stop timers
-    if (stats_update_timer_) {
-        stats_update_timer_->stop();
-    }
     if (system_info_timer_) {
         system_info_timer_->stop();
     }
@@ -810,12 +809,6 @@ void MainWindow::initialize_modules() {
         if (ui->label_liveDuration) ui->label_liveDuration->setText(text);
     });
 
-    // 统计信息更新定时器 (推流时每秒更新一次)
-    stats_update_timer_ = new QTimer(this);
-    connect(stats_update_timer_, &QTimer::timeout, [this]() {
-        update_streaming_stats();
-    });
-
     // 系统信息更新定时器 (每2秒更新一次)
     system_info_timer_ = new QTimer(this);
     connect(system_info_timer_, &QTimer::timeout, [this]() {
@@ -827,6 +820,19 @@ void MainWindow::initialize_modules() {
     connect(system_log_timer_, &QTimer::timeout, [this]() {
         log_system_stats_periodically();
     });
+
+    // 程序启动时启动系统信息更新定时器（非直播状态，每3秒更新）
+    // 注意：延迟启动，确保其他模块已完全初始化
+    if (system_info_timer_) {
+        QTimer::singleShot(500, this, [this]() {
+            if (system_info_timer_) {
+                system_info_timer_->start(3000);
+                // 立即更新一次显示
+                update_system_info();
+            }
+        });
+    }
+
     LOG_INFO("========== initialize_modules END ==========");
 }
 
@@ -960,12 +966,11 @@ void MainWindow::setup_ui_connections() {
                             ui->label_liveDuration->setText("00:00:00");
                         }
                     }
-                    // 停止统计信息更新定时器
-                    if (stats_update_timer_) {
-                        stats_update_timer_->stop();
-                    }
+                    // 改为3秒间隔持续更新系统信息（非直播状态）
                     if (system_info_timer_) {
-                        system_info_timer_->stop();
+                        system_info_timer_->start(3000);
+                        // 立即更新一次显示
+                        update_system_info();
                     }
                     LOG_INFO("直播已结束");
                 }
@@ -974,7 +979,7 @@ void MainWindow::setup_ui_connections() {
             }
 
             // 开始推流 - 显示开始直播确认对话框
-            LOG_INFO("[DIAG] 准备开始推流");
+            LOG_DEBUG("[DIAG] 准备开始推流");
             QMessageBox::StandardButton reply = QMessageBox::question(
                 this,
                 "开始直播",
@@ -1030,16 +1035,13 @@ void MainWindow::setup_ui_connections() {
                     }
                     // 启动直播时长计时器
                     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
+                    // 直播时长显示用更高频刷新，避免偶尔“跳两秒”的观感（实际时长仍按系统时钟计算）
                     if (live_duration_timer_) {
-                        live_duration_timer_->start(1000);
+                        live_duration_timer_->start(200);
                     }
-                    // 启动统计信息更新定时器
-                    if (stats_update_timer_) {
-                        stats_update_timer_->start(1000);
-                    }
-                    // 启动系统信息更新定时器
+                    // 系统监控（CPU/内存/GPU/码率/FPS）按 1 秒更新
                     if (system_info_timer_) {
-                        system_info_timer_->start(2000);
+                        system_info_timer_->start(1000);
                     }
                     LOG_INFO("推流已启动: " + url.toStdString());
                 } else {
@@ -1311,26 +1313,24 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
                 QRectF(0, 0, canvas_config_.get_width(), canvas_config_.get_height()), 1.0f);
         }
 
-        // 设置帧回调 - 将解码后的 VideoFrame 传递给 Compositor
-        // 零拷贝方案：传递 shared_ptr<VideoFrame>，数据生命周期由智能指针管理
-        mediaSource->set_frame_ready_callback(
-            [this, mediaSource](std::shared_ptr<VideoFrame> frame) {
-                if (!frame || !frame->data) return;
-
-                // 直接传递 shared_ptr<VideoFrame>，零拷贝
-                const std::string source_id = mediaSource->get_id();
-                if (compositor_) {
-                    compositor_->update_layer_video_frame(source_id, frame);
-                }
-                // 注意：不再直接调用 repaint，由 CanvasWidget 的定时器驱动刷新
-            }
-        );
+        // 设置帧回调 - 通过 encoder_bridge 设置无锁回调
+        // 注意：不再使用 Qt 信号槽，因为回调已经在工作线程中直接更新 latest_frame_
+        // 画布渲染时通过 get_latest_frame() 获取帧（和摄像头/屏幕共享一样）
+        if (encoder_bridge_) {
+            encoder_bridge_->attach_insert_video_source(mediaSource.get());
+        }
 
         // 启动播放
         if (mediaSource->start()) {
             current_insert_video_source_ = mediaSource;
             current_insert_video_file_id_ = fileId;
             is_insert_video_playing_ = true;
+
+            // 创建帧同步定时器（30fps，每33ms从同步器取帧更新到Compositor）
+            insert_video_timer_ = new QTimer(this);
+            connect(insert_video_timer_, &QTimer::timeout, this, &MainWindow::on_insert_video_frame_ready);
+            insert_video_timer_->start(33);  // ~30fps
+            LOG_INFO("[INSERT_VIDEO] Frame sync timer started at 30fps");
 
             // 设置混音模式：麦克风 + 插播音频
             if (audio_engine_) {
@@ -1382,6 +1382,18 @@ void MainWindow::stopInsertVideoPlayback() {
 
     LOG_INFO("Stopping insert video playback");
 
+    // 停止帧同步定时器
+    if (insert_video_timer_) {
+        insert_video_timer_->stop();
+        insert_video_timer_->deleteLater();
+        insert_video_timer_ = nullptr;
+    }
+
+    // 分离插播视频源（清除时间基准和同步器）
+    if (encoder_bridge_ && current_insert_video_source_) {
+        encoder_bridge_->detach_insert_video_source(current_insert_video_source_.get());
+    }
+
     // 从场景中移除
     if (scene_manager_ && current_insert_video_source_) {
         auto scene = scene_manager_->get_current_scene();
@@ -1420,6 +1432,33 @@ void MainWindow::stopInsertVideoPlayback() {
 
 void MainWindow::on_stop_insert_video() {
     stopInsertVideoPlayback();
+}
+
+void MainWindow::on_insert_video_frame_ready() {
+    // 从 encoder_bridge_ 的同步器获取插播视频帧
+    if (!encoder_bridge_ || !compositor_ || !current_insert_video_source_) {
+        return;
+    }
+
+    SyncedVideoFrame synced_frame;
+    // 非阻塞获取帧（最多尝试一次）
+    if (encoder_bridge_->pop_insert_video_frame(synced_frame) && synced_frame.frame) {
+        const std::string source_id = current_insert_video_source_->get_id();
+        // 更新 Compositor 中的层（这会同时更新画布显示和推流）
+        compositor_->update_layer_video_frame(source_id, synced_frame.frame);
+
+        // 调试日志：确认帧更新成功
+        static int frame_count = 0;
+        static int64_t last_log_time = 0;
+        frame_count++;
+        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now - last_log_time >= 1000) {
+            LOG_INFO("[INSERT_VIDEO] Compositor frame update: " + std::to_string(frame_count) + " fps");
+            frame_count = 0;
+            last_log_time = now;
+        }
+    }
 }
 
 void MainWindow::on_camera_button_clicked() {
@@ -1523,7 +1562,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
     CaptureConfig cfg;
     cfg.type = CaptureConfig::TargetType::CAMERA;
     cfg.target_id = camera_device_id; // Use dshow device_name
-    cfg.fps = 30;
+    cfg.fps = 15; // 降低帧率以减少主线程处理负担
     cfg.mirror = mirror; // Apply mirror setting
     LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 帧率=" + std::to_string(cfg.fps) + ", 镜像=" + (mirror ? "开启" : "关闭"));
 
@@ -1539,16 +1578,19 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
     LOG_INFO("连接frameReady信号到Compositor的槽函数");
     // 使用信号槽连接替代回调，显式指定跨线程连接类型
     connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
-        LOG_INFO("[DIAG] 收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
+        auto cb_start = std::chrono::high_resolution_clock::now();
+        LOG_DEBUG("[DIAG] 收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
 
         // 更新compositor（用于推流）
         if (compositor_ && !frame.image.isNull()) {
             if (!compositor_->has_layer(source_id)) {
-                LOG_INFO("[DIAG] 图层不存在，创建新图层: " + source_id);
+                LOG_DEBUG("[DIAG] 图层不存在，创建新图层: " + source_id);
                 compositor_->add_layer(source_id);
             }
-            LOG_INFO("[DIAG] 更新Compositor图层图像: " + source_id);
+            auto t0 = std::chrono::high_resolution_clock::now();
             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            LOG_DEBUG("[DIAG] updateLayerImage耗时=" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()) + "us");
         }
 
         // 更新对应的ScreenSource或CameraSource（用于预览显示）
@@ -1560,8 +1602,10 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
                     // 尝试更新 ScreenSource（屏幕共享）
                     auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                     if (screenSrc) {
-                        LOG_INFO("[DIAG] 更新ScreenSource图像: " + source_id);
+                        auto t0 = std::chrono::high_resolution_clock::now();
                         screenSrc->push_frame(frame.image);
+                        auto t1 = std::chrono::high_resolution_clock::now();
+                        LOG_DEBUG("[DIAG] push_frame(ScreenSource)耗时=" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()) + "us");
                         // First-frame sizing: if no transform set, fit to quarter canvas preserving aspect ratio
                         if (scene_manager_ && scene_manager_->get_current_scene()) {
                             auto scene = scene_manager_->get_current_scene();
@@ -1600,8 +1644,10 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
                     // 尝试更新 CameraSource（摄像头）
                     auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
                     if (cameraSrc) {
-                        LOG_INFO("[DIAG] 更新CameraSource图像: " + source_id);
+                        auto t0 = std::chrono::high_resolution_clock::now();
                         cameraSrc->push_frame(frame.image);
+                        auto t1 = std::chrono::high_resolution_clock::now();
+                        LOG_DEBUG("[DIAG] push_frame(CameraSource)耗时=" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()) + "us");
                         // If this is the first frame and the scene item has no size, fit it to 1/4 canvas preserving aspect ratio
                         if (scene_manager_ && scene_manager_->get_current_scene()) {
                             auto scene = scene_manager_->get_current_scene();
@@ -1763,6 +1809,7 @@ void MainWindow::show_screen_share_selector() {
                 LOG_INFO(std::string("连接frameReady信号到Compositor的槽函数"));
                 // 使用信号槽连接替代回调，显式指定跨线程连接类型
                 connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
+                    // 每帧都打印会导致 UI 卡顿，仅在调试时打开
                     LOG_INFO("   收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
 
                     // 对于屏幕共享，同时更新compositor和ScreenSource
@@ -1770,10 +1817,10 @@ void MainWindow::show_screen_share_selector() {
                         // 更新compositor（用于推流）
                         if (compositor_ && !frame.image.isNull()) {
                             if (!compositor_->has_layer(source_id)) {
-                                LOG_INFO("[DIAG] 图层不存在，创建新图层: " + source_id);
+                                LOG_DEBUG("[DIAG] 图层不存在，创建新图层: " + source_id);
                                 compositor_->add_layer(source_id);
                             }
-                            LOG_INFO("[DIAG] 更新Compositor图层图像: " + source_id);
+                            LOG_DEBUG("[DIAG] 更新Compositor图层图像: " + source_id);
                             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
                         }
 
@@ -1786,7 +1833,7 @@ void MainWindow::show_screen_share_selector() {
                                     // 尝试更新 ScreenSource（屏幕共享）
                                     auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                                     if (screenSrc) {
-                                        LOG_INFO("[DIAG] 更新ScreenSource图像: " + source_id);
+                                        LOG_DEBUG("[DIAG] 更新ScreenSource图像: " + source_id);
                                         screenSrc->push_frame(frame.image);
                                         break;
                                     }
@@ -1794,7 +1841,7 @@ void MainWindow::show_screen_share_selector() {
                                     // 尝试更新 CameraSource（摄像头）
                                     auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
                                     if (cameraSrc) {
-                                        LOG_INFO("[DIAG] 更新CameraSource图像: " + source_id);
+                                        LOG_DEBUG("[DIAG] 更新CameraSource图像: " + source_id);
                                         cameraSrc->push_frame(frame.image);
                                         break;
                                     }
@@ -1911,6 +1958,13 @@ void MainWindow::setup_canvas_widget() {
     canvas_widget_->set_compositor(compositor_);
 
     encoder_bridge_->set_compositor(compositor_);
+    // 设置 CanvasRenderer 作为回退方案（用于推流捕获）
+    if (canvas_widget_->get_renderer() && scene_manager_->get_current_scene()) {
+        encoder_bridge_->set_canvas_renderer(
+            std::shared_ptr<CanvasRenderer>(canvas_widget_->get_renderer()), 
+            scene_manager_->get_current_scene()
+        );
+    }
     encoder_bridge_->set_encoder(encoder_);
     encoder_bridge_->set_stream_pusher(stream_pusher_);
     encoder_bridge_->set_audio_engine(audio_engine_);
@@ -2059,44 +2113,6 @@ void MainWindow::update_preview() {
 }
 
 
-void MainWindow::update_streaming_stats() {
-    if (!stream_pusher_ || !stream_pusher_->is_pushing()) {
-        return;
-    }
-
-    // 注意：新的 RTMPPusherNew 使用信号驱动的统计更新（statisticsUpdated signal）
-    // 这里保留占位以防需要手动触发
-
-    // 使用新的 SystemMonitor 获取系统信息
-    const auto& sys_stats = system_monitor().get_cached_stats();
-    QString memory_text;
-    if (sys_stats.gpu_available) {
-        memory_text = QString("内存: %1GB/%2GB (%3%) | GPU: %4% (%5GB/%6GB)")
-            .arg(sys_stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
-            .arg(sys_stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
-            .arg(sys_stats.memory_usage_percent, 0, 'f', 0)
-            .arg(sys_stats.gpu_usage_percent, 0, 'f', 0)
-            .arg(sys_stats.gpu_memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
-            .arg(sys_stats.gpu_memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1);
-    } else {
-        memory_text = QString("内存: %1GB/%2GB (%3%)")
-            .arg(sys_stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
-            .arg(sys_stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
-            .arg(sys_stats.memory_usage_percent, 0, 'f', 0);
-    }
-
-    // 注意：新的 RTMPPusherNew 使用信号驱动的统计更新
-    // 这里显示简化状态（完整的统计由 statisticsUpdated 信号处理）
-    QString status_text = QString("状态: 推流中 | CPU: %1% | %2")
-        .arg(QString::number(sys_stats.cpu_usage_percent, 'f', 1))
-        .arg(memory_text);
-
-    if (ui->label_techStats) {
-        ui->label_techStats->setText(status_text);
-        ui->label_techStats->setStyleSheet("font-size: 12px; color: #cccccc;");
-    }
-}
-
 void MainWindow::repositionPlaceholderOverlays() {
     if (!canvas_widget_ || !placeholderText_ || !stageAddButton_) return;
     
@@ -2230,8 +2246,52 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::update_system_info() {
-    // 使用新的 SystemMonitor 模块获取系统信息
+    // 更新系统监控数据
     system_monitor().update();
+
+    // 获取系统信息
+    const auto& sys_stats = system_monitor().get_cached_stats();
+
+    // 准备内存显示文本
+    QString memory_text;
+    {
+        // 这里显示的是“显存占用率”（used/total），不是 GPU 核心利用率
+        memory_text = QString("内存: %1GB/%2GB (%3%)")
+            .arg(sys_stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(sys_stats.memory_usage_percent, 0, 'f', 0);
+    }
+
+    // 根据是否直播构建状态文本
+    QString status_text;
+    QString style;
+
+    // 判断是否正在直播（统一使用stream_pusher_的推送状态）
+    bool is_pushing = stream_pusher_ && stream_pusher_->is_pushing();
+
+    if (is_pushing) {
+        // 直播中：显示实际码率和FPS（从stream_pusher_获取）
+        auto stats = stream_pusher_->get_stats();
+        QString bitrate_fps_text = QString("码率: %1kb/s | FPS: %2 | ")
+            .arg(static_cast<int>(stats.bandwidth_kbps))
+            .arg(stats.video_fps, 0, 'f', 2);
+        status_text = QString("%1CPU: %2% | %3")
+            .arg(bitrate_fps_text)
+            .arg(QString::number(sys_stats.cpu_usage_percent, 'f', 1))
+            .arg(memory_text);
+        style = "font-size: 12px; color: #cccccc;";
+    } else {
+        // 非直播：码率和FPS显示为0
+        status_text = QString("码率: 0kb/s | FPS: 0.00 | CPU: %1% | %2")
+            .arg(QString::number(sys_stats.cpu_usage_percent, 'f', 1))
+            .arg(memory_text);
+        style = "font-size: 12px; color: #888888;";
+    }
+
+    if (ui->label_techStats) {
+        ui->label_techStats->setText(status_text);
+        ui->label_techStats->setStyleSheet(style);
+    }
 }
 
 void MainWindow::toggleStageMaximize() {
@@ -2572,9 +2632,10 @@ void MainWindow::sync_scene_to_compositor() {
     // 不在这里调用，避免频繁同步造成性能问题
 
     auto items = scene->get_all_scene_items();
-    
-    LOG_INFO("[DIAG] sync_scene_to_compositor: scene=" + scene->get_name() + 
-             ", items_count=" + std::to_string(items.size()));
+
+    // 事件驱动时打印，频繁调用时注释掉避免阻塞
+    // LOG_INFO("[DIAG] sync_scene_to_compositor: scene=" + scene->get_name() +
+    //          ", items_count=" + std::to_string(items.size()));
 
     std::unordered_set<std::string> active;
     active.reserve(items.size());
@@ -2778,20 +2839,14 @@ void MainWindow::on_streaming_started() {
     LOG_INFO("推流状态：已开始");
     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
     if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
-    if (live_duration_timer_) live_duration_timer_->start(1000);
+    // 直播时长显示用更高频刷新，避免偶尔“跳两秒”的观感（实际时长仍按系统时钟计算）
+    if (live_duration_timer_) live_duration_timer_->start(200);
 
-    // 启动统计信息更新定时器
-    if (stats_update_timer_) {
-        stats_update_timer_->start(1000);
-    }
-
-    // 启动系统信息更新定时器
+    // 启动系统信息更新定时器（每秒更新，包含码率/FPS）
     if (system_info_timer_) {
-        system_info_timer_->start(2000); // 每2秒更新一次
+        system_info_timer_->start(1000); // 每秒更新一次（直播时）
         // 立即更新一次系统信息
         update_system_info();
-        // 立即更新一次统计信息
-        update_streaming_stats();
     }
 
     // 启动系统监控日志打印定时器 (每分钟打印一次)
@@ -2806,17 +2861,18 @@ void MainWindow::on_streaming_started() {
 void MainWindow::on_streaming_stopped() {
     LOG_INFO("推流状态：已停止");
     if (live_duration_timer_) live_duration_timer_->stop();
-    if (stats_update_timer_) stats_update_timer_->stop();
-    if (system_info_timer_) system_info_timer_->stop();
+    // 不停止 system_info_timer_，改为3秒间隔持续更新系统信息
+    if (system_info_timer_) {
+        system_info_timer_->start(3000); // 每3秒更新一次
+        // 立即更新一次系统信息显示（非直播状态）
+        update_system_info();
+    }
     if (system_log_timer_) system_log_timer_->stop(); // 停止日志打印定时器
     streaming_start_time_ms_ = 0;
     if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
 
-    // 恢复默认状态显示
-    if (ui->label_techStats) {
-        ui->label_techStats->setText("码率: 0kb/s | FPS: 0.00 | CPU: 0.0% | 内存: 0.0MB");
-        ui->label_techStats->setStyleSheet("font-size: 12px; color: #666666;");
-    }
+    // 非直播状态也显示系统信息（使用统一格式，码率和FPS显示为0）
+    update_system_info();
 }
 
 void MainWindow::on_streaming_error(const QString& error) {
@@ -2937,6 +2993,20 @@ void MainWindow::set_portrait_mode() {
 
 // 切换横竖屏
 void MainWindow::toggle_canvas_orientation() {
+    // 防止用户快速连点导致频繁重初始化（尤其是编码器），引发卡顿/崩溃风险
+    int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (last_canvas_toggle_ms_ != 0 && (now_ms - last_canvas_toggle_ms_) < 300) {
+        LOG_WARNING("Canvas toggle throttled (too frequent)");
+        return;
+    }
+    last_canvas_toggle_ms_ = now_ms;
+
+    if (canvas_config_changing_.load()) {
+        LOG_WARNING("Canvas toggle ignored (config change in progress)");
+        return;
+    }
+
     if (is_portrait_mode_) {
         set_landscape_mode();
     } else {
@@ -2964,6 +3034,16 @@ void MainWindow::apply_server_canvas_config(const QString& orientation) {
 // 辅助方法：应用画布配置变更
 void MainWindow::apply_canvas_config_change() {
     LOG_INFO("========== apply_canvas_config_change START ==========");
+
+    bool expected = false;
+    if (!canvas_config_changing_.compare_exchange_strong(expected, true)) {
+        LOG_WARNING("apply_canvas_config_change skipped (already in progress)");
+        return;
+    }
+    const auto reset_flag = qScopeGuard([this] {
+        canvas_config_changing_.store(false);
+    });
+
     int width = canvas_config_.get_width();
     int height = canvas_config_.get_height();
     LOG_INFO(QString("Applying canvas config: %1x%2, portrait=%3")
@@ -3014,6 +3094,18 @@ void MainWindow::apply_canvas_config_change() {
     // 调整场景项位置适配新比例
     LOG_INFO("Adjusting scene items");
     adjust_scene_items_for_canvas_change();
+
+    // 特殊处理：如果有插播视频在播放，更新其 Compositor layer 为全屏
+    // 插播视频的 source_id 以 "insert_video_" 开头
+    if (current_insert_video_source_ && compositor_) {
+        const std::string source_id = current_insert_video_source_->get_id();
+        if (source_id.find("insert_video_") == 0 && compositor_->has_layer(source_id)) {
+            QRectF fullscreen_rect(0, 0, width, height);
+            compositor_->update_layer_transform(source_id, fullscreen_rect, 1.0f);
+            LOG_INFO("Updated insert video layer transform for portrait mode: " +
+                     std::to_string(width) + "x" + std::to_string(height));
+        }
+    }
 
     // 更新 UI
     LOG_INFO("Updating canvas orientation UI");
@@ -3231,7 +3323,6 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             
             // 停止所有定时器
             if (live_duration_timer_) live_duration_timer_->stop();
-            if (stats_update_timer_) stats_update_timer_->stop();
             if (system_info_timer_) system_info_timer_->stop();
             if (encoding_timer_) encoding_timer_->stop();
             
@@ -3404,7 +3495,6 @@ void MainWindow::onTrayExitAction() {
     
     // 停止所有定时器
     if (live_duration_timer_) live_duration_timer_->stop();
-    if (stats_update_timer_) stats_update_timer_->stop();
     if (system_info_timer_) system_info_timer_->stop();
     if (encoding_timer_) encoding_timer_->stop();
     
@@ -3493,10 +3583,7 @@ void MainWindow::loadAudioVolumeSettings() {
 }
 
 void MainWindow::playVolumeFeedbackSound() {
-#ifdef _WIN32
-    // 使用 Windows 系统提示音
-    PlaySoundW(L"SystemDefault", nullptr, SND_ASYNC | SND_NODEFAULT | SND_ALIAS);
-#endif
+    // 静音处理，不再播放音量反馈声音
 }
 
 } // namespace live_assistant

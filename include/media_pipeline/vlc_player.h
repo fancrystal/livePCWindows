@@ -9,6 +9,11 @@
 class VlcPlayer : public QObject {
     Q_OBJECT
 public:
+    // 预热（只做 libvlc_instance 初始化），避免首次使用卡顿
+    // 说明：初始化过程可能较慢（插件扫描），因此提供异步预热接口。
+    static void prewarmAsync();
+    static bool isPrewarmed();
+
     explicit VlcPlayer(QWidget *videoWidget, QObject *parent = nullptr);
     ~VlcPlayer();
 
@@ -36,6 +41,8 @@ private:
     static void vlcEventCallback(const libvlc_event_t *event, void *userData);
     void handleVlcEvent(const libvlc_event_t *event);
     void setupVideoOutput();
+
+    static libvlc_instance_t* ensureSharedInstance();
 
     libvlc_instance_t *m_vlcInstance;
     libvlc_media_player_t *m_vlcPlayer;

@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <mutex>
 
 #include "common/error.h"
 #include "encoder/encoder_config.h"
@@ -66,6 +67,12 @@ public:
     AudioEncoder* get_audio_encoder() const;
 
 private:
+    // Protect encoder reinit vs encode on background threads.
+    // Without this, fast resolution switches can reinitialize while encoder threads
+    // are encoding, causing use-after-free inside avcodec.
+    mutable std::mutex video_mutex_;
+    mutable std::mutex audio_mutex_;
+
     std::unique_ptr<VideoEncoder> video_encoder_;
     VideoEncoderConfig video_config_;
     bool video_encoder_initialized_ = false;

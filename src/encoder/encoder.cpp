@@ -84,6 +84,8 @@ ErrorCode Encoder::initialize_audio_encoder(const AudioEncoderConfig& config) {
 
 ErrorCode Encoder::reinitialize_video_encoder(const VideoEncoderConfig& config) {
     LOG_INFO("Reinitializing video encoder with new configuration");
+
+    std::lock_guard<std::mutex> lock(video_mutex_);
     
     if (video_encoder_initialized_ && video_encoder_) {
         video_encoder_->shutdown();
@@ -95,6 +97,8 @@ ErrorCode Encoder::reinitialize_video_encoder(const VideoEncoderConfig& config) 
 
 ErrorCode Encoder::reinitialize_audio_encoder(const AudioEncoderConfig& config) {
     LOG_INFO("Reinitializing audio encoder with new configuration");
+
+    std::lock_guard<std::mutex> lock(audio_mutex_);
     
     if (audio_encoder_initialized_ && audio_encoder_) {
         audio_encoder_->shutdown();
@@ -106,17 +110,23 @@ ErrorCode Encoder::reinitialize_audio_encoder(const AudioEncoderConfig& config) 
 
 ErrorCode Encoder::shutdown() {
     LOG_INFO("Shutting down encoder");
-    
-    if (audio_encoder_initialized_ && audio_encoder_) {
-        audio_encoder_->shutdown();
-        audio_encoder_.reset();
-        audio_encoder_initialized_ = false;
+
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        if (audio_encoder_initialized_ && audio_encoder_) {
+            audio_encoder_->shutdown();
+            audio_encoder_.reset();
+            audio_encoder_initialized_ = false;
+        }
     }
-    
-    if (video_encoder_initialized_ && video_encoder_) {
-        video_encoder_->shutdown();
-        video_encoder_.reset();
-        video_encoder_initialized_ = false;
+
+    {
+        std::lock_guard<std::mutex> lock(video_mutex_);
+        if (video_encoder_initialized_ && video_encoder_) {
+            video_encoder_->shutdown();
+            video_encoder_.reset();
+            video_encoder_initialized_ = false;
+        }
     }
     
     LOG_INFO("Encoder shutdown successfully");
@@ -124,6 +134,7 @@ ErrorCode Encoder::shutdown() {
 }
 
 ErrorCode Encoder::encode_video_frame(const std::shared_ptr<VideoFrame>& frame, std::vector<EncodedPacketPtr>& packets) {
+    std::lock_guard<std::mutex> lock(video_mutex_);
     if (!video_encoder_initialized_ || !video_encoder_) {
         LOG_ERROR("Video encoder not initialized");
         return ErrorCode::INIT_FAILED;
@@ -145,6 +156,7 @@ ErrorCode Encoder::encode_video_frame(const std::shared_ptr<VideoFrame>& frame, 
 }
 
 ErrorCode Encoder::encode_audio_frame(const std::shared_ptr<AudioFrame>& frame, std::vector<EncodedPacketPtr>& packets) {
+    std::lock_guard<std::mutex> lock(audio_mutex_);
     if (!audio_encoder_initialized_ || !audio_encoder_) {
         LOG_ERROR("Audio encoder not initialized");
         return ErrorCode::INIT_FAILED;

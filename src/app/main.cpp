@@ -10,7 +10,101 @@
 #include "scene_manager/icapture_source.h"
 #include <qmetatype.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <dbghelp.h>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <chrono>
+#include <ctime>
+
+#pragma comment(lib, "dbghelp.lib")
+
+// 生成 dump 文件名
+std::string generate_dump_filename() {
+    auto now = std::chrono::system_clock::now();
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    std::tm local_tm;
+    localtime_s(&local_tm, &time_t_now);
+
+    // 创建 dmps 目录（如果不存在）
+    const std::string dump_dir = "dmps";
+    try {
+        if (!std::filesystem::exists(dump_dir)) {
+            std::filesystem::create_directory(dump_dir);
+        }
+    } catch (...) {
+        // 如果创建失败，使用当前目录
+    }
+
+    std::ostringstream oss;
+    oss << dump_dir << "/LiveAssistant_"
+        << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
+        << ".dmp";
+
+    return oss.str();
+}
+
+// 异常处理函数，生成 minidump
+LONG WINAPI exception_handler(EXCEPTION_POINTERS* exception_pointers) {
+    std::string dump_file = generate_dump_filename();
+
+    HANDLE dump_file_handle = CreateFileA(
+        dump_file.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    if (dump_file_handle != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION dump_info;
+        dump_info.ExceptionPointers = exception_pointers;
+        dump_info.ThreadId = GetCurrentThreadId();
+        dump_info.ClientPointers = FALSE;
+
+        BOOL success = MiniDumpWriteDump(
+            GetCurrentProcess(),
+            GetCurrentProcessId(),
+            dump_file_handle,
+            MiniDumpNormal,
+            &dump_info,
+            nullptr,
+            nullptr
+        );
+
+        CloseHandle(dump_file_handle);
+
+        if (success) {
+            // 记录崩溃信息到日志
+            std::ofstream log("applogs/crash_log.txt", std::ios::app);
+            if (log.is_open()) {
+                auto now = std::chrono::system_clock::now();
+                auto time_t_now = std::chrono::system_clock::to_time_t(now);
+                std::tm local_tm;
+                localtime_s(&local_tm, &time_t_now);
+                log << "[" << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S") << "] ";
+                log << "Application crashed. Dump file: " << dump_file << std::endl;
+                log.close();
+            }
+        }
+    }
+
+    // 返回 EXCEPTION_EXECUTE_HANDLER 表示异常已处理
+    // 返回 EXCEPTION_CONTINUE_SEARCH 表示让其他处理器处理
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 int main(int argc, char *argv[]) {
+#ifdef _WIN32
+    // 设置未处理异常过滤器，用于生成崩溃转储
+    SetUnhandledExceptionFilter(exception_handler);
+#endif
+
     // 启用高 DPI 缩放支持（Qt6 默认启用，但这里显式设置以确保兼容性）
     QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
@@ -21,14 +115,15 @@ int main(int argc, char *argv[]) {
     QApplication a(argc, argv);
 
     // 设置应用程序图标（任务栏和窗口图标）
-    a.setWindowIcon(QIcon(":/images/logo.png"));
+    a.setWindowIcon(QIcon(":/images/logo.ico"));
 
     // Register custom types for cross-thread signal/slot connections
     qRegisterMetaType<live_assistant::CaptureFrame>("CaptureFrame");
 
-    // Initialize logging (enable DEBUG to collect detailed logs for capture debugging)
-    live_assistant::Log::set_level(live_assistant::LogLevel::DEBUG);
-    LOG_INFO("Starting LiveAssistant (DEBUG logs enabled)...");
+    // 加载配置（包括日志级别）
+    ConfigManager::instance().loadConfig();
+    ConfigManager::instance().applyLogLevel();
+    LOG_INFO("Starting LiveAssistant...");
 
     // Create login window
     live_assistant::LoginWindow login_window;

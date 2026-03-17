@@ -200,7 +200,9 @@ void WGCCaptureLoop::on_frame_arrived(
     winrt::Windows::Foundation::IInspectable const&)
 {
     try {
-        LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 帧到达，stopping_: " + std::string(stopping_ ? "true" : "false"));
+        auto frame_start = std::chrono::high_resolution_clock::now();
+        auto frame_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(frame_start.time_since_epoch()).count();
+        LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived START t=" + std::to_string(frame_start_ms % 100000));
         if (stopping_) return;
 
     bool resized = false;
@@ -230,9 +232,13 @@ void WGCCaptureLoop::on_frame_arrived(
 
     // Read back into QImage (additional step for Qt pipeline)
     if (surfaceTexture) {
-        LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 开始复制纹理到QImage");
+        LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - 开始复制纹理到QImage");
+        auto t0 = std::chrono::high_resolution_clock::now();
         QImage img = copy_texture_to_qimage(surfaceTexture.get());
-        LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - QImage创建完成，isNull: " + std::string(img.isNull() ? "true" : "false") +
+        auto t1 = std::chrono::high_resolution_clock::now();
+        auto copy_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - QImage创建完成，copy_us=" + std::to_string(copy_us) +
+                 ", isNull: " + std::string(img.isNull() ? "true" : "false") +
                  ", 尺寸: " + std::to_string(img.width()) + "x" + std::to_string(img.height()));
 
         if (!img.isNull()) {
@@ -241,18 +247,25 @@ void WGCCaptureLoop::on_frame_arrived(
                 std::lock_guard<std::mutex> lk(cb_mutex_);
                 cb = cb_;
             }
-            LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调函数存在: " + std::string(cb ? "true" : "false"));
+            LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调函数存在: " + std::string(cb ? "true" : "false"));
             if (cb) {
-                LOG_INFO("[DIAG] WGCCaptureLoop::on_frame_arrived - 调用回调函数");
+                LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - 调用回调函数");
+                auto t2 = std::chrono::high_resolution_clock::now();
                 cb(img);
+                auto t3 = std::chrono::high_resolution_clock::now();
+                auto cb_us = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+                LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调完成 cb_us=" + std::to_string(cb_us));
             } else {
-                LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调函数为空");
+                LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - 回调函数为空");
             }
         } else {
-            LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - QImage为空，跳过回调");
+            LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - QImage为空，跳过回调");
         }
+        auto frame_end = std::chrono::high_resolution_clock::now();
+        auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(frame_end - frame_start).count();
+        LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived END total_us=" + std::to_string(total_us));
     } else {
-        LOG_WARNING("[DIAG] WGCCaptureLoop::on_frame_arrived - surfaceTexture为空");
+        LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived - surfaceTexture为空");
     }
     } catch (const winrt::hresult_error& ex) {
         LOG_ERROR("[WGC] winrt::hresult_error in on_frame_arrived: " + winrt::to_string(ex.message()) +

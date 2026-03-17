@@ -120,11 +120,6 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
             }
         }
 
-        if (frame_rendered) {
-            // 跳到绘制标签（后续统一处理）
-            goto RENDER_LABELS;
-        }
-
         // 如果没有来源帧，继续原有 VideoEngine 回退逻辑
         {
             CanvasWidget* widget = dynamic_cast<CanvasWidget*>(painter.device());
@@ -160,27 +155,64 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
         }
     } else if (source->get_type() == Source::Type::FILE_SOURCE) {
         // 处理文件源（插播视频）
+        // 使用 get_latest_frame() 获取帧（无锁，安全）
         auto mediaSource = std::dynamic_pointer_cast<MediaFileSource>(source);
         bool is_running = mediaSource && mediaSource->is_running();
-        auto frame = is_running ? mediaSource->get_video_frame() : nullptr;
-        bool has_frame = frame && frame->data;
 
-        if (is_running && has_frame) {
-            // 将VideoFrame转换为QImage并绘制
-            // 性能优化：使用 FastTransformation 代替 SmoothTransformation
-            QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
-            if (!image.isNull()) {
-                QImage scaled = image.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
-                QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
-                                   (scaled.height() - item_rect.height()) / 2.0,
-                                   item_rect.width(),
-                                   item_rect.height());
-                painter.drawImage(item_rect, scaled, source_rect);
-                goto RENDER_LABELS;
+        // 诊断：统计获取帧的频率
+        static int64_t last_get_time = 0;
+        static int get_count = 0;
+        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+
+        // 使用新的无锁方法获取帧
+        QImage image = is_running ? mediaSource->get_latest_frame() : QImage();
+
+        // 统计渲染频率
+        get_count++;
+        if (now - last_get_time >= 1000) {
+            int null_count = 0;
+            static int64_t last_null_time = 0;
+            if (image.isNull()) {
+                null_count++;
             }
+            LOG_INFO("[CANVAS-FILE] render fps: " + std::to_string(get_count) +
+                     ", is_running=" + std::string(is_running ? "true" : "false") +
+                     ", image_null=" + std::string(image.isNull() ? "true" : "false"));
+            get_count = 0;
+            last_get_time = now;
         }
 
-        // 如果没有帧，保持透明（不绘制，让背景透出来）
+        // 只在首次成功获取帧时输出诊断日志
+        static bool first_frame_logged = false;
+        if (!image.isNull() && !first_frame_logged) {
+            LOG_INFO("[CANVAS] FILE_SOURCE first frame: " + std::to_string(image.width()) + "x" + std::to_string(image.height()));
+            first_frame_logged = true;
+        }
+
+        if (!image.isNull()) {
+            // 安全检查：确保 item_rect 在有效范围内
+            if (item_rect.width() > 0 && item_rect.height() > 0 &&
+                item_rect.x() >= -item_rect.width() && item_rect.y() >= -item_rect.height()) {
+                // 性能优化：避免每帧创建 scaled 临时大图
+                const double target_aspect = static_cast<double>(item_rect.width()) / item_rect.height();
+                const double src_aspect = static_cast<double>(image.width()) / image.height();
+
+                QRectF src_rect;
+                if (src_aspect > target_aspect) {
+                    const double new_w = image.height() * target_aspect;
+                    const double x = (image.width() - new_w) / 2.0;
+                    src_rect = QRectF(x, 0.0, new_w, image.height());
+                } else {
+                    const double new_h = image.width() / target_aspect;
+                    const double y = (image.height() - new_h) / 2.0;
+                    src_rect = QRectF(0.0, y, image.width(), new_h);
+                }
+
+                painter.drawImage(item_rect, image, src_rect);
+            }
+        }
+        // 如果没有帧，保持透明
     } else {
         QColor rect_color;
         switch (source->get_type()) {
@@ -316,9 +348,9 @@ CanvasWidget::CanvasWidget(QWidget *parent) : QWidget(parent) {
     setCursor(Qt::ArrowCursor);
 
     // 创建刷新定时器 (30fps)
-    // 使用 QTimer::singleShot 循环调用，确保每次都独立触发，避免 Qt 节流
+    // 使用 QTimer 定期触发刷新，避免 QTimer::singleShot 可能导致的事件队列积压
     auto* timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, [this, timer]() {
+    connect(timer, &QTimer::timeout, this, [this]() {
         // 记录定时器触发
         static int timer_count = 0;
         timer_count++;
@@ -326,29 +358,22 @@ CanvasWidget::CanvasWidget(QWidget *parent) : QWidget(parent) {
         int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         if (now_ms - last_timer_time >= 1000) {
-            LOG_INFO("[DIAG] Timer tick, count=" + std::to_string(timer_count) +
-                     ", isVisible=" + std::to_string(isVisible()) +
-                     ", updatesEnabled=" + std::to_string(updatesEnabled()));
+            LOG_DEBUG("[DIAG] Timer tick, count=" + std::to_string(timer_count) + " interval=" + std::to_string(now_ms - last_timer_time));
             last_timer_time = now_ms;
+            timer_count = 0;
         }
-        // 使用 QTimer::singleShot 触发刷新，确保 update() 被处理
-        QTimer::singleShot(0, this, [this]() {
-            update();
-        });
-        // 同时触发 Compositor 刷新（如果存在）
+
+        // 直接调用 update()，让 Qt 自动合并多次刷新请求
+        update();
+
+        // 触发 Compositor 刷新
         if (compositor_) {
-            QTimer::singleShot(0, compositor_.get(), [this]() {
-                if (compositor_) {
-                    compositor_->update();
-                }
-            });
+            compositor_->update();
         }
-        // 重新启动定时器（保持恒定帧率）
-        timer->start(33);
     });
     timer->start(33);
 
-    LOG_INFO("CanvasWidget created with 30fps render timer (using QTimer::singleShot)");
+    LOG_INFO("CanvasWidget created with 30fps render timer");
 }
 
 CanvasWidget::~CanvasWidget() {
@@ -418,6 +443,10 @@ void CanvasWidget::set_compositor(std::shared_ptr<Compositor> compositor) {
     compositor_ = compositor;
     if (compositor_) {
         compositor_->set_canvas_size(canvas_width_, canvas_height_);
+        // 同时设置 renderer_ 的 compositor（用于从帧同步层获取插播视频帧）
+        if (renderer_) {
+            renderer_->set_compositor(compositor);
+        }
         LOG_INFO("Set compositor for CanvasWidget");
     }
 }
@@ -475,10 +504,13 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
     static int paint_count = 0;
     paint_count++;
 
+    // 诊断：测量渲染耗时
+    auto render_start = std::chrono::high_resolution_clock::now();
+
     // 每秒打印一次诊断信息
+    // 注意：每秒一次的文件 IO 也会对 UI 帧率产生轻微影响，生产环境建议关闭
     if (now_ms - last_paint_time >= 1000) {
-        LOG_INFO("[DIAG] CanvasWidget::paintEvent called, count=" + std::to_string(paint_count) +
-                 ", delta_ms=" + std::to_string(now_ms - last_paint_time));
+        LOG_DEBUG("[DIAG] CanvasWidget::paintEvent called, count=" + std::to_string(paint_count));
         last_paint_time = now_ms;
     }
 
@@ -491,6 +523,12 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
     painter.fillRect(widget_rect, QBrush(QColor(40, 40, 40)));
 
 
+    // ═══════════════════════════════════════════════════════════════════
+    // 方案A（已禁用）：使用 Compositor 进行统一渲染
+    // 问题：Compositor 需要每个源主动更新帧数据，但摄像头和屏幕共享没有设置回调
+    // 回退到原来的 renderer_ 逻辑，它能正确处理所有类型的源
+    // ═══════════════════════════════════════════════════════════════════
+    
     // 只渲染场景项（摄像头、屏幕共享、图片等）
     // 所有视频源都通过SceneItem在场景系统中统一渲染
     if (renderer_ && current_scene_) {
@@ -558,7 +596,7 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
             auto frame = video_engine_->render_frame();
             if (frame && frame->data) {
                 // 将VideoFrame转换为QImage
-                QImage image(frame->data.get(   ), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
+                QImage image(frame->data.get(), frame->width, frame->height, frame->stride, QImage::Format_RGBA8888);
                 if (!image.isNull()) {
                     // 居中显示
                     int x = (widget_rect.width() - frame->width) / 2;
@@ -568,6 +606,22 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
                 }
             }
         }
+    }
+
+    // 诊断：记录渲染耗时
+    auto render_end = std::chrono::high_resolution_clock::now();
+    auto render_time = std::chrono::duration_cast<std::chrono::microseconds>(render_end - render_start).count();
+    int64_t delta_ms = now_ms - last_paint_time;
+
+    // 性能关键：不要每帧写日志（文件 IO 会阻塞 UI 线程，导致“渲染卡顿”假象）
+    // 仅在慢帧或每秒采样一次记录。
+    static int64_t last_diag_ms = 0;
+    const bool slow_frame = (render_time > 8000) || (delta_ms > 100); // 8ms+ 或 UI 间隔异常
+    if (slow_frame || (last_diag_ms == 0) || (now_ms - last_diag_ms >= 1000)) {
+        LOG_DEBUG("[DIAG] Paint #" + std::to_string(paint_count) +
+                 " render_us=" + std::to_string(render_time) +
+                 " delta_ms=" + std::to_string(delta_ms));
+        last_diag_ms = now_ms;
     }
 }
 

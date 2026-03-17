@@ -236,9 +236,8 @@ void InsertVideoWidget::setLiveInfo(const QString& sassUrl, const QString& userI
     // 设置 InsertFileManager 的直播间信息
     InsertFileManager::instance()->setLiveInfo(sassUrl, userId, token);
 
-    // 初始化 VLC 播放器（使用预览窗口）
-    vlc_player_.reset(new VlcPlayer(previewWidget_));
-    connect(vlc_player_.get(), &VlcPlayer::endReached, this, &InsertVideoWidget::onPreviewEndReached);
+    // VLC 播放器延迟初始化 - 在首次预览时再创建，避免阻塞主线程
+    // 这样可以大大减少点击插播按钮时的等待时间
 }
 
 void InsertVideoWidget::refreshVideoList() {
@@ -254,6 +253,9 @@ void InsertVideoWidget::refreshVideoList() {
 void InsertVideoWidget::showEvent(QShowEvent *event) {
     QDialog::showEvent(event);
 
+    // 打开窗口时就后台预热 VLC，避免用户首次点击预览时卡顿
+    startVlcPrewarmMonitoring();
+
     if (!is_initialized_) {
         is_initialized_ = true;
         refreshVideoList();
@@ -268,8 +270,48 @@ void InsertVideoWidget::closeEvent(QCloseEvent *event)
     // 直接重置VLC播放器（异步方式）
     vlc_player_.reset();
 
+    if (vlc_prewarm_timer_) {
+        vlc_prewarm_timer_->stop();
+        vlc_prewarm_timer_->deleteLater();
+        vlc_prewarm_timer_ = nullptr;
+    }
+
     event->accept();
     // 不调用QDialog::closeEvent避免重复处理
+}
+
+void InsertVideoWidget::startVlcPrewarmMonitoring() {
+    if (vlc_prewarm_started_) {
+        updateVlcPrewarmUi();
+        return;
+    }
+    vlc_prewarm_started_ = true;
+
+    VlcPlayer::prewarmAsync();
+    updateVlcPrewarmUi();
+
+    // 轮询就绪状态（libvlc 初始化在后台线程）
+    vlc_prewarm_timer_ = new QTimer(this);
+    vlc_prewarm_timer_->setInterval(200);
+    connect(vlc_prewarm_timer_, &QTimer::timeout, this, [this]() {
+        if (VlcPlayer::isPrewarmed()) {
+            if (vlc_prewarm_timer_) {
+                vlc_prewarm_timer_->stop();
+                vlc_prewarm_timer_->deleteLater();
+                vlc_prewarm_timer_ = nullptr;
+            }
+            updateVlcPrewarmUi();
+            updateButtonStates();
+        }
+    });
+    vlc_prewarm_timer_->start();
+}
+
+void InsertVideoWidget::updateVlcPrewarmUi() {
+    if (!playButton_) return;
+    const bool ready = VlcPlayer::isPrewarmed();
+    playButton_->setText(ready ? QString::fromUtf8("预览播放") : QString::fromUtf8("预览初始化中..."));
+    playButton_->setToolTip(ready ? QString() : QString::fromUtf8("播放器初始化中，请稍候..."));
 }
 
 void InsertVideoWidget::onRefreshClicked() {
@@ -280,6 +322,12 @@ void InsertVideoWidget::onPlayClicked() {
     auto item = InsertFileManager::instance()->getFile(selected_file_id_);
     if (!item) return;
 
+    if (!VlcPlayer::isPrewarmed()) {
+        statusLabel_->setText(QString::fromUtf8("播放器初始化中，请稍候再预览..."));
+        updateButtonStates();
+        return;
+    }
+
     if (!item->isDownloaded()) {
         QMessageBox::warning(this, QString::fromUtf8("提示"),
             QString::fromUtf8("文件尚未下载完成，请等待下载完成后再播放"));
@@ -287,6 +335,12 @@ void InsertVideoWidget::onPlayClicked() {
     }
 
     QString localPath = item->getLocalCachePath();
+
+    // 延迟初始化 VLC 播放器（首次点击预览时初始化）
+    if (!vlc_player_) {
+        vlc_player_.reset(new VlcPlayer(previewWidget_));
+        connect(vlc_player_.get(), &VlcPlayer::endReached, this, &InsertVideoWidget::onPreviewEndReached);
+    }
 
     // 使用内嵌 VLC 播放器播放视频
     if (vlc_player_) {
@@ -527,9 +581,11 @@ void InsertVideoWidget::updateVideoTable() {
 
 void InsertVideoWidget::updateButtonStates() {
     bool hasSelection = !selected_file_id_.isEmpty();
-    playButton_->setEnabled(hasSelection);
+    const bool vlcReady = VlcPlayer::isPrewarmed();
+    playButton_->setEnabled(hasSelection && vlcReady);
     stopPreviewButton_->setEnabled(is_previewing_);
     startInsertButton_->setEnabled(hasSelection);
+    updateVlcPrewarmUi();
 
     if (hasSelection) {
         auto item = InsertFileManager::instance()->getFile(selected_file_id_);

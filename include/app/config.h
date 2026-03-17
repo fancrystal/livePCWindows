@@ -2,12 +2,13 @@
 #define CONFIG_H
 
 #include <QString>
+#include "common/log.h"
 
 // 服务器环境类型（0=生产，1=测试，2=开发，3=本地）
 enum class ServerEnv {
     Production = 0,  // 生产环境（默认）
     Testing = 1,     // 测试环境
-    Development = 2, // 开发环境
+    Development = 2,  // 开发环境
     Local = 3        // 本地环境
 };
 
@@ -48,6 +49,14 @@ const ServerConfig DEFAULT_LOCAL_CONFIG = {
     "h7kP9xR2vLmQwE5t"
 };
 
+// 日志级别配置（0=DEBUG，1=INFO，2=WARN，3=ERROR）
+enum class LogLevelConfig {
+    Debug = 0,   // 调试（输出所有日志）
+    Info = 1,    // 信息（默认）
+    Warn = 2,    // 警告
+    Error = 3   // 错误
+};
+
 class ConfigManager {
 public:
     static ConfigManager& instance();
@@ -79,6 +88,15 @@ public:
     // 获取加密Key
     QString getEncryptionKey() const { return config_.encryptionKey; }
 
+    // 获取日志级别
+    LogLevelConfig getLogLevel() const { return logLevel_; }
+
+    // 设置日志级别
+    void setLogLevel(LogLevelConfig level);
+
+    // 应用日志级别到Log系统
+    void applyLogLevel() const;
+
 private:
     ConfigManager() = default;
     ~ConfigManager() = default;
@@ -88,6 +106,7 @@ private:
 
     ServerConfig config_;
     ServerEnv currentEnv_ = ServerEnv::Production;
+    LogLevelConfig logLevel_ = LogLevelConfig::Info;  // 默认INFO级别
 };
 
 #endif // CONFIG_H

@@ -16,6 +16,12 @@ void ConfigManager::loadConfig() {
     }
     currentEnv_ = static_cast<ServerEnv>(settings.value("server/env").toInt());
 
+    // 读取日志级别配置
+    if (!settings.contains("log/level")) {
+        settings.setValue("log/level", static_cast<int>(LogLevelConfig::Info));  // 默认INFO
+    }
+    logLevel_ = static_cast<LogLevelConfig>(settings.value("log/level").toInt());
+
     // 根据环境加载默认配置
     switch (currentEnv_) {
     case ServerEnv::Production:
@@ -80,4 +86,31 @@ void ConfigManager::setEnvironment(ServerEnv env) {
 
     saveConfig();
     LOG_INFO(QString("Switched to environment: %1").arg(static_cast<int>(env)).toStdString());
+}
+
+void ConfigManager::setLogLevel(LogLevelConfig level) {
+    using namespace live_assistant;
+    logLevel_ = level;
+    QSettings settings("LiveAssistant", "Config");
+    settings.setValue("log/level", static_cast<int>(level));
+    applyLogLevel();
+    LOG_INFO(QString("Log level set to: %1").arg(static_cast<int>(level)).toStdString());
+}
+
+void ConfigManager::applyLogLevel() const {
+    using namespace live_assistant;
+    switch (logLevel_) {
+    case LogLevelConfig::Debug:
+        Log::set_level(LogLevel::DEBUG);
+        break;
+    case LogLevelConfig::Info:
+        Log::set_level(LogLevel::INFO);
+        break;
+    case LogLevelConfig::Warn:
+        Log::set_level(LogLevel::WARN);
+        break;
+    case LogLevelConfig::Error:
+        Log::set_level(LogLevel::ERR);
+        break;
+    }
 }

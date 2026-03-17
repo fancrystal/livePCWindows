@@ -3,6 +3,7 @@
 
 #include "media_pipeline/source.h"
 #include "http/live_item.h"
+#include <QObject>
 #include <QImage>
 #include <atomic>
 #include <thread>
@@ -45,7 +46,8 @@ struct MediaPacket {
  * - Reader 线程：从文件读取压缩包到队列
  * - Scheduler 线程：解码包并按时间戳精确同步输出
  */
-class MediaFileSource : public Source {
+class MediaFileSource : public QObject, public Source {
+    Q_OBJECT
 public:
     MediaFileSource(const std::string& id, std::shared_ptr<InsertFileItem> file_item);
     ~MediaFileSource() override;
@@ -76,6 +78,17 @@ public:
         return loop_enabled_;
     }
 
+    // ========== 帧存储（用于 SceneManager 渲染，无锁）==========
+    // Push a decoded frame (QImage) from decode pipeline for rendering
+    void push_frame(const QImage& image);
+
+    // 直接从 VideoFrame 推送帧（避免双重拷贝）
+    void push_frame_with_raw_data(std::shared_ptr<VideoFrame> frame);
+
+    // Get the latest pushed frame (thread-safe, no locking for read)
+    // Returns null QImage if none available
+    QImage get_latest_frame() const;
+
     // ========== 属性访问 ==========
     int get_width() const { return width_; }
     int get_height() const { return height_; }
@@ -85,13 +98,53 @@ public:
     bool is_finished() const { return finished_.load(); }
 
     // ========== 回调接口 ==========
+    // 新增：带 PTS 的帧回调，用于同步
+    using FrameReadyCallbackWithPTS = std::function<void(std::shared_ptr<VideoFrame>, int64_t pts_ms)>;
     using FrameReadyCallback = std::function<void(std::shared_ptr<VideoFrame>)>;
     using AudioReadyCallback = std::function<void(std::shared_ptr<AudioFrame>)>;
     using PlaybackFinishedCallback = std::function<void()>;
 
     void set_frame_ready_callback(FrameReadyCallback callback) { frame_ready_callback_ = callback; }
+    // 新增：设置带 PTS 的回调（推荐使用）
+    void set_frame_ready_callback_with_pts(FrameReadyCallbackWithPTS callback) { frame_ready_callback_with_pts_ = callback; }
     void set_audio_ready_callback(AudioReadyCallback callback) { audio_ready_callback_ = callback; }
     void set_playback_finished_callback(PlaybackFinishedCallback callback) { playback_finished_callback_ = callback; }
+
+signals:
+    // 解码后的视频帧信号（通过 Qt::QueuedConnection 自动在主线程执行）
+    // 版本1：仅传 QImage（用于画布渲染）
+    void videoFrameReady(const QImage& image, int64_t pts_ms);
+
+    // 版本2：传 VideoFrame + PTS（用于画布渲染 + 推流编码）
+    void videoFrameReadyWithFrame(std::shared_ptr<VideoFrame> frame, int64_t pts_ms);
+
+    // 解码后的音频帧信号
+    void audioFrameReady(std::shared_ptr<AudioFrame> frame);
+
+    // 播放完成信号
+    void playbackFinished();
+
+public:
+    // ========== 外部时间基准（用于与直播流同步）==========
+    // 设置外部注入的时间基准（PTS 将基于此基准计算）
+    // base_time_us: 外部时间基线（微秒），通常来自 MediaClock
+    void set_external_time_base(int64_t base_time_us) {
+        std::lock_guard<std::mutex> lock(external_time_base_mutex_);
+        external_base_time_us_ = base_time_us;
+    }
+
+    // 获取当前是否已设置外部时间基准
+    bool has_external_time_base() const {
+        std::lock_guard<std::mutex> lock(external_time_base_mutex_);
+        return external_base_time_us_ > 0;
+    }
+
+    // 重置外部时间基准（停止插播时调用）
+    void reset_external_time_base() {
+        std::lock_guard<std::mutex> lock(external_time_base_mutex_);
+        external_base_time_us_ = 0;
+        first_frame_pts_ms_ = 0;
+    }
 
 private:
     // ========== Reader 线程逻辑 ==========
@@ -179,9 +232,19 @@ private:
     std::thread scheduler_thread_;
 
     // ========== 回调函数 ==========
+    FrameReadyCallbackWithPTS frame_ready_callback_with_pts_;  // 新增：带 PTS 的回调
     FrameReadyCallback frame_ready_callback_;
     AudioReadyCallback audio_ready_callback_;
     PlaybackFinishedCallback playback_finished_callback_;
+
+    // ========== 外部时间基准（用于与直播流同步）==========
+    mutable std::mutex external_time_base_mutex_;
+    int64_t external_base_time_us_ = 0;  // 外部注入的时间基线
+    std::atomic<int64_t> first_frame_pts_ms_{0};  // 第一帧的 PTS（用于计算相对偏移）- atomic 防止多线程重复初始化
+
+    // ========== 帧存储（用于 SceneManager 渲染，无锁）==========
+    mutable std::mutex latest_frame_mutex_;
+    QImage latest_frame_;
 };
 
 }  // namespace live_assistant

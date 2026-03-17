@@ -4,10 +4,12 @@
 #include "video_engine/video_engine.h"
 #include "audio_engine/audio_engine.h"
 #include "encoder/audio_encoder.h"
+#include "media_pipeline/media_file_source.h"
 
 #include <QImage>
 #include <QPainter>
 #include <cstring>
+#include <chrono>
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -18,13 +20,48 @@ namespace live_assistant {
 
 CompositorEncoderBridge::CompositorEncoderBridge(QObject* parent)
     : QObject(parent), media_clock_() {
-    encode_timer_ = new QTimer(this);
-    connect(encode_timer_, &QTimer::timeout, this, &CompositorEncoderBridge::on_encode_timer);
+    // 使用工作线程定时器替代 QTimer（避免阻塞主线程）
+    // 定时器在工作线程中运行，不会阻塞 Qt 主线程
+    last_capture_time_ = std::chrono::steady_clock::now();
+    
+    // 捕获 this 指针，避免 lambda 捕获问题
+    auto* bridge = this;
+    capture_thread_ = std::make_unique<std::thread>([bridge]() {
+        while (!bridge->capture_thread_stop_) {
+            auto thread_now = std::chrono::steady_clock::now();
+            int current_fps = bridge->capture_fps_.load();
+            int interval_ms = (current_fps > 0) ? (1000 / current_fps) : 33;
+            auto next_tick = bridge->last_capture_time_ + std::chrono::milliseconds(interval_ms);
+            
+            if (thread_now < next_tick) {
+                std::this_thread::sleep_for(next_tick - thread_now);
+            }
+            
+            if (!bridge->capture_thread_stop_ && bridge->running_) {
+                bridge->last_capture_time_ = std::chrono::steady_clock::now();
+                // 使用 QueuedConnection 确保在主线程执行
+                QMetaObject::invokeMethod(bridge, "on_encode_timer", Qt::QueuedConnection);
+            } else {
+                // 如果没有运行，稍作等待避免忙轮询
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+    });
 
-    LOG_INFO("CompositorEncoderBridge created");
+    // 初始化插播视频帧同步器（8帧缓冲，约267ms @ 30fps）
+    insert_video_synchronizer_ = std::make_unique<VideoFrameSynchronizer>();
+    insert_video_synchronizer_->set_max_size(8);
+
+    LOG_INFO("CompositorEncoderBridge created with worker thread timer");
 }
 
 CompositorEncoderBridge::~CompositorEncoderBridge() {
+    // 停止工作线程定时器
+    capture_thread_stop_.store(true);
+    if (capture_thread_ && capture_thread_->joinable()) {
+        capture_thread_->join();
+    }
+    
     stop();
     release_sws_context();
     LOG_INFO("CompositorEncoderBridge destroyed");
@@ -48,6 +85,12 @@ void CompositorEncoderBridge::set_compositor(std::shared_ptr<Compositor> composi
                 this, &CompositorEncoderBridge::on_compositor_frame_ready);
         LOG_INFO("Compositor set for encoder bridge");
     }
+}
+
+void CompositorEncoderBridge::set_canvas_renderer(std::shared_ptr<CanvasRenderer> renderer, std::shared_ptr<Scene> scene) {
+    canvas_renderer_ = renderer;
+    current_scene_ = scene;
+    LOG_INFO("CanvasRenderer set for encoder bridge (fallback mode)");
 }
 
 void CompositorEncoderBridge::set_encoder(std::shared_ptr<Encoder> encoder) {
@@ -116,13 +159,14 @@ void CompositorEncoderBridge::start(int fps) {
     fps_ = fps;
     running_ = true;
     video_frame_count_ = 0;
+    capture_fps_.store(fps);
+    last_capture_time_ = std::chrono::steady_clock::now();
 
     media_clock_.start();
 
     initialize_opengl_context();
 
-    int interval = 1000 / fps_;
-    encode_timer_->start(interval);
+    // 不再需要启动 QTimer，工作线程已经在运行
 
     start_encoder_threads();
 
@@ -135,7 +179,7 @@ void CompositorEncoderBridge::stop() {
     }
 
     running_ = false;
-    encode_timer_->stop();
+    // 不再需要停止 QTimer
 
     stop_encoder_threads();
 
@@ -238,7 +282,7 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     }
 
     running_ = false;
-    encode_timer_->stop();
+    // 不再需要停止 QTimer
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -280,7 +324,9 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     }
 
     running_ = true;
-    encode_timer_->start(1000 / fps_);
+    capture_fps_.store(fps_);
+    last_capture_time_ = std::chrono::steady_clock::now();
+    // 不再需要启动 QTimer，工作线程已经在运行
 
     LOG_INFO("[BRIDGE] Encoding restarted, media_clock: " + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
 
@@ -323,9 +369,8 @@ bool CompositorEncoderBridge::is_streaming() const {
 
 void CompositorEncoderBridge::set_fps(int fps) {
     fps_ = fps;
+    capture_fps_.store(fps);
     if (running_) {
-        int interval = 1000 / fps_;
-        encode_timer_->start(interval);
         LOG_INFO("FPS changed to " + std::to_string(fps));
     }
 }
@@ -357,7 +402,7 @@ void CompositorEncoderBridge::on_encode_timer() {
             // Quality degradation: reduce FPS
             original_fps_ = fps_;
             fps_ = degraded_fps_;
-            encode_timer_->setInterval(1000 / fps_);
+            capture_fps_.store(fps_);
             quality_degraded_ = true;
 
             emit quality_degraded(QString("FPS dropped to %1, reducing to %2 fps").arg(avg_fps).arg(fps_));
@@ -369,7 +414,7 @@ void CompositorEncoderBridge::on_encode_timer() {
             double recovery_threshold = original_fps_ * 0.8;
             if (avg_fps > recovery_threshold && avg_fps >= degraded_fps_) {
                 fps_ = original_fps_;
-                encode_timer_->setInterval(1000 / fps_);
+                capture_fps_.store(fps_);
                 quality_degraded_ = false;
 
                 emit quality_restored();
@@ -389,6 +434,9 @@ void CompositorEncoderBridge::on_encode_timer() {
 void CompositorEncoderBridge::capture_and_queue_frame() {
     try {
         int64_t frame_duration_ms = 1000 / fps_;
+
+        // [DIAG] Frame capture start time
+        auto frame_start = std::chrono::high_resolution_clock::now();
         
         video_frame_count_++;
         
@@ -417,8 +465,17 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
                      "offset=" + std::to_string(first_video_pts_ms_) + "ms");
         }
 
-        auto video_frame = capture_compositor_frame();
-        if (video_frame) {
+    auto video_frame = capture_compositor_frame();
+
+    // [DIAG] Capture total time (render + SWS)
+    auto capture_end = std::chrono::high_resolution_clock::now();
+    auto capture_total_us = std::chrono::duration_cast<std::chrono::microseconds>(capture_end - frame_start).count();
+    if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
+        LOG_DEBUG("[BRIDGE] Frame #" + std::to_string(video_frame_count_) + 
+                 " capture_total=" + std::to_string(capture_total_us) + "us");
+    }
+    
+    if (video_frame) {
             video_frame->timestamp_ms = adjusted_pts_ms;
 
             PreEncodeVideoFrame pre_frame;
@@ -428,6 +485,14 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
             pre_frame.frame_count = video_frame_count_;
             
             push_to_encode_queue(pre_frame);
+
+            // [DIAG] Frame capture total time
+            auto frame_end = std::chrono::high_resolution_clock::now();
+            auto frame_capture_us = std::chrono::duration_cast<std::chrono::microseconds>(frame_end - frame_start).count();
+            if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
+                LOG_DEBUG("[BRIDGE] Frame #" + std::to_string(video_frame_count_) + 
+                         " capture_time=" + std::to_string(frame_capture_us) + "us");
+            }
         }
 
     } catch (const std::exception& ex) {
@@ -436,11 +501,39 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
 }
 
 std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() {
-    if (!compositor_) {
-        return nullptr;
+    // ═══════════════════════════════════════════════════════════════════
+    // 优先使用 Compositor（如果所有源都正确更新了帧到 Compositor）
+    // ═══════════════════════════════════════════════════════════════════
+    if (compositor_) {
+        // 直接获取 RGBA8888 格式的图像（render_to_image 已优化为 RGBA8888）
+        const QImage img = compositor_->render_to_image(width_, height_);
+        if (!img.isNull()) {
+            return convert_qimage_to_video_frame(img);
+        }
     }
 
-    const QImage img = compositor_->render_to_image(width_, height_).convertToFormat(QImage::Format_RGBA8888);
+    // ═══════════════════════════════════════════════════════════════════
+    // 回退方案：使用 CanvasRenderer（能正确处理所有类型的源）
+    // ═══════════════════════════════════════════════════════════════════
+    if (canvas_renderer_ && current_scene_) {
+        QImage img(width_, height_, QImage::Format_RGBA8888);
+        img.fill(Qt::black);
+        
+        QPainter painter(&img);
+        QRect target_rect(0, 0, width_, height_);
+        canvas_renderer_->render(painter, current_scene_, target_rect, nullptr);
+        painter.end();
+        
+        if (!img.isNull()) {
+            return convert_qimage_to_video_frame(img);
+        }
+    }
+
+    return nullptr;
+}
+
+// 辅助函数：QImage 转 VideoFrame
+std::shared_ptr<VideoFrame> CompositorEncoderBridge::convert_qimage_to_video_frame(const QImage& img) {
     if (img.isNull()) {
         return nullptr;
     }
@@ -474,7 +567,13 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
     uint8_t* dst_slices[2] = { frame->data.get(), frame->data_uv.get() };
     int dst_strides[2] = { frame->stride, frame->stride_uv };
 
+    // [DIAG] SWS conversion performance
+    auto sws_start = std::chrono::high_resolution_clock::now();
     sws_scale(sws, src_slices, src_strides, 0, height_, dst_slices, dst_strides);
+    auto sws_end = std::chrono::high_resolution_clock::now();
+    auto sws_us = std::chrono::duration_cast<std::chrono::microseconds>(sws_end - sws_start).count();
+    LOG_DEBUG("[BRIDGE] SWS RGBA->NV12: " + std::to_string(sws_us) + "us, " +
+              std::to_string(width_) + "x" + std::to_string(height_));
     // Note: sws_freeContext() is no longer called here - context is cached and released in destructor
 
     return frame;
@@ -726,59 +825,84 @@ void CompositorEncoderBridge::stop_encoder_threads() {
 
 void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
     LOG_INFO("[BRIDGE] Encoder thread #" + std::to_string(thread_id) + " started");
-    
+
     while (encoder_threads_running_.load()) {
         PreEncodeVideoFrame pre_frame;
-        
+
         // 从队列取帧（阻塞等待）
+        auto wait_start = std::chrono::high_resolution_clock::now();
         if (!pop_from_encode_queue(pre_frame)) {
             // 队列为空或线程已停止
             continue;
         }
-        
+        auto wait_end = std::chrono::high_resolution_clock::now();
+        auto wait_time = std::chrono::duration_cast<std::chrono::milliseconds>(wait_end - wait_start).count();
+
         // 检查帧是否有效
         if (!pre_frame.frame) {
             continue;
         }
-        
+
         try {
+            // 🔧 诊断：记录队列等待时间
+            static int encode_count = 0;
+            encode_count++;
+
+            auto process_start = std::chrono::high_resolution_clock::now();
+
             // 编码视频帧
             std::vector<EncodedPacketPtr> video_packets;
             ErrorCode video_result = encoder_->encode_video_frame(pre_frame.frame, video_packets);
-            
+
+            auto process_end = std::chrono::high_resolution_clock::now();
+            auto process_time = std::chrono::duration_cast<std::chrono::milliseconds>(process_end - process_start).count();
+
+            // 🔧 诊断：只在异常或特定帧时记录详细日志
+            if (wait_time > 100 || process_time > 50 || encode_count <= 3 || encode_count % 50 == 0) {
+                LOG_INFO("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Frame #" +
+                         std::to_string(pre_frame.frame_count) +
+                         " wait=" + std::to_string(wait_time) + "ms" +
+                         " encode=" + std::to_string(process_time) + "ms" +
+                         " pts=" + std::to_string(pre_frame.pts_ms) + "ms" +
+                         " packets=" + std::to_string(video_packets.size()));
+            }
+
             // 编码完成后，推送编码后的包
-            if (video_result == ErrorCode::SUCCESS && !video_packets.empty() && 
+            if (video_result == ErrorCode::SUCCESS && !video_packets.empty() &&
                 stream_pusher_ && stream_pusher_->is_pushing()) {
-                
+
                 for (auto& p : video_packets) {
                     if (!p) continue;
                     p->wallclock_us = pre_frame.wallclock_us;
                     stream_pusher_->push_packet(p);
                 }
-                
-                LOG_INFO("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Encoded frame #" + 
-                         std::to_string(pre_frame.frame_count) + 
-                         ": pts=" + std::to_string(pre_frame.pts_ms) + "ms, packets=" + 
-                         std::to_string(video_packets.size()));
             }
         } catch (const std::exception& ex) {
             LOG_ERROR("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Exception: " + std::string(ex.what()));
         }
     }
-    
+
     LOG_INFO("[BRIDGE] Encoder thread #" + std::to_string(thread_id) + " stopped");
 }
 
 void CompositorEncoderBridge::push_to_encode_queue(const PreEncodeVideoFrame& frame) {
     std::lock_guard<std::mutex> lock(encode_queue_mutex_);
-    
+
     // 如果队列满了，丢弃最旧的帧
     if (pre_encode_queue_.size() >= MAX_ENCODE_QUEUE_SIZE) {
         pre_encode_queue_.pop_front();
-        LOG_WARNING("[BRIDGE] Encode queue full, dropping oldest frame");
+        LOG_WARNING("[BRIDGE] Encode queue full, dropping oldest frame, queue_size=" + std::to_string(pre_encode_queue_.size()));
     }
-    
+
     pre_encode_queue_.push_back(frame);
+
+    // 🔧 诊断：只在队列异常时记录
+    static int warn_count = 0;
+    if (pre_encode_queue_.size() > 10 && warn_count++ < 10) {
+        LOG_INFO("[BRIDGE] Queue push: size=" + std::to_string(pre_encode_queue_.size()) +
+                 " pts=" + std::to_string(frame.pts_ms) + "ms");
+    }
+
     encode_queue_cv_.notify_one();
 }
 
@@ -804,6 +928,81 @@ bool CompositorEncoderBridge::pop_from_encode_queue(PreEncodeVideoFrame& frame) 
     pre_encode_queue_.pop_front();
     
     return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 插播视频帧同步方法实现
+// ═══════════════════════════════════════════════════════════════
+
+void CompositorEncoderBridge::attach_insert_video_source(MediaFileSource* source) {
+    if (!source) return;
+
+    // 获取当前推流的媒体时钟作为时间基准
+    int64_t current_stream_time_us = media_clock_.get_elapsed_time_us();
+
+    // 注入到插播视频源
+    source->set_external_time_base(current_stream_time_us);
+
+    LOG_INFO("[CompositorEncoderBridge] Attached insert video with time base: " +
+             std::to_string(current_stream_time_us) + "us");
+
+    // 保存 source_id 用于直接更新 Compositor
+    const std::string source_id = source->get_id();
+
+    // 设置帧回调，解码后同时：1) 推送到画布渲染 2) 推入同步器用于编码
+    source->set_frame_ready_callback_with_pts(
+        [this, source](std::shared_ptr<VideoFrame> frame, int64_t pts_ms) {
+            if (!frame || !frame->data) return;
+
+            // 诊断：统计回调触发频率
+            static int64_t last_callback_time = 0;
+            static int callback_count = 0;
+            int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            callback_count++;
+            if (now - last_callback_time >= 1000) {
+                LOG_INFO("[CALLBACK] insert_video fps: " + std::to_string(callback_count));
+                callback_count = 0;
+                last_callback_time = now;
+            }
+
+            // 1) 直接传递原始数据，避免拷贝
+            // 注意：VideoFrame 的生命周期由 scheduler 线程控制，
+            // 在这里拷贝一份是必要的，因为 VideoFrame 可能会被复用
+            // 但我们只需要在 push_frame 中做一次拷贝就够了
+            source->push_frame_with_raw_data(frame);
+
+            // 2) 推入同步器用于编码（推流需要）
+            if (!insert_video_synchronizer_->push_frame(frame, pts_ms)) {
+                // 编码队列满则丢帧（这是正常的，不打印警告避免日志刷屏）
+            }
+        }
+    );
+}
+
+void CompositorEncoderBridge::detach_insert_video_source(MediaFileSource* source) {
+    if (!source) return;
+
+    // 重置外部时间基准
+    source->reset_external_time_base();
+
+    // 清除 MediaFileSource 中存储的帧（避免旧帧残留）
+    source->push_frame(QImage());
+
+    // 清除同步器队列
+    insert_video_synchronizer_->clear();
+
+    LOG_INFO("[CompositorEncoderBridge] Detached insert video source");
+}
+
+bool CompositorEncoderBridge::pop_insert_video_frame(SyncedVideoFrame& out_frame) {
+    // 非阻塞获取帧（timeout = 0）
+    return insert_video_synchronizer_->try_pop_frame(out_frame);
+}
+
+bool CompositorEncoderBridge::push_insert_video_frame(std::shared_ptr<VideoFrame> frame, int64_t pts_ms) {
+    if (!frame || !frame->data) return false;
+    return insert_video_synchronizer_->push_frame(frame, pts_ms);
 }
 
 } // namespace live_assistant

@@ -16,9 +16,12 @@
 #include "stream_pusher/stream_pusher.h"
 #include "common/media_clock.h"
 #include "common/timestamp.h"
+#include "common/video_frame_synchronizer.h"
 #include "audio_engine/audio_resampler.h"
 #include "audio_engine/audio_engine.h"  // 包含 AudioSourceType
 #include "video_engine/video_engine.h"  // 包含 VideoFrame 定义
+#include "media_pipeline/media_file_source.h"
+#include "scene_manager/canvas.h"
 
 namespace live_assistant {
 
@@ -88,6 +91,21 @@ public:
     bool push_audio_data(const std::string& source_id, const QByteArray& data, 
                          int64_t timestamp, uint32_t sample_rate = 48000);
 
+    // 设置 CanvasRenderer 用于推流捕获（回退方案：不使用 Compositor）
+    void set_canvas_renderer(std::shared_ptr<CanvasRenderer> renderer, std::shared_ptr<Scene> scene);
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🔧 插播视频帧同步（新增）
+    // ═══════════════════════════════════════════════════════════════
+    // 附加插播视频源（注入时间基准）
+    void attach_insert_video_source(MediaFileSource* source);
+    // 分离插播视频源（清除时间基准）
+    void detach_insert_video_source(MediaFileSource* source);
+    // 从同步器获取插播视频帧（非阻塞）
+    bool pop_insert_video_frame(SyncedVideoFrame& out_frame);
+    // 推送插播视频帧到同步器（用于编码）
+    bool push_insert_video_frame(std::shared_ptr<VideoFrame> frame, int64_t pts_ms);
+
 signals:
     void frame_encoded(const std::vector<uint8_t>& data);
     void quality_degraded(const QString& reason);
@@ -108,6 +126,7 @@ private slots:
 private:
     void encode_and_push_frame();
     std::shared_ptr<VideoFrame> capture_compositor_frame();
+    std::shared_ptr<VideoFrame> convert_qimage_to_video_frame(const QImage& img);
 
     // 音频处理（照搬 OBS）
     void process_audio_buffer();  // 音频缓冲区处理
@@ -119,13 +138,21 @@ private:
 
     // 组件
     std::shared_ptr<Compositor> compositor_;
+    std::shared_ptr<CanvasRenderer> canvas_renderer_;  // 回退方案：用于推流捕获
+    std::shared_ptr<Scene> current_scene_;            // 当前场景（用于 CanvasRenderer 渲染）
     std::shared_ptr<Encoder> encoder_;
     std::shared_ptr<StreamPusher> stream_pusher_;
     std::shared_ptr<AudioEngine> audio_engine_;
 
 
     // 定时器
-    QTimer* encode_timer_;
+    //QTimer* encode_timer_;  // 已移除，改用工作线程定时器
+    
+    // 工作线程定时器（避免阻塞主线程）
+    std::unique_ptr<std::thread> capture_thread_;
+    std::atomic<bool> capture_thread_stop_{false};
+    std::chrono::steady_clock::time_point last_capture_time_;
+    std::atomic<int> capture_fps_{30};
 
     // 配置
     int fps_ = 30;
@@ -214,6 +241,11 @@ private:
     // 🔧 OBS 风格 PTS 偏移归零（确保第一帧 PTS=0）
     int64_t first_video_pts_ms_ = -1;      // 第一帧音/视频的 PTS（毫秒），音视频共用
     bool streaming_pts_initialized_ = false;  // 推流 PTS 是否已初始化
+
+    // ═══════════════════════════════════════════════════════════════
+    // 🔧 插播视频帧同步器（用于与直播流时间同步）
+    // ═══════════════════════════════════════════════════════════════
+    std::unique_ptr<VideoFrameSynchronizer> insert_video_synchronizer_;
 
     // 线程安全：保护状态变量的互斥锁
     mutable std::mutex state_mutex_;

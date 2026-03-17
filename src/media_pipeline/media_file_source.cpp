@@ -128,8 +128,15 @@ std::shared_ptr<AudioFrame> MediaFileSource::get_audio_frame() {
 }
 
 std::shared_ptr<VideoFrame> MediaFileSource::get_video_frame() {
-    std::unique_lock<std::mutex> lock(video_frame_mutex_);
-    return video_frame_queue_.empty() ? nullptr : video_frame_queue_.back();
+    // 使用 try_lock 避免阻塞主线程
+    // 如果锁被 scheduler 线程占用，立即返回 nullptr（不阻塞等待）
+    std::unique_lock<std::mutex> lock(video_frame_mutex_, std::try_to_lock);
+
+    if (!lock.owns_lock()) {
+        return nullptr;  // 锁不可用，跳过这一帧
+    }
+    // 获取队列头部（最新帧），而不是尾部
+    return video_frame_queue_.empty() ? nullptr : video_frame_queue_.front();
 }
 
 // ============================================================================
@@ -196,18 +203,8 @@ void MediaFileSource::readerThreadFunc() {
     }
 
     int64_t packet_count = 0;
-    int64_t last_log_time = 0;
 
     while (running_.load()) {
-        // 检查队列是否已满
-        {
-            std::lock_guard<std::mutex> lock(video_packet_mutex_);
-            if (video_packet_queue_.size() >= MAX_QUEUE_SIZE) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
-            }
-        }
-
         int ret = av_read_frame(format_ctx_, packet);
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
@@ -224,13 +221,14 @@ void MediaFileSource::readerThreadFunc() {
                         while (!video_packet_queue_.empty()) video_packet_queue_.pop();
                         while (!audio_packet_queue_.empty()) audio_packet_queue_.pop();
                     }
+                    video_packet_cv_.notify_all();
+                    audio_packet_cv_.notify_all();
 
                     // 跳转到文件开头
                     av_seek_frame(format_ctx_, -1, 0, AVSEEK_FLAG_BACKWARD);
 
                     // 重置 packet_count 并继续
                     packet_count = 0;
-                    last_log_time = 0;
 
                     // 继续读取
                     continue;
@@ -245,18 +243,6 @@ void MediaFileSource::readerThreadFunc() {
 
         packet_count++;
 
-        // 每5秒记录一次队列状态
-        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (now - last_log_time > 5000) {
-            std::lock_guard<std::mutex> vLock(video_packet_mutex_);
-            std::lock_guard<std::mutex> aLock(audio_packet_mutex_);
-            LOG_INFO("[MediaFileSource-Reader] Stats - packets:" + std::to_string(packet_count) +
-                     " v_queue:" + std::to_string(video_packet_queue_.size()) +
-                     " a_queue:" + std::to_string(audio_packet_queue_.size()));
-            last_log_time = now;
-        }
-
         // 处理视频包
         if (packet->stream_index == video_stream_idx_) {
             MediaPacket mediaPacket;
@@ -266,10 +252,17 @@ void MediaFileSource::readerThreadFunc() {
             mediaPacket.isVideo = true;
 
             {
-                std::lock_guard<std::mutex> lock(video_packet_mutex_);
+                std::unique_lock<std::mutex> lock(video_packet_mutex_);
+                // 有界队列：满了就等消费者 pop（绝不在持锁状态 sleep）
+                video_packet_cv_.wait(lock, [this]() {
+                    return !running_.load() || video_packet_queue_.size() < MAX_QUEUE_SIZE;
+                });
+                if (!running_.load()) {
+                    break;
+                }
                 video_packet_queue_.push(std::move(mediaPacket));
             }
-            video_packet_cv_.notify_one();
+            video_packet_cv_.notify_one();  // 通知消费者：队列非空
         }
         // 处理音频包
         else if (packet->stream_index == audio_stream_idx_) {
@@ -279,7 +272,13 @@ void MediaFileSource::readerThreadFunc() {
             mediaPacket.isVideo = false;
 
             {
-                std::lock_guard<std::mutex> lock(audio_packet_mutex_);
+                std::unique_lock<std::mutex> lock(audio_packet_mutex_);
+                audio_packet_cv_.wait(lock, [this]() {
+                    return !running_.load() || audio_packet_queue_.size() < MAX_QUEUE_SIZE;
+                });
+                if (!running_.load()) {
+                    break;
+                }
                 audio_packet_queue_.push(std::move(mediaPacket));
             }
             audio_packet_cv_.notify_one();
@@ -309,7 +308,34 @@ bool MediaFileSource::initializeDecoder() {
     // 初始化视频解码器
     if (video_stream_idx_ >= 0) {
         AVStream* stream = format_ctx_->streams[video_stream_idx_];
-        const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+
+        // 尝试使用硬件解码器
+        const AVCodec* codec = nullptr;
+
+        // 优先尝试硬件解码器
+        std::vector<std::string> hw_decoder_names = {
+            "h264_cuvid",    // NVIDIA GPU
+            "h264_qsv",      // Intel QSV
+            "h264_d3d11va",  // Windows D3D11VA
+            "h264_dxva2",    // Windows DXVA2
+        };
+
+        for (const auto& hw_name : hw_decoder_names) {
+            codec = avcodec_find_decoder_by_name(hw_name.c_str());
+            if (codec) {
+                LOG_INFO("[MediaFileSource] Using HARDWARE video decoder: " + std::string(codec->name));
+                break;
+            }
+        }
+
+        // 如果没有硬件解码器，使用软件解码
+        if (!codec) {
+            codec = avcodec_find_decoder(stream->codecpar->codec_id);
+            if (codec) {
+                LOG_INFO("[MediaFileSource] Using SOFTWARE video decoder: " + std::string(codec->name));
+            }
+        }
+
         if (!codec) {
             LOG_ERROR("[MediaFileSource] Failed to find video codec");
             return false;
@@ -425,37 +451,24 @@ void MediaFileSource::schedulerThreadFunc() {
     // 统计变量
     int decoded_frame_count = 0;
     int decoded_audio_count = 0;
-    int64_t last_decode_time_ms = 0;
-    int64_t last_stats_time_ms = 0;
 
     while (running_.load()) {
-        // ------------------------------------------
         // 步骤1：解码一帧视频
         // ------------------------------------------
         bool video_decoded = false;
-
         if (video_stream_idx_ >= 0) {
             std::unique_lock<std::mutex> lock(video_packet_mutex_);
-
-            // 等待数据（带超时）
-            int retry_count = 0;
-            while (video_packet_queue_.empty() && !reader_finished_.load()) {
-                lock.unlock();
-                if (retry_count < 100) {
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
-                } else {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-                retry_count++;
-                if (!running_.load()) goto thread_exit;
-                lock.lock();
-            }
+            // 阻塞等待：队列非空 或 reader 结束 或 停止
+            video_packet_cv_.wait(lock, [this]() {
+                return !running_.load() || !video_packet_queue_.empty() || reader_finished_.load();
+            });
+            if (!running_.load()) break;
 
             if (!video_packet_queue_.empty()) {
                 MediaPacket packet = std::move(video_packet_queue_.front());
-                size_t queue_size = video_packet_queue_.size();
                 video_packet_queue_.pop();
                 lock.unlock();
+                video_packet_cv_.notify_one(); // 通知生产者：队列有空间了
 
                 AVPacket* avPacket = av_packet_alloc();
                 avPacket->data = reinterpret_cast<uint8_t*>(packet.data.data());
@@ -463,148 +476,111 @@ void MediaFileSource::schedulerThreadFunc() {
                 avPacket->pts = packet.pts;
                 avPacket->dts = packet.pts;
 
-                // 测量完整解码流程性能
-                auto decode_start = std::chrono::high_resolution_clock::now();
-
                 if (decodeVideoPacket(avPacket)) {
-                    auto decode_mid = std::chrono::high_resolution_clock::now();
-
                     auto videoFrame = convertToVideoFrame(video_frame_);
-                    auto decode_end = std::chrono::high_resolution_clock::now();
-
                     if (videoFrame) {
-                        // 每60帧记录解码性能
-                        static int perf_frame_count = 0;
-                        static int64_t total_decode_us = 0;
-                        static int64_t total_scale_us = 0;
-
-                        perf_frame_count++;
-                        auto decode_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_mid - decode_start).count();
-                        auto scale_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_end - decode_mid).count();
-                        total_decode_us += decode_us;
-                        total_scale_us += scale_us;
-
-                        if (perf_frame_count % 60 == 0) {
-                            LOG_INFO("[MediaFileSource] Decode perf: decode=" + std::to_string(total_decode_us / 60) +
-                                     "us scale=" + std::to_string(total_scale_us / 60) +
-                                     "us total=" + std::to_string((total_decode_us + total_scale_us) / 60) + "us");
-                            total_decode_us = 0;
-                            total_scale_us = 0;
-                        }
                         int64_t frame_pts_ns = videoFrame->timestamp_ms * 1000000;
-
-                        // 初始化时间戳基准（第一帧）
                         if (first_frame) {
                             start_pts_ns = frame_pts_ns;
                             int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                 std::chrono::steady_clock::now().time_since_epoch()).count();
                             base_sys_time_ns = now_ns;
-                            audio_base_sys_time_ns = now_ns; // 音频独立时钟，不随视频 lag 重置
+                            audio_base_sys_time_ns = now_ns;
                             first_frame = false;
-
-                            LOG_INFO("[MediaFileSource-Scheduler] First frame PTS: " +
-                                     std::to_string(frame_pts_ns / 1000000) + "ms, interval: " +
-                                     std::to_string(frame_interval_ns / 1000000) + "ms");
                         }
-
-                        // 计算时间偏移
-                        int64_t current_sys_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now().time_since_epoch()).count();
-                        int64_t elapsed_ns = current_sys_time_ns - base_sys_time_ns;
                         int64_t target_ns = frame_pts_ns - start_pts_ns;
 
-                        decoded_frame_count++;
-                        int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now().time_since_epoch()).count();
-                        int64_t delta_ms = (last_decode_time_ms > 0) ? (now_ms - last_decode_time_ms) : 0;
-                        last_decode_time_ms = now_ms;
-
-                        // 每60帧或前5帧记录详细日志
-                        if (decoded_frame_count <= 5 || (decoded_frame_count % 60 == 0)) {
-                            LOG_INFO("[MediaFileSource-Scheduler] Frame #" + std::to_string(decoded_frame_count) +
-                                     " pts=" + std::to_string(videoFrame->timestamp_ms) + "ms" +
-                                     " target=" + std::to_string(target_ns / 1000000) + "ms" +
-                                     " elapsed=" + std::to_string(elapsed_ns / 1000000) + "ms" +
-                                     " delta=" + std::to_string(delta_ms) + "ms" +
-                                     " q=" + std::to_string(queue_size) +
-                                     " key=" + std::to_string(packet.isKeyFrame ? 1 : 0) +
-                                     " sync=" + std::to_string(timing_synced ? 1 : 0));
-                        }
-
-                        // 每5秒统计一次性能
-                        if (now_ms - last_stats_time_ms > 5000) {
-                            double actual_fps = decoded_frame_count * 1000.0 / (elapsed_ns / 1000000.0);
-                            LOG_INFO("[MediaFileSource-Scheduler] Stats - frames:" + std::to_string(decoded_frame_count) +
-                                     " audio:" + std::to_string(decoded_audio_count) +
-                                     " fps:" + std::to_string(actual_fps) +
-                                     " q:" + std::to_string(queue_size));
-                            last_stats_time_ms = now_ms;
-                        }
-
-                        // 将解码后的帧放入队列（OBS风格：帧缓冲）
                         {
                             std::lock_guard<std::mutex> frameLock(video_frame_mutex_);
-
-                            // 如果队列满了，删除最旧的帧
                             if (video_frame_queue_.size() >= MAX_VIDEO_FRAME_QUEUE_SIZE) {
                                 video_frame_queue_.pop_front();
                             }
-
-                            // 添加新帧到队列末尾
                             video_frame_queue_.push_back(videoFrame);
                         }
 
-                        // 从队列中选择最合适的帧进行输出（始终基于 PTS 时间戳）
                         std::shared_ptr<VideoFrame> frame_to_output = nullptr;
                         {
                             std::lock_guard<std::mutex> frameLock(video_frame_mutex_);
+                            if (!video_frame_queue_.empty()) {
+                                int64_t target_ms = target_ns / 1000000;
+                                int64_t best_distance = INT64_MAX;
+                                auto best_frame = video_frame_queue_.begin();
+                                bool found_frame = false;
 
-                            if (video_frame_queue_.empty()) {
-                                continue;
-                            }
-
-                            // 从队列中找到最接近目标时间的帧（PTS 不超过目标优先）
-                            int64_t target_ms = target_ns / 1000000;
-                            int64_t best_distance = INT64_MAX;
-                            auto best_frame = video_frame_queue_.begin();
-                            bool found_frame = false;
-
-                            for (auto it = video_frame_queue_.begin(); it != video_frame_queue_.end(); ++it) {
-                                int64_t frame_distance = std::abs((*it)->timestamp_ms - target_ms);
-                                if ((*it)->timestamp_ms <= target_ms && frame_distance < best_distance) {
-                                    best_distance = frame_distance;
-                                    best_frame = it;
-                                    found_frame = true;
+                                for (auto it = video_frame_queue_.begin(); it != video_frame_queue_.end(); ++it) {
+                                    int64_t frame_distance = std::abs((*it)->timestamp_ms - target_ms);
+                                    if ((*it)->timestamp_ms <= target_ms && frame_distance < best_distance) {
+                                        best_distance = frame_distance;
+                                        best_frame = it;
+                                        found_frame = true;
+                                    }
                                 }
-                            }
 
-                            // 如果没有找到 PTS <= 目标的帧（解码还在追赶），使用最新帧
-                            if (!found_frame && !video_frame_queue_.empty()) {
-                                best_frame = std::prev(video_frame_queue_.end());
-                            }
+                                if (!found_frame) {
+                                    best_frame = std::prev(video_frame_queue_.end());
+                                }
+                                frame_to_output = *best_frame;
 
-                            frame_to_output = *best_frame;
-
-                            // 清理已输出帧之前的旧帧
-                            while (!video_frame_queue_.empty() &&
-                                   video_frame_queue_.front()->timestamp_ms < frame_to_output->timestamp_ms) {
-                                video_frame_queue_.pop_front();
+                                while (!video_frame_queue_.empty() &&
+                                       video_frame_queue_.front()->timestamp_ms < frame_to_output->timestamp_ms) {
+                                    video_frame_queue_.pop_front();
+                                }
                             }
                         }
 
-                        // 输出选定的帧
                         if (frame_to_output) {
-                            if (frame_ready_callback_) {
-                                frame_ready_callback_(frame_to_output);
+                            // -------------------------------------------------------
+                            // 按原视频时间轴节奏输出（避免“解码过快一秒播完”）
+                            // 使用 steady_clock 做本地播放时钟：base_sys_time_ns + (pts - start_pts)
+                            // -------------------------------------------------------
+                            {
+                                const int64_t frame_out_pts_ns = frame_to_output->timestamp_ms * 1000000;
+                                if (first_frame) {
+                                    // 保险：正常第一帧在上面已处理，这里兜底
+                                    start_pts_ns = frame_out_pts_ns;
+                                    base_sys_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                                    audio_base_sys_time_ns = base_sys_time_ns;
+                                    first_frame = false;
+                                }
+
+                                const int64_t desired_ns = base_sys_time_ns + (frame_out_pts_ns - start_pts_ns);
+                                const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch()).count();
+
+                                // 若我们跑在“视频时间轴”前面，则睡眠到应当展示的时刻
+                                if (desired_ns > now_ns) {
+                                    const int64_t sleep_ns = desired_ns - now_ns;
+                                    // 避免极端情况下睡太久（例如异常 PTS）；超过 200ms 直接截断到 200ms
+                                    const int64_t kMaxSleepNs = 200LL * 1000000LL;
+                                    std::this_thread::sleep_for(std::chrono::nanoseconds(
+                                        sleep_ns > kMaxSleepNs ? kMaxSleepNs : sleep_ns));
+                                } else {
+                                    // 若落后过多（>500ms），重置基准避免长期追赶造成“跳帧感”
+                                    const int64_t lag_ns = now_ns - desired_ns;
+                                    const int64_t kLagResetNs = 500LL * 1000000LL;
+                                    if (lag_ns > kLagResetNs) {
+                                        base_sys_time_ns = now_ns - (frame_out_pts_ns - start_pts_ns);
+                                    }
+                                }
                             }
 
-                            // 更新当前位置
-                            if (format_ctx_ && video_stream_idx_ >= 0) {
-                                AVStream* stream = format_ctx_->streams[video_stream_idx_];
-                                if (packet.pts != AV_NOPTS_VALUE) {
-                                    int64_t pos = packet.pts * av_q2d(stream->time_base) * 1000;
-                                    current_position_ms_.store(pos);
+                            int64_t pts_ms = frame_to_output->timestamp_ms;
+                            {
+                                std::lock_guard<std::mutex> lock(external_time_base_mutex_);
+                                if (external_base_time_us_ > 0) {
+                                    int64_t expected = 0;
+                                    first_frame_pts_ms_.compare_exchange_strong(expected, frame_to_output->timestamp_ms,
+                                            std::memory_order_relaxed);
+                                    int64_t relative_pts_ms = frame_to_output->timestamp_ms - first_frame_pts_ms_.load(std::memory_order_relaxed);
+                                    pts_ms = (external_base_time_us_ / 1000) + relative_pts_ms;
                                 }
+                            }
+
+                            if (frame_ready_callback_with_pts_) {
+                                frame_ready_callback_with_pts_(frame_to_output, pts_ms);
+                            } else if (frame_ready_callback_) {
+                                frame_ready_callback_(frame_to_output);
                             }
                         }
 
@@ -662,12 +638,16 @@ void MediaFileSource::schedulerThreadFunc() {
                 MediaPacket packet;
                 bool has_packet = false;
                 {
-                    std::lock_guard<std::mutex> lock(audio_packet_mutex_);
+                    std::unique_lock<std::mutex> lock(audio_packet_mutex_);
+                    // 非阻塞：没有包就退出（保持原节奏控制逻辑）
                     if (!audio_packet_queue_.empty()) {
                         packet = std::move(audio_packet_queue_.front());
                         audio_packet_queue_.pop();
                         has_packet = true;
                     }
+                }
+                if (has_packet) {
+                    audio_packet_cv_.notify_one(); // 通知生产者：队列有空间了
                 }
                 if (!has_packet) break;
 
@@ -698,6 +678,9 @@ void MediaFileSource::schedulerThreadFunc() {
                         if (audio_ready_callback_) {
                             audio_ready_callback_(audioFrame);
                         }
+
+                        // 发出音频帧信号
+                        emit audioFrameReady(audioFrame);
                         decoded_audio_count++;
                     }
                 }
@@ -714,37 +697,16 @@ void MediaFileSource::schedulerThreadFunc() {
         }
 
         // ------------------------------------------
-        // 步骤 4：基于 PTS 的帧率控制（从第一帧开始即生效）
+        // 步骤 4：OBS 模式 - 不控制帧率，尽可能快地解码
+        // 渲染线程会根据时间戳拉取帧，不需要这里 sleep
+        // 这样可以避免 scheduler 线程累积误差导致的卡顿
         // ------------------------------------------
-        if (!first_frame && video_decoded) {
-            int64_t current_sys_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
+        // 解码线程只管尽可能快地解码，不用等待
+        // 帧率控制交给渲染端（OBS 模式）
 
-            // 计算下一帧的预期时间
-            int64_t next_target_ns = (decoded_frame_count * frame_interval_ns);
-            int64_t sleep_ns = next_target_ns - (current_sys_time_ns - base_sys_time_ns);
-
-            // 帧率控制策略：
-            // 1. 超前超过 5ms：精确 sleep 等待
-            // 2. 落后 0~5 帧：不 sleep，直接解码追赶
-            // 3. 落后超过 5 帧：一次性重置时间基准，避免渐进调整引发振荡
-            //    （渐进调整会导致正反馈：每次调整让下一帧 sleep 更多 → 更大 lag → 更多调整）
-            if (sleep_ns > 5000000) { // 超过 5ms，精确等待
-                std::this_thread::sleep_for(std::chrono::nanoseconds(sleep_ns));
-            } else if (sleep_ns < -(static_cast<int64_t>(frame_interval_ns) * 5)) {
-                // 落后超过 5 帧（~165ms）：一次性重置时间基准
-                // 重置后 sleep_ns ≈ 0，下一帧立即解码，不产生 sleep 积累
-                int64_t lag_ms = (-sleep_ns) / 1000000;
-                base_sys_time_ns = current_sys_time_ns
-                    - static_cast<int64_t>(decoded_frame_count) * frame_interval_ns;
-                LOG_INFO("[MediaFileSource-Scheduler] Lag " + std::to_string(lag_ms) +
-                         "ms (>5 frames), resetting time base");
-            }
-            // 落后 0~5 帧：不 sleep，直接追赶（常见抖动，无需干预）
-        }
+        
     }
 
-thread_exit:
     finished_ = true;
     LOG_INFO("[MediaFileSource-Scheduler] Thread exiting - total frames: " +
              std::to_string(decoded_frame_count));
@@ -752,6 +714,9 @@ thread_exit:
     if (playback_finished_callback_) {
         playback_finished_callback_();
     }
+
+    // 发出播放完成信号
+    emit playbackFinished();
 }
 
 void MediaFileSource::shutdownDecoder() {
@@ -922,6 +887,27 @@ std::shared_ptr<AudioFrame> MediaFileSource::convertToAudioFrame(AVFrame* frame)
     }
     
     return nullptr;  // 缓冲区不够1024样本或没有新数据
+}
+
+void MediaFileSource::push_frame(const QImage& image) {
+    if (image.isNull()) return;
+    std::lock_guard<std::mutex> lock(latest_frame_mutex_);
+    latest_frame_ = image;
+}
+
+// 直接从 VideoFrame 推送帧（避免双重拷贝）
+void MediaFileSource::push_frame_with_raw_data(std::shared_ptr<VideoFrame> frame) {
+    if (!frame || !frame->data) return;
+    // VideoFrame 是 BGRA/RGBA 格式，QImage 直接引用数据
+    // 拷贝一份，因为 VideoFrame 可能很快被复用
+    QImage image(frame->data.get(), frame->width, frame->height,
+                 frame->stride, QImage::Format_RGBA8888);
+    push_frame(image.copy());
+}
+
+QImage MediaFileSource::get_latest_frame() const {
+    std::lock_guard<std::mutex> lock(latest_frame_mutex_);
+    return latest_frame_;
 }
 
 }  // namespace live_assistant

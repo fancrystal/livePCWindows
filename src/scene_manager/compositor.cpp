@@ -165,7 +165,9 @@ QImage Compositor::render_to_image(int width, int height) {
         return {};
     }
 
-    QImage img(width, height, QImage::Format_ARGB32);
+    // 直接使用 RGBA8888 格式，避免后续 convertToFormat() 的深拷贝
+    // 编码桥需要 RGBA8888 -> NV12 的转换，这样格式对齐可以省一次转换
+    QImage img(width, height, QImage::Format_RGBA8888);
     img.fill(Qt::black);
 
     QPainter painter(&img);
@@ -217,7 +219,8 @@ void Compositor::paintEvent(QPaintEvent* event) {
             QImage render_image;
             bool has_frame = false;
 
-            if (layer.video_frame && layer.video_frame->data) {
+            if (layer.video_frame && layer.video_frame->data &&
+                layer.video_frame->width > 0 && layer.video_frame->height > 0) {
                 // 从 VideoFrame 创建临时 QImage（零拷贝，只引用数据）
                 // 数据由 shared_ptr<VideoFrame> 保持存活，安全
                 render_image = QImage(
@@ -243,6 +246,13 @@ void Compositor::paintEvent(QPaintEvent* event) {
                 double offset_y = mapping.offset_y;
 
                 QRectF dest = layer.dest_rect;
+
+                // 安全检查：确保目标矩形有效
+                if (dest.width() <= 0 || dest.height() <= 0 ||
+                    dest.x() < -dest.width() || dest.y() < -dest.height()) {
+                    continue;
+                }
+
                 QRectF mapped_rect(dest.x() * scale + offset_x, dest.y() * scale + offset_y, dest.width() * scale, dest.height() * scale);
 
                 painter.drawImage(mapped_rect, render_image);

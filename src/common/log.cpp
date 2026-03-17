@@ -6,6 +6,7 @@
 #include <thread>
 #include <cstdarg>
 #include <fstream>
+#include <filesystem>
 
 namespace live_assistant {
 
@@ -55,8 +56,18 @@ std::string Log::generate_log_filename() {
     std::tm local_tm;
     localtime_s(&local_tm, &time_t_now);
 
+    // 创建 applogs 目录（如果不存在）
+    const std::string log_dir = "applogs";
+    try {
+        if (!std::filesystem::exists(log_dir)) {
+            std::filesystem::create_directory(log_dir);
+        }
+    } catch (...) {
+        // 如果创建失败，使用当前目录
+    }
+
     std::ostringstream oss;
-    oss << "LiveAssistant_"
+    oss << log_dir << "/LiveAssistant_"
         << std::put_time(&local_tm, "%Y%m%d_%H%M%S")
         << ".log";
 

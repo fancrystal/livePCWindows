@@ -28,7 +28,6 @@ public:
 };
 
 // SceneItem表示Scene中的Source实例
-// OBS等价物：SceneItem
 class SceneItem {
 public:
     SceneItem(std::shared_ptr<Source> source, const Transform& transform = Transform());
@@ -54,7 +53,6 @@ private:
 };
 
 // Scene类表示包含多个SceneItem的场景
-// OBS等价物：Scene
 class Scene {
 public:
     Scene(const std::string& name);

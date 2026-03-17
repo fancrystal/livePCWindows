@@ -88,6 +88,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\timestamp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\common\video_frame_synchronizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\http\network_manager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -297,9 +300,6 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\media_clock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\include\common\module_lifecycle.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\simple_av_sync.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -307,6 +307,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\timestamp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\common\video_frame_synchronizer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\http\network_manager.h">
@@ -536,6 +539,11 @@
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_Release.stamp" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_MinSizeRel.stamp" />
     <None Include="D:\work\project\LiveAssistant\build_vs2019\LiveAssistant_autogen\autouic_RelWithDebInfo.stamp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="D:\work\project\LiveAssistant\resources\app_icon.rc">
+      <Filter>Source Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">

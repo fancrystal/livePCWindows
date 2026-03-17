@@ -5,47 +5,105 @@
 #include <QTimer>
 #include <QFileInfo>
 #include <QCoreApplication>
+#include <QtConcurrent/QtConcurrent>
+
+#include <atomic>
+#include <memory>
+#include <mutex>
+
+namespace {
+
+std::once_flag g_vlc_init_once;
+std::atomic_bool g_vlc_ready{false};
+std::mutex g_vlc_mutex;
+std::shared_ptr<libvlc_instance_t> g_vlc_instance;
+
+libvlc_instance_t* createVlcInstance() {
+    // 获取插件目录路径
+    QString pluginPath = QCoreApplication::applicationDirPath() + "/plugins";
+    qDebug() << "VLC plugin path:" << pluginPath;
+
+    const QByteArray pluginArg = QString("--plugin-path=%1").arg(pluginPath).toLocal8Bit();
+    const char* vlcArgs[] = {
+        "--no-xlib",
+        "--no-audio-time-stretch",
+        "--no-video-title-show",  // 不显示视频标题
+        "--quiet",                // 减少控制台输出
+        "--verbose=0",
+        pluginArg.constData(),
+    };
+
+    libvlc_instance_t* inst = libvlc_new(sizeof(vlcArgs) / sizeof(vlcArgs[0]), vlcArgs);
+    if (!inst) {
+        LOG_ERROR("Failed to create VLC instance - possibly missing plugins or wrong VLC version");
+        // 尝试不使用插件路径初始化（兜底）
+        const char* vlcArgsNoPlugin[] = {
+            "--no-xlib",
+            "--no-audio-time-stretch",
+            "--quiet",
+            "--verbose=0",
+        };
+        inst = libvlc_new(sizeof(vlcArgsNoPlugin) / sizeof(vlcArgsNoPlugin[0]), vlcArgsNoPlugin);
+        if (!inst) {
+            LOG_ERROR("Failed to create VLC instance even without plugin path");
+            return nullptr;
+        }
+        LOG_WARNING("VLC instance created without explicit plugin path");
+    }
+
+    return inst;
+}
+
+}  // namespace
+
+void VlcPlayer::prewarmAsync() {
+    // 只触发一次后台初始化；后续调用无副作用
+    if (g_vlc_ready.load()) return;
+
+    auto future = QtConcurrent::run([]() {
+        (void)VlcPlayer::ensureSharedInstance();
+    });
+    (void)future;
+}
+
+bool VlcPlayer::isPrewarmed() {
+    return g_vlc_ready.load();
+}
+
+libvlc_instance_t* VlcPlayer::ensureSharedInstance() {
+    std::call_once(g_vlc_init_once, []() {
+        libvlc_instance_t* inst = createVlcInstance();
+        if (!inst) {
+            g_vlc_ready.store(false);
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(g_vlc_mutex);
+        g_vlc_instance.reset(inst, [](libvlc_instance_t* p) {
+            if (p) libvlc_release(p);
+        });
+        g_vlc_ready.store(true);
+    });
+
+    std::lock_guard<std::mutex> lock(g_vlc_mutex);
+    return g_vlc_instance.get();
+}
 
 VlcPlayer::VlcPlayer(QWidget *videoWidget, QObject *parent)
     : QObject(parent), m_vlcInstance(nullptr), 
       m_vlcPlayer(nullptr), m_vlcMedia(nullptr),
       m_videoWidget(videoWidget)
 {
-    // 获取插件目录路径
-    QString pluginPath = QCoreApplication::applicationDirPath() + "/plugins";
-    qDebug() << "VLC plugin path:" << pluginPath;
-
-    const char *vlcArgs[] = {
-        "--no-xlib",
-        "--no-audio-time-stretch",
-        "--no-video-title-show",  // 不显示视频标题
-        "--quiet",  // 减少控制台输出
-        "--verbose=0",
-        QString("--plugin-path=%1").arg(pluginPath).toLocal8Bit().constData()
-    };
-    
-    m_vlcInstance = libvlc_new(sizeof(vlcArgs)/sizeof(vlcArgs[0]), vlcArgs);
+    // 使用全局共享的 libvlc_instance，避免每次创建播放器都触发插件扫描
+    m_vlcInstance = ensureSharedInstance();
     if (!m_vlcInstance) {
-        LOG_ERROR("Failed to create VLC instance - possibly missing plugins or wrong VLC version");
-        // 尝试不使用插件路径初始化
-        const char *vlcArgsNoPlugin[] = {
-            "--no-xlib",
-            "--no-audio-time-stretch",
-            "--quiet",
-            "--verbose=0"
-        };
-        m_vlcInstance = libvlc_new(sizeof(vlcArgsNoPlugin)/sizeof(vlcArgsNoPlugin[0]), vlcArgsNoPlugin);
-        if (!m_vlcInstance) {
-            LOG_ERROR("Failed to create VLC instance even without plugin path");
-            return;
-        }
-        LOG_WARNING("VLC instance created without explicit plugin path");
+        LOG_ERROR("VLC shared instance not available");
+        return;
     }
 
     m_vlcPlayer = libvlc_media_player_new(m_vlcInstance);
     if (!m_vlcPlayer) {
         LOG_ERROR("Failed to create VLC media player");
-        libvlc_release(m_vlcInstance);
         m_vlcInstance = nullptr;
         return;
     }
@@ -87,10 +145,8 @@ VlcPlayer::~VlcPlayer()
         m_vlcPlayer = nullptr;
     }
 
-    if (m_vlcInstance) {
-        libvlc_release(m_vlcInstance);
-        m_vlcInstance = nullptr;
-    }
+    // 注意：m_vlcInstance 是共享实例，不在此处释放
+    m_vlcInstance = nullptr;
 
     if (m_vlcMedia) {
         libvlc_media_release(m_vlcMedia);
