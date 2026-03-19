@@ -61,5 +61,15 @@ bool CaptureManagerIface::has_source(const std::string& source_id) const {
     return sources_.count(source_id) > 0;
 }
 
+std::vector<std::string> CaptureManagerIface::get_all_source_ids() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    std::vector<std::string> ids;
+    ids.reserve(sources_.size());
+    for (const auto& kv : sources_) {
+        ids.push_back(kv.first);
+    }
+    return ids;
+}
+
 } // namespace live_assistant
 

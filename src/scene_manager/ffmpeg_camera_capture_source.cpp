@@ -2,6 +2,7 @@
 #include "common/log.h"
 
 #include <chrono>
+#include <cstring>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -50,12 +51,21 @@ bool FFmpegCameraCaptureSource::initialize() {
     if (config_.fps > 0) {
         av_dict_set(&options, "framerate", std::to_string(config_.fps).c_str(), 0);
     }
-
+    // 设置超时选项，减少阻塞时间
+    av_dict_set(&options, "rtbufsize", "10M", 0);
+    av_dict_set(&options, "fflags", "nobuffer", 0);
+    av_dict_set(&options, "flush_packets", "1", 0);
+    // 设置读取超时（500ms），以便能够及时响应停止信号
+    av_dict_set(&options, "timeout", "500000", 0); // 500ms in microseconds
+    
     int ret = avformat_open_input(&fmt, url.c_str(), const_cast<AVInputFormat*>(ifmt), &options);
     av_dict_free(&options);
 
     if (ret < 0 || !fmt) {
-        LOG_ERROR("FFmpegCameraCaptureSource: avformat_open_input failed for url: " + url);
+        // 输出详细的 FFmpeg 错误信息
+        char err_buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_make_error_string(err_buf, AV_ERROR_MAX_STRING_SIZE, ret);
+        LOG_ERROR("FFmpegCameraCaptureSource: avformat_open_input failed for url: " + url + ", error: " + err_buf);
         return false;
     }
 
@@ -130,7 +140,15 @@ bool FFmpegCameraCaptureSource::start() {
 bool FFmpegCameraCaptureSource::stop() {
     if (!running_.load()) return true;
     stop_flag_ = true;
-    if (th_.joinable()) th_.join();
+
+    // 等待线程自然退出
+    if (th_.joinable()) {
+        th_.join();
+    }
+
+    // 线程退出后清理资源
+    shutdown();
+
     running_ = false;
     return true;
 }
@@ -143,15 +161,22 @@ bool FFmpegCameraCaptureSource::shutdown() {
 
     if (codec_ctx_) {
         AVCodecContext* cc = static_cast<AVCodecContext*>(codec_ctx_);
+        avcodec_close(cc);
         avcodec_free_context(&cc);
         codec_ctx_ = nullptr;
     }
 
     if (fmt_ctx_) {
         AVFormatContext* fmt = static_cast<AVFormatContext*>(fmt_ctx_);
+        // 仅关闭输入；勿对 dshow 输入调用 av_interleaved_write_frame（会崩溃）
         avformat_close_input(&fmt);
+        if (fmt) {
+            avformat_free_context(fmt);
+        }
         fmt_ctx_ = nullptr;
     }
+
+    
 
     video_stream_index_ = -1;
     return true;
@@ -166,6 +191,12 @@ void FFmpegCameraCaptureSource::capture_loop() {
         running_ = false;
         return;
     }
+
+    // 设置读取超时（500ms），以便能够及时响应停止信号
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "rtbufsize", "10M", 0);  // 减少缓冲区大小
+    av_dict_set(&opts, "fflags", "nobuffer", 0);  // 禁用缓冲区
+    av_dict_set(&opts, "flush_packets", "1", 0);  // 刷新数据包
 
     AVPacket* pkt = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
@@ -189,6 +220,10 @@ void FFmpegCameraCaptureSource::capture_loop() {
     while (!stop_flag_.load()) {
         int r = av_read_frame(fmt, pkt);
         if (r < 0) {
+            // 检查是否是因为 stop_flag_ 被设置而返回
+            if (stop_flag_.load()) {
+                break;
+            }
             fail_count++;
             if (fail_count % 100 == 1) { // Log every 100 failures
                 char err_buf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -258,6 +293,7 @@ void FFmpegCameraCaptureSource::capture_loop() {
         }
     }
 
+    av_dict_free(&opts);
     av_frame_free(&bgra);
     av_frame_free(&frame);
     av_packet_free(&pkt);

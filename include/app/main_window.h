@@ -30,6 +30,7 @@ namespace live_assistant {
 
 // Forward declarations
 class SceneManager;
+class SceneItem;
 class VideoEngine;
 class AudioEngine;
 class Encoder;
@@ -97,13 +98,34 @@ private slots:
     void on_streaming_stopped();
     void on_streaming_error(const QString& error);
 
+    // 场景配置保存/加载（需要在外部调用）
+public:
+    void save_scenes_config();
+    void load_scenes_config();
+    void restore_capture_sources();  // 恢复采集源（反序列化后重建采集连接）
+    void stop_all_capture_sources();  // 停止所有采集源
+
 private:
     void setup_scene_list();
     void build_scene_list();
+    void build_scene_selector();  // 构建场景选择器
     void update_audio_status(const QString& text, const QString& color);
     void update_system_info();
     void log_system_stats_periodically();  // 新增：定期打印系统统计日志
+
+    // 场景管理UI
     QListWidget* listWidget_sceneItems_{nullptr};
+    QListWidget* scene_list_widget_{nullptr};  // 场景选择列表
+    QPushButton* add_scene_btn_{nullptr};
+    QPushButton* remove_scene_btn_{nullptr};
+    QPushButton* rename_scene_btn_{nullptr};
+
+    // 场景选择变化处理
+    void on_scene_selected(int index);
+    void on_add_scene_clicked();
+    void on_remove_scene_clicked();
+    void on_rename_scene_clicked();
+    void create_scene_buttons();  // 创建场景管理按钮（右键菜单）
 
     Ui::MainWindow *ui;
 
@@ -297,7 +319,7 @@ protected:
     void update_scene_items();
 
     // Helper methods for UI components
-    QString extract_source_name(std::shared_ptr<Source> source);
+    QString extract_source_name(std::shared_ptr<Source> source, std::shared_ptr<SceneItem> item = nullptr);
     QPushButton* create_scene_item_button(const QString& text, const QString& style = "");
     QPushButton* create_icon_button(const QString& icon_text, const QString& tooltip = "");
     QPushButton* create_icon_button(QStyle::StandardPixmap icon, const QString& tooltip = "");

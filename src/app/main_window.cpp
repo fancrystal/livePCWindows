@@ -10,6 +10,12 @@
 #include "customwebengineview.h"
 #include "http/network_manager.h"
 #include <QWebEngineSettings>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QStandardPaths>
+#include <QDir>
 #include "http/live_item.h"
 #include "media_pipeline/media_file_source.h"
 #include <QScopeGuard>
@@ -473,6 +479,570 @@ void MainWindow::setup_scene_list() {
 
     connect(listWidget_sceneItems_->model(), &QAbstractItemModel::rowsMoved,
             this, &MainWindow::on_scene_item_reordered);
+
+    // 连接场景管理按钮
+    if (ui) {
+        if (ui->comboBox_scenes) {
+            ui->comboBox_scenes->setVisible(true);
+        }
+        if (ui->pushButton_addScene) {
+            ui->pushButton_addScene->setVisible(true);
+            connect(ui->pushButton_addScene, &QPushButton::clicked, this, &MainWindow::on_add_scene_clicked);
+        }
+    }
+
+    // 创建右键菜单按钮（添加/删除/重命名场景）
+    create_scene_buttons();
+}
+
+void MainWindow::build_scene_selector() {
+    if (!scene_manager_) return;
+
+    // 使用UI中的comboBox_scenes
+    if (ui && ui->comboBox_scenes) {
+        ui->comboBox_scenes->setVisible(true);
+
+        // 阻塞信号以避免触发场景切换
+        ui->comboBox_scenes->blockSignals(true);
+
+        ui->comboBox_scenes->clear();
+
+        auto scene_names = scene_manager_->get_scene_names();
+        for (const auto& name : scene_names) {
+            ui->comboBox_scenes->addItem(QString::fromStdString(name));
+        }
+
+        // 设置当前选中的场景
+        auto current_scene = scene_manager_->get_current_scene();
+        if (current_scene) {
+            int index = ui->comboBox_scenes->findText(QString::fromStdString(current_scene->get_name()));
+            if (index >= 0) {
+                ui->comboBox_scenes->setCurrentIndex(index);
+            }
+        }
+
+        // 只在第一次时连接信号
+        static bool signal_connected = false;
+        if (!signal_connected) {
+            connect(ui->comboBox_scenes, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                    this, &MainWindow::on_scene_selected);
+            signal_connected = true;
+        }
+
+        // 恢复信号
+        ui->comboBox_scenes->blockSignals(false);
+    }
+}
+
+void MainWindow::on_scene_selected(int index) {
+    if (!scene_manager_ || !ui || !ui->comboBox_scenes) return;
+
+    QString scene_name = ui->comboBox_scenes->itemText(index);
+    if (scene_name.isEmpty()) return;
+
+    // 切换场景
+    scene_manager_->set_current_scene(scene_name.toStdString());
+
+    // 同步到canvas_widget（更新预览画布）
+    if (canvas_widget_) {
+        canvas_widget_->set_current_scene(scene_name.toStdString());
+    }
+
+    // 同步到video_engine
+    if (video_engine_) {
+        video_engine_->set_current_scene(scene_manager_->get_current_scene());
+    }
+
+    // 重建场景项列表
+    build_scene_list();
+
+    // 同步到compositor
+    sync_scene_to_compositor();
+
+    LOG_INFO("Switched to scene: " + scene_name.toStdString());
+}
+
+void MainWindow::on_add_scene_clicked() {
+    if (!scene_manager_) return;
+
+    // 弹出对话框让用户输入新场景名称
+    bool ok = false;
+    QString new_name = QInputDialog::getText(this, "添加场景", "请输入新场景名称:",
+                                              QLineEdit::Normal, "新场景", &ok);
+    if (!ok || new_name.isEmpty()) return;
+
+    // 检查是否已存在
+    auto scene_names = scene_manager_->get_scene_names();
+    for (const auto& name : scene_names) {
+        if (name == new_name.toStdString()) {
+            QMessageBox::warning(this, "错误", "场景名称已存在！");
+            return;
+        }
+    }
+
+    // 创建新场景
+    if (scene_manager_->create_scene(new_name.toStdString()) == ErrorCode::SUCCESS) {
+        // 切换到新场景
+        scene_manager_->set_current_scene(new_name.toStdString());
+
+        // 同步到canvas_widget（更新预览画布）
+        if (canvas_widget_) {
+            canvas_widget_->set_current_scene(new_name.toStdString());
+        }
+
+        // 重建场景选择器
+        build_scene_selector();
+
+        // 重建场景项列表
+        build_scene_list();
+
+        // 同步
+        sync_scene_to_compositor();
+
+        LOG_INFO("Created new scene: " + new_name.toStdString());
+    }
+}
+
+void MainWindow::on_remove_scene_clicked() {
+    if (!scene_manager_) return;
+
+    auto scene_names = scene_manager_->get_scene_names();
+    if (scene_names.size() <= 1) {
+        QMessageBox::warning(this, "错误", "至少需要保留一个场景！");
+        return;
+    }
+
+    auto current_scene = scene_manager_->get_current_scene();
+    if (!current_scene) return;
+
+    // 确认删除
+    int ret = QMessageBox::question(this, "删除场景",
+        QString("确定要删除场景 \"%1\" 吗？").arg(QString::fromStdString(current_scene->get_name())),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (ret != QMessageBox::Yes) return;
+
+    QString scene_name = QString::fromStdString(current_scene->get_name());
+
+    // 删除场景
+    if (scene_manager_->remove_scene(scene_name.toStdString()) == ErrorCode::SUCCESS) {
+        // 重建场景选择器
+        build_scene_selector();
+
+        // 重建场景项列表
+        build_scene_list();
+
+        // 同步
+        sync_scene_to_compositor();
+
+        LOG_INFO("Removed scene: " + scene_name.toStdString());
+    }
+}
+
+void MainWindow::on_rename_scene_clicked() {
+    if (!scene_manager_) return;
+
+    auto current_scene = scene_manager_->get_current_scene();
+    if (!current_scene) return;
+
+    // 弹出对话框让用户输入新名称
+    bool ok = false;
+    QString new_name = QInputDialog::getText(this, "重命名场景", "请输入新场景名称:",
+                                              QLineEdit::Normal,
+                                              QString::fromStdString(current_scene->get_name()), &ok);
+    if (!ok || new_name.isEmpty()) return;
+
+    // 检查是否已存在
+    auto scene_names = scene_manager_->get_scene_names();
+    for (const auto& name : scene_names) {
+        if (name == new_name.toStdString() && name != current_scene->get_name()) {
+            QMessageBox::warning(this, "错误", "场景名称已存在！");
+            return;
+        }
+    }
+
+    // 重命名
+    if (current_scene->set_name(new_name.toStdString()) == ErrorCode::SUCCESS) {
+        // 重建场景选择器
+        build_scene_selector();
+
+        LOG_INFO("Renamed scene to: " + new_name.toStdString());
+    }
+}
+
+void MainWindow::create_scene_buttons() {
+    // 为场景选择器添加右键菜单
+    if (ui && ui->comboBox_scenes) {
+        ui->comboBox_scenes->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(ui->comboBox_scenes, &QComboBox::customContextMenuRequested, this, [this](const QPoint& pos) {
+            QMenu menu(this);
+
+            QAction* addAction = new QAction("添加场景", &menu);
+            connect(addAction, &QAction::triggered, this, &MainWindow::on_add_scene_clicked);
+            menu.addAction(addAction);
+
+            QAction* renameAction = new QAction("重命名场景", &menu);
+            connect(renameAction, &QAction::triggered, this, &MainWindow::on_rename_scene_clicked);
+            menu.addAction(renameAction);
+
+            QAction* removeAction = new QAction("删除场景", &menu);
+            connect(removeAction, &QAction::triggered, this, &MainWindow::on_remove_scene_clicked);
+            menu.addAction(removeAction);
+
+            menu.exec(QCursor::pos());
+        });
+    }
+}
+
+void MainWindow::save_scenes_config() {
+    if (!scene_manager_) return;
+
+    // 获取配置目录 - Local (新路径)
+    QString config_dir_local = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QDir dir_local(config_dir_local);
+    if (!dir_local.exists()) {
+        dir_local.mkpath(config_dir_local);
+    }
+
+    // 获取配置目录 - Roaming (旧路径，兼容旧版本)
+    QString config_dir_roaming = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    QDir dir_roaming(config_dir_roaming);
+    if (!dir_roaming.exists()) {
+        dir_roaming.mkpath(config_dir_roaming);
+    }
+
+    // 按直播间名称保存场景配置
+    QString config_file_local;
+    QString config_file_roaming;
+    if (!live_id_.isEmpty()) {
+        config_file_local = config_dir_local + "/scenes_" + live_id_ + ".json";
+        config_file_roaming = config_dir_roaming + "/scenes_" + live_id_ + ".json";
+    } else {
+        config_file_local = config_dir_local + "/scenes_default.json";
+        config_file_roaming = config_dir_roaming + "/scenes_default.json";
+    }
+
+    // 序列化场景
+    QJsonArray scenes_array = scene_manager_->serialize();
+
+    // 构建完整的配置对象，包含场景和元数据
+    QJsonObject config_obj;
+    config_obj["scenes"] = scenes_array;
+    config_obj["is_portrait"] = is_portrait_mode_;
+
+    QJsonDocument doc(config_obj);
+    QByteArray json_data = doc.toJson(QJsonDocument::Indented);
+
+    // 保存到 Local 目录
+    QFile file_local(config_file_local);
+    if (file_local.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file_local.write(json_data);
+        file_local.close();
+        LOG_INFO("Scenes config saved to: " + config_file_local.toStdString());
+    } else {
+        LOG_ERROR("Failed to save scenes config to: " + config_file_local.toStdString());
+    }
+
+    // 同时保存到 Roaming 目录（兼容旧版本）
+    QFile file_roaming(config_file_roaming);
+    if (file_roaming.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file_roaming.write(json_data);
+        file_roaming.close();
+        LOG_INFO("Scenes config saved to (roaming): " + config_file_roaming.toStdString());
+    } else {
+        LOG_ERROR("Failed to save scenes config to (roaming): " + config_file_roaming.toStdString());
+    }
+}
+
+void MainWindow::load_scenes_config() {
+    if (!scene_manager_) return;
+
+    // 获取配置目录 - Local
+    QString config_dir_local = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QDir dir_local(config_dir_local);
+    if (!dir_local.exists()) {
+        dir_local.mkpath(config_dir_local);
+    }
+
+    // 获取配置目录 - Roaming (旧配置位置)
+    QString config_dir_roaming = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    QDir dir_roaming(config_dir_roaming);
+    if (!dir_roaming.exists()) {
+        dir_roaming.mkpath(config_dir_roaming);
+    }
+
+    // 构建配置文件路径
+    QString config_file;
+    QString live_id = live_id_;
+    if (!live_id.isEmpty()) {
+        config_file = config_dir_local + "/scenes_" + live_id + ".json";
+    } else {
+        config_file = config_dir_local + "/scenes_default.json";
+    }
+
+    LOG_INFO("Config directory (Local): " + config_dir_local.toStdString());
+    LOG_INFO("Config directory (Roaming): " + config_dir_roaming.toStdString());
+    LOG_INFO("Looking for config file: " + config_file.toStdString());
+
+    // 检查是否有直播间特定的配置文件
+    QFile file(config_file);
+    if (!file.exists()) {
+        // 检查旧格式配置文件（Local）
+        QString old_file_local = config_dir_local + "/scenes.json";
+        LOG_INFO("Checking legacy file (Local): " + old_file_local.toStdString());
+        QFile old_file_check1(old_file_local);
+        if (old_file_check1.exists()) {
+            config_file = old_file_local;
+            LOG_INFO("Using legacy scenes config file (Local)");
+        } else {
+            // 检查旧格式配置文件（Roaming/LiveAssistant子目录）
+            QString old_file_roaming = config_dir_roaming + "/LiveAssistant/scenes.json";
+            LOG_INFO("Checking legacy file (Roaming): " + old_file_roaming.toStdString());
+            QFile old_file_check2(old_file_roaming);
+            if (old_file_check2.exists()) {
+                config_file = old_file_roaming;
+                LOG_INFO("Using legacy scenes config file (Roaming)");
+            } else {
+                LOG_INFO("No scenes config file found, using default scene");
+                return;
+            }
+        }
+    }
+
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        LOG_ERROR("Failed to open scenes config file: " + config_file.toStdString());
+        return;
+    }
+
+    QByteArray data = file.readAll();
+    file.close();
+
+    QJsonParseError parse_error;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parse_error);
+    if (parse_error.error != QJsonParseError::NoError) {
+        LOG_ERROR("Failed to parse scenes config: " + parse_error.errorString().toStdString());
+        return;
+    }
+
+    QJsonArray scenes_array;
+    bool loaded_portrait_mode = false;
+
+    // 支持两种格式：1. 新格式 {scenes: [...], is_portrait: true}  2. 旧格式 [...]
+    if (doc.isObject()) {
+        QJsonObject config_obj = doc.object();
+        if (config_obj.contains("scenes")) {
+            scenes_array = config_obj["scenes"].toArray();
+            if (config_obj.contains("is_portrait")) {
+                loaded_portrait_mode = config_obj["is_portrait"].toBool(false);
+                LOG_INFO("Loaded portrait mode from config: " + std::to_string(loaded_portrait_mode));
+            }
+        } else {
+            // 没有 scenes 字段，可能是旧格式
+            scenes_array = config_obj.toVariantMap().value("scenes").toJsonArray();
+        }
+    } else if (doc.isArray()) {
+        scenes_array = doc.array();
+    } else {
+        LOG_ERROR("Scenes config is not a valid format");
+        return;
+    }
+
+    // 反序列化场景
+    if (scene_manager_->deserialize(scenes_array) == ErrorCode::SUCCESS) {
+        // 应用保存的横竖屏状态
+        if (loaded_portrait_mode != is_portrait_mode_) {
+            LOG_INFO("Restoring portrait mode: " + std::to_string(loaded_portrait_mode));
+            if (loaded_portrait_mode) {
+                set_portrait_mode();
+            } else {
+                set_landscape_mode();
+            }
+        }
+
+        // 重建UI
+        build_scene_selector();
+        build_scene_list();
+        sync_scene_to_compositor();
+
+        LOG_INFO("Scenes config loaded from: " + config_file.toStdString());
+    } else {
+        LOG_ERROR("Failed to deserialize scenes config");
+    }
+}
+
+void MainWindow::restore_capture_sources() {
+    LOG_INFO("========== restore_capture_sources START ==========");
+
+    if (!scene_manager_ || !capture_manager_) {
+        LOG_WARNING("SceneManager or CaptureManager not ready, skipping restore");
+        return;
+    }
+
+    // 遍历所有场景的 SceneItem，为摄像头和屏幕共享源重建采集连接
+    auto scene_names = scene_manager_->get_scene_names();
+    LOG_INFO("Restoring capture sources for " + std::to_string(scene_names.size()) + " scenes");
+
+    for (const auto& scene_name : scene_names) {
+        auto items = scene_manager_->get_scene_items(scene_name);
+        LOG_INFO("Scene '" + scene_name + "' has " + std::to_string(items.size()) + " items");
+
+        for (const auto& item : items) {
+            if (!item) continue;
+
+            const std::string source_id = item->get_source_id();
+            QString qsource_id = QString::fromStdString(source_id);
+
+            // 判断源类型
+            bool is_camera = qsource_id.startsWith("camera_");
+            bool is_screen = qsource_id.startsWith("capture_");
+
+            if (!is_camera && !is_screen) continue;
+
+            // 检查是否已经有对应的采集源在运行
+            if (capture_manager_->has_source(source_id)) {
+                LOG_INFO("Capture source already exists: " + source_id);
+                continue;
+            }
+
+            // 获取保存的设备ID和参数
+            std::string device_id = item->get_device_id();
+            const auto& params = item->get_source_params();
+
+            if (device_id.empty()) {
+                // 从 source_id 解析设备ID（兼容旧格式）
+                if (is_camera) {
+                    device_id = qsource_id.mid(7).toStdString(); // 去掉 "camera_" 前缀
+                } else if (is_screen) {
+                    device_id = qsource_id.mid(8).toStdString(); // 去掉 "capture_" 前缀
+                }
+            }
+
+            LOG_INFO("Restoring capture source: " + source_id + ", device_id: " + device_id);
+
+            // 创建采集配置
+            CaptureConfig cfg;
+            if (is_camera) {
+                cfg.type = CaptureConfig::TargetType::CAMERA;
+                cfg.target_id = device_id;
+                cfg.fps = 15;
+                // 从保存的参数中获取帧率和镜像设置
+                if (params.count("fps")) {
+                    cfg.fps = std::stoi(params.at("fps"));
+                }
+                if (params.count("mirror")) {
+                    cfg.mirror = (params.at("mirror") == "true");
+                }
+            } else if (is_screen) {
+                // 判断是屏幕还是窗口
+                bool is_screen_mode = true;
+                // 尝试从参数中获取类型
+                // 这里简化处理，默认都是屏幕共享
+                cfg.type = CaptureConfig::TargetType::SCREEN;
+                cfg.target_id = device_id;
+                cfg.fps = 15;
+                if (params.count("fps")) {
+                    cfg.fps = std::stoi(params.at("fps"));
+                }
+            }
+
+            // 创建真正的采集源
+            std::shared_ptr<ICaptureSource> src;
+            try {
+                src = CaptureFactory::create_capture_source(cfg);
+            } catch (const std::exception& ex) {
+                LOG_ERROR("Failed to create capture source: " + source_id + ", error: " + ex.what());
+                continue;
+            } catch (...) {
+                LOG_ERROR("Failed to create capture source: " + source_id + ", unknown error");
+                continue;
+            }
+
+            if (!src) {
+                LOG_ERROR("Failed to create capture source: " + source_id);
+                continue;
+            }
+
+            // 连接 frameReady 信号到 compositor 更新
+            // 这里复用手动的 on_select_camera 中的逻辑
+            connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
+                // 更新compositor（用于推流和预览）
+                if (compositor_ && !frame.image.isNull()) {
+                    if (!compositor_->has_layer(source_id)) {
+                        compositor_->add_layer(source_id);
+                    }
+                    compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
+                }
+
+                // 同时更新 SceneSource（用于预览显示）
+                if (scene_manager_) {
+                    // 遍历所有场景的 SceneItem
+                    auto scene_names = scene_manager_->get_scene_names();
+                    for (const auto& scene_name : scene_names) {
+                        auto items = scene_manager_->get_scene_items(scene_name);
+                        for (const auto& item : items) {
+                            if (item && item->get_source_id() == source_id) {
+                                auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
+                                if (screenSrc) {
+                                    screenSrc->push_frame(frame.image);
+                                }
+                                auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
+                                if (cameraSrc) {
+                                    cameraSrc->push_frame(frame.image);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 将采集源添加到 CaptureManager（与手动添加摄像头时的逻辑一致）
+            if (capture_manager_) {
+                capture_manager_->add_source(source_id, src);
+            }
+
+            // 启动采集源（CaptureFactory::create_capture_source 已经调用过 initialize，不要重复调用）
+            if (src->start()) {
+                LOG_INFO("Successfully restored capture source: " + source_id);
+            } else {
+                LOG_WARNING("Failed to start capture source: " + source_id);
+            }
+        }
+    }
+
+    LOG_INFO("========== restore_capture_sources END ==========");
+}
+
+void MainWindow::stop_all_capture_sources() {
+    LOG_INFO("========== stop_all_capture_sources START ==========");
+
+    // 先停止主窗口的摄像头预览（如果有）
+    if (is_camera_preview_) {
+        stop_camera_preview();
+    }
+
+    // 先清理 SceneManager 中的 Source（反序列化时创建的）
+    if (scene_manager_) {
+        scene_manager_->cleanup_all_sources();
+    }
+
+    // 然后清理 CaptureManager 中的采集源（restore_capture_sources 时创建的）
+    if (!capture_manager_) {
+        LOG_INFO("CaptureManager not initialized, nothing to stop");
+        LOG_INFO("========== stop_all_capture_sources END ==========");
+        return;
+    }
+
+    // 获取所有采集源的 ID
+    auto source_ids = capture_manager_->get_all_source_ids();
+    LOG_INFO("Stopping " + std::to_string(source_ids.size()) + " capture sources");
+
+    for (const auto& source_id : source_ids) {
+        LOG_INFO("Stopping capture source: " + source_id);
+        capture_manager_->remove_source(source_id);
+    }
+
+    LOG_INFO("========== stop_all_capture_sources END ==========");
 }
 
 void MainWindow::build_scene_list() {
@@ -505,7 +1075,7 @@ void MainWindow::build_scene_list() {
         lw_item->setSizeHint(QSize(240, 34));
         lw_item->setData(Qt::UserRole, QString::fromStdString(item->get_source_id()));
 
-        QString display_name = extract_source_name(item->get_source());
+        QString display_name = extract_source_name(item->get_source(), item);
         auto* row = new SceneItemRow(item, display_name, listWidget_sceneItems_);
 
         const int row_index = listWidget_sceneItems_->row(lw_item);
@@ -552,7 +1122,7 @@ void MainWindow::build_scene_list() {
         lw_item->setSizeHint(QSize(240, 34));
         lw_item->setData(Qt::UserRole, QString::fromStdString(item->get_source_id()));
 
-        QString display_name = extract_source_name(item->get_source());
+        QString display_name = extract_source_name(item->get_source(), item);
         auto* row = new SceneItemRow(item, display_name, listWidget_sceneItems_);
 
         const int row_index = listWidget_sceneItems_->row(lw_item);
@@ -729,6 +1299,15 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
 
 void MainWindow::initialize_modules() {
     LOG_INFO("========== initialize_modules START ==========");
+
+    // 清理旧的模块资源（如果有）
+    if (capture_manager_) {
+        auto source_ids = capture_manager_->get_all_source_ids();
+        for (const auto& id : source_ids) {
+            capture_manager_->remove_source(id);
+        }
+    }
+    capture_manager_ = std::make_shared<CaptureManagerIface>();
     scene_manager_ = std::make_shared<SceneManager>();
     video_engine_ = std::make_shared<VideoEngine>();
     audio_engine_ = std::make_shared<AudioEngine>();
@@ -738,7 +1317,11 @@ void MainWindow::initialize_modules() {
     compositor_ = std::make_shared<Compositor>();
     encoder_bridge_ = std::make_shared<CompositorEncoderBridge>();
 
-    capture_manager_ = std::make_shared<CaptureManagerIface>();
+    // 初始化场景选择器UI
+    build_scene_selector();
+
+    // 加载保存的场景配置
+    load_scenes_config();
 
     // 使用当前画布配置的分辨率初始化视频引擎
     LOG_INFO(QString("Initializing VideoEngine with resolution: %1x%2")
@@ -1562,12 +2145,25 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
     CaptureConfig cfg;
     cfg.type = CaptureConfig::TargetType::CAMERA;
     cfg.target_id = camera_device_id; // Use dshow device_name
+    cfg.display_name = camera_name.toStdString(); // Friendly display name
     cfg.fps = 15; // 降低帧率以减少主线程处理负担
     cfg.mirror = mirror; // Apply mirror setting
-    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 帧率=" + std::to_string(cfg.fps) + ", 镜像=" + (mirror ? "开启" : "关闭"));
+    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 显示名=" + cfg.display_name + ", 帧率=" + std::to_string(cfg.fps) + ", 镜像=" + (mirror ? "开启" : "关闭"));
 
     LOG_INFO("调用CaptureFactory::create_capture_source创建采集源");
-    auto src = CaptureFactory::create_capture_source(cfg);
+    std::shared_ptr<ICaptureSource> src;
+    try {
+        src = CaptureFactory::create_capture_source(cfg);
+    } catch (const std::exception& ex) {
+        LOG_ERROR("创建摄像头采集源时发生异常: " + std::string(ex.what()));
+        QMessageBox::warning(this, "错误", "创建摄像头采集源失败: " + QString::fromStdString(ex.what()));
+        return;
+    } catch (...) {
+        LOG_ERROR("创建摄像头采集源时发生未知异常");
+        QMessageBox::warning(this, "错误", "创建摄像头采集源失败（未知错误）");
+        return;
+    }
+
     if (!src) {
         LOG_ERROR("创建摄像头采集源失败");
         QMessageBox::warning(this, "错误", "创建摄像头采集源失败");
@@ -1708,6 +2304,18 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
             auto added_item = scene->add_source(camera_source);
             // If we have a canvas size available, set the scene item's transform to fill the canvas
             if (added_item) {
+                // 保存设备ID和参数，用于序列化
+                added_item->set_device_id(camera_device_id);
+                added_item->set_display_name(camera_name.toStdString());
+
+                // 保存摄像头参数
+                std::unordered_map<std::string, std::string> params;
+                params["resolution"] = "640x360";  // 可以从 dialog 获取实际值
+                params["fps"] = "15";
+                params["pixel_format"] = "YUY2";
+                params["mirror"] = mirror ? "true" : "false";
+                added_item->set_source_params(params);
+
                 // 使用canvas_config_的逻辑尺寸，确保视频源初始尺寸合理
                 int canvas_w = canvas_config_.get_width(); // 默认1920
                 int canvas_h = canvas_config_.get_height(); // 默认1080
@@ -1715,16 +2323,16 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
                 int h = canvas_h / 2;
                 int x = (canvas_w - w) / 2;
                 int y = (canvas_h - h) / 2;
-                
+
                 // Get mirror setting from video engine
                 bool mirror = false;
                 if (video_engine_) {
                     mirror = video_engine_->get_camera_mirror();
                 }
-                
+
                 Transform tr(x, y, w, h, 0.0f, 1.0f, mirror);
                 scene->set_transform(added_item, tr);
-                
+
                 // 设置摄像头的order为最高，确保它永远在最上层
                 added_item->set_order(9999); // 设置一个很高的值
                 scene->normalize_orders();
@@ -1810,7 +2418,7 @@ void MainWindow::show_screen_share_selector() {
                 // 使用信号槽连接替代回调，显式指定跨线程连接类型
                 connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
                     // 每帧都打印会导致 UI 卡顿，仅在调试时打开
-                    LOG_INFO("   收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
+                    //LOG_INFO("   收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
 
                     // 对于屏幕共享，同时更新compositor和ScreenSource
                     if (source_id.find("capture_") == 0) {  // 屏幕共享源ID以"capture_"开头
@@ -1871,32 +2479,42 @@ void MainWindow::show_screen_share_selector() {
                         screen_src->start();
                         auto added_item = scene->add_source(screen_src);
                         if (added_item) {
+                            // 保存设备ID和参数，用于序列化
+                            added_item->set_device_id(selected_target->id);
+
+                            // 保存屏幕共享参数
+                            std::unordered_map<std::string, std::string> params;
+                            params["fps"] = std::to_string(fps);
+                            params["capture_cursor"] = capture_cursor ? "true" : "false";
+                            params["capture_border"] = capture_border ? "true" : "false";
+                            added_item->set_source_params(params);
+
                             // 使用canvas_config_的逻辑尺寸，让视频源自适应满画布
                             int canvas_w = canvas_config_.get_width(); // 默认1920
                             int canvas_h = canvas_config_.get_height(); // 默认1080
-                            
+
                             // 假设视频源的原始宽高比（这里使用16:9作为默认值，实际应该从视频源获取）
                             // 注意：实际应用中应该从视频源获取真实的宽高比
                             int src_w = 1920; // 假设视频源宽度
                             int src_h = 1080; // 假设视频源高度
-                            
+
                             // 计算缩放比例，取较小值以保证完全显示
                             double scale_w = static_cast<double>(canvas_w) / src_w;
                             double scale_h = static_cast<double>(canvas_h) / src_h;
                             double scale = (std::min)(scale_w, scale_h);
-                            
+
                             // 计算缩放后的尺寸
                             int target_w = static_cast<int>(src_w * scale);
                             int target_h = static_cast<int>(src_h * scale);
-                            
+
                             // 计算居中位置
                             int x = (canvas_w - target_w) / 2;
                             int y = (canvas_h - target_h) / 2;
-                            
+
                             Transform tr(x, y, target_w, target_h, 0.0f, 1.0f);
                             scene->set_transform(added_item, tr);
                         }
-                        
+
                         // 确保所有摄像头项仍然保持最高的order值
                         auto items = scene->get_all_scene_items();
                         for (auto& item : items) {
@@ -2101,6 +2719,10 @@ void MainWindow::setup_canvas_widget() {
     LOG_INFO("Canvas widget setup completed");
     // After canvas inserted, update placeholder visibility
     updateStagePlaceholderVisibility();
+
+    // 恢复采集源（反序列化后重建采集连接，使画面能正常显示）
+    restore_capture_sources();
+
     LOG_INFO("========== setup_canvas_widget END ==========");
 }
 
@@ -2569,8 +3191,16 @@ void MainWindow::delete_scene_item(int index) {
     if (canvas_widget_) canvas_widget_->refresh();
 }
 
-QString MainWindow::extract_source_name(std::shared_ptr<Source> source) {
+QString MainWindow::extract_source_name(std::shared_ptr<Source> source, std::shared_ptr<SceneItem> item) {
     if (!source) return "Unknown";
+
+    // 优先使用 SceneItem 的 display_name
+    if (item) {
+        const std::string& dn = item->get_display_name();
+        if (!dn.empty()) {
+            return QString::fromStdString(dn);
+        }
+    }
 
     const std::string metadata = source->get_metadata();
     if (!metadata.empty()) {
@@ -2657,8 +3287,13 @@ void MainWindow::sync_scene_to_compositor() {
         const int h = tr.height > 0 ? tr.height : 360;
 
         // 确保视频内容在画布范围内，不超出边界
-        int canvas_width = canvas_widget_->get_canvas_config().get_width();
-        int canvas_height = canvas_widget_->get_canvas_config().get_height();
+        // initialize_modules 里 load_scenes_config 会早于 setup_canvas_widget，此时 canvas_widget_ 可能为空
+        int canvas_width = canvas_config_.get_width();
+        int canvas_height = canvas_config_.get_height();
+        if (canvas_widget_) {
+            canvas_width = canvas_widget_->get_canvas_config().get_width();
+            canvas_height = canvas_widget_->get_canvas_config().get_height();
+        }
 
         int clamped_x = (std::max)(0, (std::min)(tr.x, canvas_width - w));
         int clamped_y = (std::max)(0, (std::min)(tr.y, canvas_height - h));
@@ -3334,6 +3969,9 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             // 保存音量设置
             saveAudioVolumeSettings();
 
+            // 保存场景配置
+            save_scenes_config();
+
             // 清理资源并退出
             cleanupSystemTray();
             event->accept();
@@ -3510,6 +4148,18 @@ void MainWindow::onTrayExitAction() {
 
 void MainWindow::handleExit() {
     LOG_INFO("User requested to exit live room - emit request_return_to_live_list signal");
+
+    // 保存场景配置（返回直播列表时也保存）
+    save_scenes_config();
+
+    // 停止所有采集源（摄像头、屏幕共享等）
+    stop_all_capture_sources();
+
+    // 停止音频采集
+    if (audio_engine_) {
+        audio_engine_->stop_capture();
+    }
+
     // 发射信号通知 main.cpp 用户想要返回直播列表
     emit request_return_to_live_list();
 }

@@ -240,6 +240,52 @@ std::vector<std::string> VideoEngine::get_available_cameras() {
 std::vector<VideoEngine::CameraChoice> VideoEngine::get_available_camera_choices() {
     std::vector<CameraChoice> choices;
 
+    // 虚拟摄像头过滤关键词列表（参考OBS和常见虚拟摄像头名称）
+    static const char* virtual_camera_keywords[] = {
+        // 英文关键词
+        "virtual",           // 通用虚拟摄像头关键词
+        "Virtual Camera",    // OBS Virtual Camera
+        "DirectShow Show",   // DirectShow Show
+        "ManyCam",
+        "Splitcam",
+        "CamTwist",
+        "Webcam Simulator",
+        "Siphon",
+        "Blackmagic",
+        "vcam",
+        "cam4k",
+        "cam3k",
+        "v4l2loopback",
+        // 中文关键词
+        "虚拟摄像头",
+        "虚拟相机",
+        // 其他已知问题设备
+        "TikTok",            // TikTok Live Studio Virtual Camera
+        "lsvcam",            // TikTok Live Studio
+        "StreamDeck",        // StreamDeck有虚拟摄像头功能
+        "ToDesk",            // ToDesk 远程桌面虚拟摄像头
+        "OMEN Cam",          // OMEN Cam & Voice 虚拟摄像头
+    };
+
+    auto is_virtual_camera = [](const char* description) -> bool {
+        if (!description) return false;
+        std::string desc_lower = description;
+        // 转换为小写进行比较
+        for (char& c : desc_lower) {
+            c = static_cast<char>(tolower(c));
+        }
+        for (const char* keyword : virtual_camera_keywords) {
+            std::string kw_lower = keyword;
+            for (char& c : kw_lower) {
+                c = static_cast<char>(tolower(c));
+            }
+            if (desc_lower.find(kw_lower) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     if (ffmpeg_initialized_) {
         AVDeviceInfoList* device_list = nullptr;
         const AVInputFormat* input_format = av_find_input_format("dshow");
@@ -250,8 +296,14 @@ std::vector<VideoEngine::CameraChoice> VideoEngine::get_available_camera_choices
                     // Filter out non-video devices that dshow sometimes lists
                     if (strstr(device->device_description, "麦克风") != nullptr || strstr(device->device_description, "Microphone") != nullptr) {
                         continue;
-                        }
-                        
+                    }
+
+                    // Filter out virtual cameras
+                    if (is_virtual_camera(device->device_description)) {
+                        LOG_INFO("Filtering out virtual camera: " + std::string(device->device_description ? device->device_description : "Unknown"));
+                        continue;
+                    }
+
                     CameraChoice choice;
                     choice.display_name = device->device_description ? device->device_description : "Unknown Device";
                     choice.dshow_name = device->device_name ? device->device_name : "";

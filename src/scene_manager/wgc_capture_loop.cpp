@@ -1,6 +1,12 @@
 #include "scene_manager/wgc_capture_loop.h"
 #include "common/log.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
 #include <windows.h>
 
 #pragma comment(lib, "d3d11.lib")
@@ -67,6 +73,68 @@ winrt::com_ptr<IDXGISwapChain1> CreateSwapChain(ID3D11Device* device, uint32_t w
     return sc;
 }
 
+// Map cfg.target_id to the monitor WGC should capture. Previously SCREEN always used
+// MONITOR_DEFAULTTOPRIMARY, so every screen source grabbed the primary display.
+static HMONITOR ResolveMonitorFromTargetId(const std::string& target_id)
+{
+    auto primary = []() {
+        return MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+    };
+
+    if (target_id.empty()) {
+        return primary();
+    }
+
+    // Numeric id: QScreen::handle() / legacy uintptr_t encoding
+    const bool all_digits =
+        !target_id.empty() &&
+        std::all_of(target_id.begin(), target_id.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+    if (all_digits) {
+        uintptr_t v = std::strtoull(target_id.c_str(), nullptr, 10);
+        if (v != 0) {
+            HMONITOR h = reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(v));
+            MONITORINFO mi = {sizeof(mi)};
+            if (GetMonitorInfo(h, &mi)) {
+                return h;
+            }
+        }
+    }
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, target_id.c_str(), -1, nullptr, 0);
+    if (wlen > 1) {
+        std::vector<wchar_t> wbuf(static_cast<size_t>(wlen));
+        MultiByteToWideChar(CP_UTF8, 0, target_id.c_str(), -1, wbuf.data(), wlen);
+        std::wstring want(wbuf.data());
+
+        struct MatchCtx {
+            const std::wstring* want;
+            HMONITOR found;
+        } ctx{&want, nullptr};
+        EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR hMon, HDC, LPRECT, LPARAM lp) -> BOOL {
+                auto* c = reinterpret_cast<MatchCtx*>(lp);
+                MONITORINFOEXW mi{};
+                mi.cbSize = sizeof(mi);
+                if (!GetMonitorInfoW(hMon, reinterpret_cast<LPMONITORINFO>(&mi))) {
+                    return TRUE;
+                }
+                if (_wcsicmp(mi.szDevice, c->want->c_str()) == 0) {
+                    c->found = hMon;
+                    return FALSE;
+                }
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&ctx));
+        if (ctx.found) {
+            return ctx.found;
+        }
+    }
+
+    LOG_WARNING("WGCCaptureLoop: unknown screen target_id='" + target_id + "', using primary monitor");
+    return primary();
+}
+
 } // namespace
 
 WGCCaptureLoop::WGCCaptureLoop(const CaptureConfig& cfg) : cfg_(cfg) {}
@@ -125,7 +193,7 @@ bool WGCCaptureLoop::init_capture_item()
 
     HRESULT hr = E_FAIL;
     if (cfg_.type == CaptureConfig::TargetType::SCREEN) {
-        HMONITOR mon = MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+        HMONITOR mon = ResolveMonitorFromTargetId(cfg_.target_id);
         hr = interop->CreateForMonitor(mon,
                                        winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
                                        winrt::put_abi(item_));

@@ -9,9 +9,33 @@ namespace live_assistant {
 
 std::shared_ptr<ICaptureSource> CaptureFactory::create_capture_source(const CaptureConfig& config) {
     if (config.type == CaptureConfig::TargetType::CAMERA) {
-        // Camera: prefer FFmpeg(dshow) using device_name; fallback to OpenCV if needed.
-        LOG_INFO("CaptureFactory: creating FFmpegCameraCaptureSource for camera device: " + config.target_id);
-        return std::make_shared<FFmpegCameraCaptureSource>(config);
+        // Camera: use OpenCV directly (better device release/LED control on Windows)
+        LOG_INFO("CaptureFactory: creating OpenCVCameraCaptureSource for camera device: " + config.target_id);
+
+        try {
+            auto opencv_src = std::make_shared<OpenCVCameraCaptureSource>(config);
+            if (opencv_src->initialize()) {
+                LOG_INFO("CaptureFactory: OpenCVCameraCaptureSource initialized successfully");
+                return opencv_src;
+            }
+
+            LOG_WARNING("CaptureFactory: OpenCVCameraCaptureSource failed, trying FFmpeg as fallback");
+
+            // Fallback to FFmpeg if OpenCV fails
+            auto ffmpeg_src = std::make_shared<FFmpegCameraCaptureSource>(config);
+            if (ffmpeg_src->initialize()) {
+                LOG_INFO("CaptureFactory: FFmpegCameraCaptureSource initialized successfully as fallback");
+                return ffmpeg_src;
+            }
+
+            LOG_ERROR("CaptureFactory: Both OpenCV and FFmpeg failed to initialize camera");
+        } catch (const std::exception& ex) {
+            LOG_ERROR("CaptureFactory: Exception during camera source creation: " + std::string(ex.what()));
+        } catch (...) {
+            LOG_ERROR("CaptureFactory: Unknown exception during camera source creation");
+        }
+
+        return nullptr;
     }
 
     // Try WGC first, fallback to PrintWindow if WGC fails

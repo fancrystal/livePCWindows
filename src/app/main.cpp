@@ -159,8 +159,16 @@ int main(int argc, char *argv[]) {
                     [main_window, &live_list_window]() {
                     LOG_INFO("User requested to return to live list");
 
-                    // 隐藏主窗口
+                    // 先隐藏主窗口，保持响应
                     main_window->hide();
+
+                    // 异步清理资源，不阻塞UI
+                    QTimer::singleShot(50, main_window, [main_window]() {
+                        LOG_INFO("Async cleanup started");
+                        main_window->stop_all_capture_sources();
+                        main_window->save_scenes_config();
+                        LOG_INFO("Async cleanup finished");
+                    });
 
                     // 显示直播列表窗口
                     if (live_list_window) {

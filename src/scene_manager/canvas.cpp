@@ -26,12 +26,12 @@ void CanvasRenderer::set_canvas_size(int w, int h) {
 void CanvasRenderer::render(QPainter& painter, const std::shared_ptr<Scene>& scene, const QRect& target_rect, const std::shared_ptr<SceneItem>& hovered_item) {
     if (!scene) {
         // 绘制空白背景
-        painter.fillRect(target_rect, QBrush(QColor(40, 40, 40)));
+        painter.fillRect(target_rect, QBrush(QColor(15, 15, 15)));
         return;
     }
 
     // 绘制背景
-    painter.fillRect(target_rect, QBrush(QColor(40, 40, 40)));
+    painter.fillRect(target_rect, QBrush(QColor(15, 15, 15)));
 
     // 获取所有场景项
     auto scene_items = scene->get_all_scene_items();
@@ -234,10 +234,10 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
         painter.fillRect(item_rect, QBrush(rect_color));
     }
     
-        // 绘制源名称
-    painter.setOpacity(1.0);
-    painter.setPen(QColor(255, 255, 255));
-    painter.drawText(x + 5, y + 15, QString::fromStdString(source->get_id()));
+    // 移除源名称显示（右上角的序列号）
+    // painter.setOpacity(1.0);
+    // painter.setPen(QColor(255, 255, 255));
+    // painter.drawText(x + 5, y + 15, QString::fromStdString(source->get_id()));
 
     return;
     
@@ -520,7 +520,7 @@ void CanvasWidget::paintEvent(QPaintEvent *event) {
     QRect widget_rect = this->rect();
 
     // 绘制背景
-    painter.fillRect(widget_rect, QBrush(QColor(40, 40, 40)));
+    painter.fillRect(widget_rect, QBrush(QColor(15, 15, 15)));
 
 
     // ═══════════════════════════════════════════════════════════════════

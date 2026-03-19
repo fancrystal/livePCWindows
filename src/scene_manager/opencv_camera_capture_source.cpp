@@ -23,26 +23,61 @@ bool OpenCVCameraCaptureSource::initialize() {
     }
 
     int index = -1;
-    try {
-        index = std::stoi(config_.target_id);
-    } catch (...) {
-        LOG_ERROR("OpenCVCameraCaptureSource: invalid camera index: " + config_.target_id);
-        return false;
+    cv::VideoCapture* cap = nullptr;
+    bool opened = false;
+
+    // Check if target_id is a simple number (index)
+    bool is_likely_ffmpeg_name = config_.target_id.find("@device") != std::string::npos;
+
+    if (is_likely_ffmpeg_name) {
+        // FFmpeg device name format - skip trying to open it, go directly to fallback enumeration
+        LOG_INFO("OpenCVCameraCaptureSource: detected FFmpeg device name format, using fallback enumeration");
+    } else {
+        // Try parsing as integer first
+        try {
+            index = std::stoi(config_.target_id);
+            cap = new cv::VideoCapture();
+            opened = cap->open(index, cv::CAP_DSHOW);
+            if (!opened) {
+                opened = cap->open(index);
+            }
+            // If still not opened, clean up the allocated VideoCapture
+            if (!opened) {
+                delete cap;
+                cap = nullptr;
+            }
+        } catch (...) {
+            // Not a number, clean up if allocated
+            if (cap) {
+                delete cap;
+                cap = nullptr;
+            }
+        }
     }
 
-    auto* cap = new cv::VideoCapture();
-
-    // Prefer DirectShow on Windows
-    bool opened = cap->open(index, cv::CAP_DSHOW);
+    // If not opened yet, fallback to enumerating cameras
     if (!opened) {
-        // Fallback
-        opened = cap->open(index);
-    }
+        LOG_WARNING("OpenCVCameraCaptureSource: direct open failed, trying fallback enumeration");
+        for (int i = 0; i < 10; ++i) {
+            cap = new cv::VideoCapture();
+            if (cap->open(i, cv::CAP_DSHOW)) {
+                cv::Mat test_frame;
+                if (cap->read(test_frame) && !test_frame.empty()) {
+                    LOG_INFO("OpenCVCameraCaptureSource: opened camera at index " + std::to_string(i));
+                    index = i;
+                    opened = true;
+                    break;
+                }
+                cap->release();
+            }
+            delete cap;
+            cap = nullptr;
+        }
 
-    if (!opened) {
-        LOG_ERROR("OpenCVCameraCaptureSource: failed to open camera index=" + std::to_string(index));
-        delete cap;
-        return false;
+        if (!opened) {
+            LOG_ERROR("OpenCVCameraCaptureSource: all fallback methods failed");
+            return false;
+        }
     }
 
     if (config_.fps > 0) {

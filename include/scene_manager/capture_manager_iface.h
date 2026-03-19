@@ -17,6 +17,7 @@ public:
     bool start_source(const std::string& source_id);
     bool stop_source(const std::string& source_id);
     bool has_source(const std::string& source_id) const;
+    std::vector<std::string> get_all_source_ids() const;
 
 private:
     mutable std::mutex mutex_;

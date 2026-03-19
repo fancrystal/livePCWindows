@@ -1,4 +1,5 @@
 #include "scene_manager/scene_manager.h"
+#include "scene_manager/source_factory.h"
 #include "common/log.h"
 #include "common/error.h"
 #include <algorithm>
@@ -50,6 +51,30 @@ int SceneItem::get_order() const {
     return order_;
 }
 
+void SceneItem::set_device_id(const std::string& device_id) {
+    device_id_ = device_id;
+}
+
+std::string SceneItem::get_device_id() const {
+    return device_id_;
+}
+
+void SceneItem::set_display_name(const std::string& display_name) {
+    display_name_ = display_name;
+}
+
+std::string SceneItem::get_display_name() const {
+    return display_name_;
+}
+
+void SceneItem::set_source_params(const std::unordered_map<std::string, std::string>& params) {
+    source_params_ = params;
+}
+
+std::unordered_map<std::string, std::string> SceneItem::get_source_params() const {
+    return source_params_;
+}
+
 // Forward declaration helper
 namespace {
     void sort_items_by_order(std::vector<std::shared_ptr<SceneItem>>& items) {
@@ -66,6 +91,70 @@ Scene::Scene(const std::string& name) : name_(name) {
 
 std::string Scene::get_name() const {
     return name_;
+}
+
+ErrorCode Scene::set_name(const std::string& name) {
+    if (name.empty()) {
+        LOG_WARNING("Scene name cannot be empty");
+        return ErrorCode::FAILURE;
+    }
+    name_ = name;
+    LOG_INFO("Scene renamed to: " + name);
+    return ErrorCode::SUCCESS;
+}
+
+QJsonObject Scene::serialize() const {
+    QJsonObject scene_obj;
+    scene_obj["name"] = QString::fromStdString(name_);
+
+    QJsonArray items_array;
+    for (const auto& item : scene_items_) {
+        QJsonObject item_obj;
+        item_obj["source_id"] = QString::fromStdString(item->get_source_id());
+        item_obj["visible"] = item->is_visible();
+        item_obj["order"] = item->get_order();
+
+        // 保存源类型和设备参数
+        auto source = item->get_source();
+        if (source) {
+            // 保存设备ID和显示名称（用于重建采集源）
+            item_obj["device_id"] = QString::fromStdString(item->get_device_id());
+            item_obj["display_name"] = QString::fromStdString(item->get_display_name());
+
+            // 保存源参数（分辨率、帧率等）
+            const auto& params = item->get_source_params();
+            if (!params.empty()) {
+                QJsonObject params_obj;
+                for (const auto& [key, value] : params) {
+                    params_obj[QString::fromStdString(key)] = QString::fromStdString(value);
+                }
+                item_obj["source_params"] = params_obj;
+            }
+        }
+
+        const auto& tr = item->get_transform();
+        QJsonObject transform_obj;
+        transform_obj["x"] = tr.x;
+        transform_obj["y"] = tr.y;
+        transform_obj["width"] = tr.width;
+        transform_obj["height"] = tr.height;
+        transform_obj["rotation"] = tr.rotation;
+        transform_obj["opacity"] = tr.opacity;
+        transform_obj["mirror"] = tr.mirror;
+        item_obj["transform"] = transform_obj;
+
+        items_array.append(item_obj);
+    }
+    scene_obj["items"] = items_array;
+
+    return scene_obj;
+}
+
+std::shared_ptr<SceneItem> Scene::deserialize_item(const QJsonObject& obj) {
+    // 这个方法需要外部传入Source，暂时返回nullptr的占位
+    // 实际使用时会在SceneManager::deserialize中调用SourceFactory创建Source
+    Q_UNUSED(obj);
+    return nullptr;
 }
 
 std::shared_ptr<SceneItem> Scene::add_source(std::shared_ptr<Source> source) {
@@ -187,8 +276,8 @@ ErrorCode Scene::set_transform(std::shared_ptr<SceneItem> item, const Transform&
 // SceneManager实现
 SceneManager::SceneManager() {
     LOG_INFO("Initialized SceneManager");
-    // 创建默认场景
-    create_scene("Default");
+    // 创建默认场景（场景一）
+    create_scene("场景一");
 }
 
 ErrorCode SceneManager::create_scene(const std::string& name) {
@@ -271,7 +360,25 @@ std::shared_ptr<SceneItem> SceneManager::add_source_to_scene(const std::string& 
             return scene->add_source(source);
         }
     }
-    
+
+    LOG_WARNING("Scene not found: " + scene_name);
+    return nullptr;
+}
+
+std::shared_ptr<SceneItem> SceneManager::add_source_to_scene(const std::string& scene_name, std::shared_ptr<Source> source,
+                                                             const std::string& device_id,
+                                                             const std::unordered_map<std::string, std::string>& params) {
+    for (const auto& scene : scenes_) {
+        if (scene->get_name() == scene_name) {
+            auto item = scene->add_source(source);
+            if (item) {
+                item->set_device_id(device_id);
+                item->set_source_params(params);
+            }
+            return item;
+        }
+    }
+
     LOG_WARNING("Scene not found: " + scene_name);
     return nullptr;
 }
@@ -306,6 +413,221 @@ std::vector<std::shared_ptr<SceneItem>> SceneManager::get_scene_items(const std:
     }
     LOG_WARNING("Scene not found: " + scene_name);
     return {};
+}
+
+QJsonArray SceneManager::serialize() const {
+    QJsonArray scenes_array;
+    for (size_t i = 0; i < scenes_.size(); ++i) {
+        QJsonObject scene_obj = scenes_[i]->serialize();
+        scene_obj["current"] = (i == current_scene_index_);
+        scenes_array.append(scene_obj);
+    }
+    return scenes_array;
+}
+
+std::shared_ptr<Source> SceneManager::create_source_by_type(const std::string& type, const std::string& id,
+                                                             const std::string& device_id, const std::string& file_path) {
+    if (type == "camera") {
+        return SourceFactory::create_camera_source(id, device_id);
+    } else if (type == "screen") {
+        return SourceFactory::create_screen_source(id, device_id);
+    } else if (type == "image") {
+        return SourceFactory::create_image_source(id, file_path, "");
+    } else if (type == "media_file") {
+        return SourceFactory::create_media_file_source(id, file_path, "");
+    } else if (type == "audio") {
+        return SourceFactory::create_audio_source(id, "");
+    }
+    LOG_WARNING("Unknown source type: " + type);
+    return nullptr;
+}
+
+ErrorCode SceneManager::deserialize(const QJsonArray& scenes_array) {
+    // 清空现有场景
+    scenes_.clear();
+
+    std::string current_scene_name;
+    bool has_current = false;
+
+    for (const auto& scene_val : scenes_array) {
+        QJsonObject scene_obj = scene_val.toObject();
+        QString name = scene_obj["name"].toString();
+        bool is_current = scene_obj["current"].toBool(false);
+
+        // 创建场景
+        create_scene(name.toStdString());
+
+        if (is_current) {
+            current_scene_name = name.toStdString();
+            has_current = true;
+        }
+
+        // 加载场景项
+        QJsonArray items_array = scene_obj["items"].toArray();
+        for (const auto& item_val : items_array) {
+            QJsonObject item_obj = item_val.toObject();
+            QString source_id = item_obj["source_id"].toString();
+            bool visible = item_obj["visible"].toBool(true);
+            int order = item_obj["order"].toInt(0);
+
+            // 读取保存的设备ID和参数（兼容旧配置格式）
+            QString saved_device_id = "";
+            QString saved_display_name = "";
+            std::unordered_map<std::string, std::string> saved_params;
+            if (item_obj.contains("device_id")) {
+                saved_device_id = item_obj["device_id"].toString();
+            }
+            if (item_obj.contains("display_name")) {
+                saved_display_name = item_obj["display_name"].toString();
+            }
+            if (item_obj.contains("source_params")) {
+                QJsonObject params_obj = item_obj["source_params"].toObject();
+                for (auto it = params_obj.begin(); it != params_obj.end(); ++it) {
+                    saved_params[it.key().toStdString()] = it.value().toString().toStdString();
+                }
+            }
+
+            // 从source_id解析类型
+            QString source_type;
+            QString device_or_file;
+
+            if (source_id.startsWith("camera_")) {
+                source_type = "camera";
+                // 优先使用保存的device_id，否则从source_id解析
+                if (!saved_device_id.isEmpty()) {
+                    device_or_file = saved_device_id;
+                } else {
+                    device_or_file = source_id.mid(7); // 去掉 "camera_" 前缀
+                }
+            } else if (source_id.startsWith("capture_")) {
+                // capture_G2412WHI 格式是屏幕共享，映射到 screen 类型
+                source_type = "screen";
+                if (!saved_device_id.isEmpty()) {
+                    device_or_file = saved_device_id;
+                } else {
+                    device_or_file = source_id.mid(8); // 去掉 "capture_" 前缀
+                }
+            } else if (source_id.startsWith("screen_")) {
+                source_type = "screen";
+                if (!saved_device_id.isEmpty()) {
+                    device_or_file = saved_device_id;
+                } else {
+                    device_or_file = source_id.mid(7);
+                }
+            } else if (source_id.startsWith("image_")) {
+                source_type = "image";
+                device_or_file = source_id.mid(6);
+            } else if (source_id.startsWith("media_file_")) {
+                source_type = "media_file";
+                device_or_file = source_id.mid(11);
+            } else if (source_id.startsWith("audio_")) {
+                source_type = "audio";
+                device_or_file = source_id.mid(6);
+            } else {
+                // 未知类型，跳过
+                LOG_WARNING("Unknown source type in deserialization: " + source_id.toStdString());
+                continue;
+            }
+
+            LOG_INFO("Deserializing source: type=" + source_type.toStdString() + ", device=" + device_or_file.toStdString());
+
+            // 创建Source
+            auto source = create_source_by_type(source_type.toStdString(),
+                                                source_id.toStdString(),
+                                                device_or_file.toStdString(),
+                                                device_or_file.toStdString());
+            if (!source) {
+                LOG_WARNING("Failed to create source: " + source_id.toStdString());
+                continue;
+            }
+
+            // 尝试初始化并启动采集源
+            bool source_started = false;
+            try {
+                if (source->initialize()) {
+                    if (source->start()) {
+                        source_started = true;
+                    } else {
+                        LOG_WARNING("Failed to start source: " + source_id.toStdString());
+                    }
+                } else {
+                    LOG_WARNING("Failed to initialize source: " + source_id.toStdString());
+                }
+            } catch (const std::exception& e) {
+                LOG_WARNING("Exception starting source " + source_id.toStdString() + ": " + e.what());
+            } catch (...) {
+                LOG_WARNING("Unknown exception starting source: " + source_id.toStdString());
+            }
+
+            // 如果源启动失败，删除该source item并不添加到场景
+            if (!source_started) {
+                LOG_WARNING("Source not available, removing from scene: " + source_id.toStdString());
+                // 尝试关闭并销毁source
+                try {
+                    source->stop();
+                    source->shutdown();
+                } catch (...) {}
+                continue;
+            }
+
+            // 添加到场景（同时保存设备ID和参数）
+            auto scene_item = add_source_to_scene(name.toStdString(), source,
+                                                   device_or_file.toStdString(), saved_params);
+            if (scene_item) {
+                // 设置显示名称
+                if (!saved_display_name.isEmpty()) {
+                    scene_item->set_display_name(saved_display_name.toStdString());
+                }
+                // 设置可见性
+                scene_item->set_visible(visible);
+                scene_item->set_order(order);
+
+                // 设置变换
+                QJsonObject tr_obj = item_obj["transform"].toObject();
+                Transform tr;
+                tr.x = tr_obj["x"].toInt(0);
+                tr.y = tr_obj["y"].toInt(0);
+                tr.width = tr_obj["width"].toInt(640);
+                tr.height = tr_obj["height"].toInt(360);
+                tr.rotation = static_cast<float>(tr_obj["rotation"].toDouble(0.0));
+                tr.opacity = static_cast<float>(tr_obj["opacity"].toDouble(1.0));
+                tr.mirror = tr_obj["mirror"].toBool(false);
+                scene_item->set_transform(tr);
+            }
+        }
+    }
+
+    // 设置当前场景
+    if (has_current && !current_scene_name.empty()) {
+        set_current_scene(current_scene_name);
+    } else if (!scenes_.empty()) {
+        set_current_scene(scenes_[0]->get_name());
+    }
+
+    LOG_INFO("Loaded " + std::to_string(scenes_.size()) + " scenes from config");
+    return ErrorCode::SUCCESS;
+}
+
+void SceneManager::cleanup_all_sources() {
+    LOG_INFO("========== SceneManager cleanup_all_sources START ==========");
+
+    for (const auto& scene : scenes_) {
+        if (!scene) continue;
+
+        auto items = scene->get_all_scene_items();
+        for (const auto& item : items) {
+            if (!item) continue;
+
+            auto source = item->get_source();
+            if (!source) continue;
+
+            LOG_INFO("Stopping source in scene: " + scene->get_name() + ", source: " + source->get_id());
+            source->stop();
+            source->shutdown();
+        }
+    }
+
+    LOG_INFO("========== SceneManager cleanup_all_sources END ==========");
 }
 
 // ------------ Layer helpers implementation --------------

@@ -17,6 +17,9 @@ struct CaptureConfig {
     // For CAMERA: dshow device_name or OpenCV index as string
     std::string target_id;
 
+    // Display name for UI (e.g., "USB Camera HD" instead of "@device_pnp_...")
+    std::string display_name;
+
     int fps = 30;
 
     // SCREEN/WINDOW options
