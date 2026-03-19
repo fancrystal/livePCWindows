@@ -12,6 +12,7 @@ Rectangle {
     property string loginStatus: ""
     property string loginError: ""
     property bool isLoggingIn: false
+    property bool localStreamExpanded: false
 
     Image {
         id: bg
@@ -257,6 +258,135 @@ Rectangle {
                 horizontalAlignment: Text.AlignHCenter
                 Layout.alignment: Qt.AlignHCenter
             }
+
+            // 本地推流按钮（点击后右侧滑出面板）
+            Button {
+                id: localStreamToggleBtn
+                height: 32
+                Layout.preferredWidth: parent.width * 0.9
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 8
+
+                background: Rectangle {
+                    radius: 4
+                    color: Qt.rgba(1,1,1,0.08)
+                    border.width: 1
+                    border.color: Qt.rgba(1,1,1,0.15)
+                }
+
+                contentItem: RowLayout {
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text {
+                        text: "本地推流"
+                        color: Qt.rgba(1,1,1,0.7)
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        text: localStreamExpanded ? "◀" : "▶"
+                        color: Qt.rgba(1,1,1,0.5)
+                        font.pixelSize: 10
+                    }
+                }
+
+                onClicked: {
+                    localStreamExpanded = !localStreamExpanded
+                }
+            }
+        }
+    }
+
+    // 右侧滑出的本地推流面板（独立于卡片，向右展开）
+    Rectangle {
+        id: localStreamSidePanel
+        anchors.left: panel.right
+        anchors.leftMargin: 8
+        anchors.verticalCenter: panel.verticalCenter
+        width: localStreamExpanded ? 320 : 0
+        height: 340
+        clip: true
+        radius: 16
+        color: Qt.rgba(0.06,0.02,0.04,0.92)
+        border.width: 1
+        border.color: Qt.rgba(1,1,1,0.08)
+
+        Behavior on width {
+            NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 12
+            visible: localStreamExpanded
+
+            Text {
+                text: "本地推流"
+                color: "white"
+                font.pixelSize: 16
+                font.weight: Font.Medium
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Text {
+                text: "推流地址"
+                color: Qt.rgba(1,1,1,0.6)
+                font.pixelSize: 12
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 40
+                radius: 6
+                color: "white"
+                border.width: 1
+                border.color: Qt.rgba(0,0,0,0.06)
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 8
+                    TextField {
+                        id: rtmpUrlField
+                        placeholderText: "rtmp://localhost:1935/live/stream_key"
+                        color: "#222222"
+                        background: Rectangle { color: "transparent"; border.width: 0 }
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                    }
+                }
+            }
+
+            Button {
+                id: localStreamBtn
+                height: 42
+                Layout.fillWidth: true
+                Layout.topMargin: 8
+
+                background: Rectangle {
+                    radius: 6
+                    color: "#2d8c5f"
+                }
+
+                contentItem: Text {
+                    text: "开始推流"
+                    color: "white"
+                    font.pixelSize: 14
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                onClicked: handleLocalStream()
+            }
+
+            Text {
+                text: "跳过直播列表，直接进入推流\n（不支持插播视频）"
+                font.pixelSize: 11
+                color: Qt.rgba(1,1,1,0.45)
+                horizontalAlignment: Text.AlignHCenter
+                Layout.alignment: Qt.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
         }
     }
 
@@ -306,6 +436,46 @@ Rectangle {
         }
     }
 
+    // 本地推流处理函数
+    function handleLocalStream() {
+        if (isLoggingIn) return
+
+        var rtmpUrl = rtmpUrlField.text.trim()
+
+        // 清空之前的状态
+        loginStatus = ""
+        loginError = ""
+        statusText.text = ""
+
+        // 验证推流地址
+        if (rtmpUrl === "") {
+            loginError = "请输入推流地址"
+            statusText.text = loginError
+            statusText.color = "#ff6b6b"
+            return
+        }
+
+        // 验证 RTMP 地址格式
+        if (!rtmpUrl.startsWith("rtmp://") && !rtmpUrl.startsWith("rtmps://")) {
+            loginError = "推流地址必须以 rtmp:// 或 rtmps:// 开头"
+            statusText.text = loginError
+            statusText.color = "#ff6b6b"
+            return
+        }
+
+        // 设置为登录中状态
+        isLoggingIn = true
+        statusText.text = "正在启动本地推流..."
+        statusText.color = "#4aa6ff"
+
+        console.log("Starting local stream with URL: " + rtmpUrl)
+
+        // 调用C++启动本地推流
+        if (typeof loginWindow !== 'undefined' && loginWindow.qmlStartLocalStream) {
+            loginWindow.qmlStartLocalStream(rtmpUrl)
+        }
+    }
+
     // 组件加载时读取保存的凭据
     Component.onCompleted: {
         console.log("Login.qml component completed")
@@ -343,6 +513,14 @@ Rectangle {
             isLoggingIn = false
             loginStatus = "登录成功！"
             statusText.text = "登录成功！"
+            statusText.color = "#4aa6ff"
+        }
+
+        function onLocalStreamSuccess(rtmpUrl) {
+            console.log("QML onLocalStreamSuccess: " + rtmpUrl)
+            isLoggingIn = false
+            loginStatus = "正在进入推流..."
+            statusText.text = "正在进入推流..."
             statusText.color = "#4aa6ff"
         }
     }

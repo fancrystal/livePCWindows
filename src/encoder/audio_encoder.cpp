@@ -391,8 +391,10 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
             continue;
         }
 
-        // 🔧 不再设置 frame_->pts，改用输出时的帧计数
-        // 编码器可能会修改 PTS，所以我们不在输入时设置
+        // 🔧 修复音视频同步：设置输入帧的 PTS，与视频使用相同的时间基准
+        // 使用 base_timestamp + 已发送帧数 * 每帧时长 来计算 PTS
+        // 这样音频 PTS 与 media_clock 保持同步
+        frame_->pts = base_timestamp + frames_processed * frame_duration_ms;
 
         // 发送帧到编码器
         int ret = avcodec_send_frame(codec_ctx_, frame_);
@@ -404,6 +406,9 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
             }
             continue;
         }
+
+        // 🔧 递增 frames_processed，确保下一帧使用正确的 PTS
+        frames_processed++;
 
         // 接收编码后的数据包
         while (ret >= 0) {
@@ -424,11 +429,18 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
                 if (packet_->duration <= 0) {
                     packet_->duration = frame_duration_ms_;
                 }
-                
-                int64_t pts_to_emit = output_frame_count_ * frame_duration_ms_;
-                
+
+                // 🔧 修复音视频同步：使用输入帧的原始 PTS，而不是重新从0开始计算
+                // 这确保音频 PTS 与视频 PTS 使用相同的时间基准
+                int64_t pts_to_emit = frame_->pts;
+                if (pts_to_emit < 0) {
+                    // 如果输入帧没有设置 PTS（异常情况），使用帧计数作为后备
+                    pts_to_emit = output_frame_count_ * frame_duration_ms_;
+                }
+
                 packet_->pts = pts_to_emit;
-                
+                packet_->dts = pts_to_emit;
+
                 emit audio_encoded(packet_->data, packet_->size, pts_to_emit);
                 output_frame_count_++;
             }

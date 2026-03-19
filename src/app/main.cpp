@@ -237,6 +237,69 @@ int main(int argc, char *argv[]) {
         // 登录窗口会自动关闭
     });
 
+    // Connect local stream success signal to show main window directly
+    QObject::connect(&login_window, &live_assistant::LoginWindow::local_stream_success,
+        [&login_window, &main_window](const QString& rtmpUrl) {
+        LOG_INFO(QString("Local stream success - RTMP URL: %1").arg(rtmpUrl).toStdString());
+
+        // 先关闭登录窗口
+        login_window.close();
+
+        // 创建主窗口
+        if (!main_window) {
+            main_window = new live_assistant::MainWindow();
+
+            // 本地推流模式：退出时直接退出程序，不返回直播列表
+            QObject::connect(main_window, &live_assistant::MainWindow::request_return_to_live_list,
+                [main_window]() {
+                LOG_INFO("Local stream mode - exiting application");
+
+                // 先隐藏主窗口
+                main_window->hide();
+
+                // 异步清理资源
+                QTimer::singleShot(50, main_window, [main_window]() {
+                    LOG_INFO("Async cleanup started");
+                    main_window->stop_all_capture_sources();
+                    main_window->save_scenes_config();
+                    LOG_INFO("Async cleanup finished");
+                });
+
+                // 延迟退出程序
+                QTimer::singleShot(500, []() {
+                    LOG_INFO("Quitting application from local stream mode");
+                    QApplication::quit();
+                });
+            });
+        }
+
+        // 设置为本地推流模式
+        main_window->set_local_stream_mode(true);
+
+        // 设置推流地址
+        main_window->set_rtmp_target(rtmpUrl, "");
+
+        // 创建空的 LiveItem（本地推流不需要真实的直播间）
+        LiveItem liveItem;
+        liveItem.title = "本地推流";
+        liveItem.liveId = "local_stream";
+
+        // 设置直播间信息
+        main_window->setLiveItem(liveItem);
+        main_window->set_live_id("local_stream");
+
+        // 先显示窗口（禁用更新），避免初始化过程中的闪烁
+        main_window->show();
+        main_window->setUpdatesEnabled(false);
+
+        // 延迟启用窗口更新
+        QTimer::singleShot(0, main_window, [main_window]() {
+            main_window->setUpdatesEnabled(true);
+            main_window->update();
+            LOG_INFO("Window updates enabled after local stream initialization completed");
+        });
+    });
+
     // Show login window
     login_window.show();
 

@@ -137,15 +137,15 @@ ErrorCode RTMPPusher::open_output() {
 
     std::string full_url = config_.server_url + "/" + config_.stream_key;
     // 调试模式：可选择输出到本地文件进行测试
-    // 要测试本地文件，请取消下面一行的注释：
-    full_url = "D:/test.flv";
-    // 正常推流时，请确保这一行被注释掉
+    //// 要测试本地文件，请取消下面一行的注释：
+    //full_url = "D:/test.flv";
+    //// 正常推流时，请确保这一行被注释掉
 
-    // 对于本地文件测试，先删除已存在的文件以确保干净输出
-    // RTMP 推流时服务器会自动处理
-    if (full_url.find(".flv") != std::string::npos) {
-        std::remove(full_url.c_str());  // 删除已存在的文件
-    }
+    //// 对于本地文件测试，先删除已存在的文件以确保干净输出
+    //// RTMP 推流时服务器会自动处理
+    //if (full_url.find(".flv") != std::string::npos) {
+    //    std::remove(full_url.c_str());  // 删除已存在的文件
+    //}
 
     int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
     if (ret < 0) {

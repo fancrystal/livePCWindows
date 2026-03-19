@@ -176,6 +176,27 @@ QString LoginWindow::qmlGetSavedPassword() {
     return settings_.value("password").toString();
 }
 
+void LoginWindow::qmlStartLocalStream(const QString& rtmpUrl) {
+    LOG_INFO("qmlStartLocalStream called: rtmpUrl=" + rtmpUrl.toStdString());
+
+    if (rtmpUrl.isEmpty()) {
+        emit login_failed("推流地址不能为空");
+        return;
+    }
+
+    // 验证 RTMP 地址格式
+    if (!rtmpUrl.startsWith("rtmp://") && !rtmpUrl.startsWith("rtmps://")) {
+        emit login_failed("请输入有效的 RTMP 推流地址（以 rtmp:// 或 rtmps:// 开头）");
+        return;
+    }
+
+    // 保存本地推流地址
+    local_stream_url_ = rtmpUrl;
+    is_local_stream_mode_ = true;
+
+    emit local_stream_success(rtmpUrl);
+}
+
 void LoginWindow::qmlSetStatus(const QString& status) {
     emit login_status_changed(status);
 }

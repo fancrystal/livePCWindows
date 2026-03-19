@@ -65,6 +65,10 @@ public:
     // 推流目标（后续与直播间列表联通时由外部设置）
     void set_rtmp_target(const QString& server_url, const QString& stream_key);
 
+    // 本地推流模式
+    void set_local_stream_mode(bool enabled);
+    bool is_local_stream_mode() const { return is_local_stream_mode_; }
+
     // 画布配置管理
     void set_canvas_config(const CanvasConfig& config);
     const CanvasConfig& get_canvas_config() const;
@@ -216,6 +220,9 @@ private:
     // RTMP target
     QString rtmp_server_url_;
     QString rtmp_stream_key_;
+
+    // 本地推流模式
+    bool is_local_stream_mode_ = false;
 
     // Live duration display
     QTimer* live_duration_timer_ = nullptr;

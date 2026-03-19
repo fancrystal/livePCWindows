@@ -19,6 +19,7 @@ signals:
     void login_success();
     void login_failed(const QString& errorMessage);
     void login_status_changed(const QString& status);
+    void local_stream_success(const QString& rtmp_url);
 
 public:
     // QML调用方法
@@ -35,6 +36,11 @@ public:
     const QString& getLoginKey() const { return login_key_; }
     const QString& getLoginUrl() const { return login_url_; }
     const QString& getApiKey() const { return api_key_; }
+
+    // 本地推流相关
+    Q_INVOKABLE void qmlStartLocalStream(const QString& rtmpUrl);
+    const QString& getLocalStreamUrl() const { return local_stream_url_; }
+    bool isLocalStreamMode() const { return is_local_stream_mode_; }
 
 private slots:
     void onLoginSuccess(const QString& userId, const QString& token, const QString& loginKey);
@@ -59,6 +65,10 @@ private:
     QString login_key_;
     QString login_url_;
     QString api_key_;
+
+    // 本地推流信息
+    QString local_stream_url_;
+    bool is_local_stream_mode_ = false;
 
     // QML部件
     QQuickWidget* qmlWidget_;

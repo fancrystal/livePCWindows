@@ -1219,6 +1219,18 @@ void MainWindow::set_rtmp_target(const QString& server_url, const QString& strea
     rtmp_stream_key_ = stream_key;
 }
 
+void MainWindow::set_local_stream_mode(bool enabled) {
+    is_local_stream_mode_ = enabled;
+    LOG_INFO(QString("Local stream mode: %1").arg(enabled ? "enabled" : "disabled").toStdString());
+
+    // 本地推流模式下禁用插播视频按钮
+    if (enabled && ui->pushButton_insertVideo) {
+        ui->pushButton_insertVideo->setEnabled(false);
+        ui->pushButton_insertVideo->setToolTip("本地推流模式不支持插播视频");
+        LOG_INFO("Insert video button disabled for local stream mode");
+    }
+}
+
 void MainWindow::setCredentials(const QString& socketUrl, const QString& userId, const QString& token, const QString& liveurl, const QString& oncekey) {
     socket_url_ = socketUrl;
     user_id_ = userId;
@@ -1491,6 +1503,11 @@ void MainWindow::setup_ui_connections() {
                         on_screen_share_button_clicked();
                         break;
                     case AddMaterialDialog::Selection::Video:
+                        // 本地推流模式不支持插播视频
+                        if (is_local_stream_mode_) {
+                            QMessageBox::information(this, "提示", "本地推流模式不支持插播视频");
+                            return;
+                        }
                         // 直接打开插播视频列表对话框，与插播视频按钮逻辑一致
                         show_insert_video_widget();
                         break;
@@ -1686,9 +1703,16 @@ void MainWindow::setup_ui_connections() {
     update_microphone_ui();
     update_speaker_ui();
 
-    // 插播视频按钮连接
+    // 插播视频按钮连接（本地推流模式下禁用）
     if (ui->pushButton_insertVideo) {
-        connect(ui->pushButton_insertVideo, &QPushButton::clicked, this, &MainWindow::on_insert_video_button_clicked);
+        if (is_local_stream_mode_) {
+            // 本地推流模式：禁用插播视频按钮
+            ui->pushButton_insertVideo->setEnabled(false);
+            ui->pushButton_insertVideo->setToolTip("本地推流模式不支持插播视频");
+            LOG_INFO("Insert video button disabled for local stream mode");
+        } else {
+            connect(ui->pushButton_insertVideo, &QPushButton::clicked, this, &MainWindow::on_insert_video_button_clicked);
+        }
     }
 }
 
@@ -1791,6 +1815,13 @@ void MainWindow::setupBottomButtonsStyle() {
 
 void MainWindow::on_insert_video_button_clicked() {
     LOG_INFO("Insert video button clicked");
+
+    // 本地推流模式不支持插播视频
+    if (is_local_stream_mode_) {
+        QMessageBox::information(this, "提示", "本地推流模式不支持插播视频");
+        return;
+    }
+
     show_insert_video_widget();
 }
 
