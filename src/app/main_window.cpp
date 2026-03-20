@@ -969,6 +969,29 @@ void MainWindow::restore_capture_sources() {
                 if (compositor_ && !frame.image.isNull()) {
                     if (!compositor_->has_layer(source_id)) {
                         compositor_->add_layer(source_id);
+
+                        // 同步正确的图层顺序和transform
+                        if (scene_manager_) {
+                            auto scene_names = scene_manager_->get_scene_names();
+                            for (const auto& scene_name : scene_names) {
+                                auto items = scene_manager_->get_scene_items(scene_name);
+                                for (auto& item : items) {
+                                    if (item && item->get_source_id() == source_id) {
+                                        // 设置图层顺序
+                                        compositor_->set_layer_order(source_id, item->get_order());
+
+                                        // 设置图层transform
+                                        const auto& tr = item->get_transform();
+                                        int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
+                                        int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
+                                        compositor_->update_layer_transform(source_id,
+                                            QRectF(tr.x, tr.y, w, h), tr.opacity);
+                                        compositor_->set_layer_visible(source_id, item->is_visible());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                     compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
                 }
@@ -2213,6 +2236,27 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
             if (!compositor_->has_layer(source_id)) {
                 LOG_DEBUG("[DIAG] 图层不存在，创建新图层: " + source_id);
                 compositor_->add_layer(source_id);
+
+                // 同步正确的图层顺序和transform
+                if (scene_manager_ && scene_manager_->get_current_scene()) {
+                    auto scene = scene_manager_->get_current_scene();
+                    auto items = scene->get_all_scene_items();
+                    for (auto& item : items) {
+                        if (item && item->get_source_id() == source_id) {
+                            // 设置图层顺序
+                            compositor_->set_layer_order(source_id, item->get_order());
+
+                            // 设置图层transform
+                            const auto& tr = item->get_transform();
+                            int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
+                            int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
+                            compositor_->update_layer_transform(source_id,
+                                QRectF(tr.x, tr.y, w, h), tr.opacity);
+                            compositor_->set_layer_visible(source_id, item->is_visible());
+                            break;
+                        }
+                    }
+                }
             }
             auto t0 = std::chrono::high_resolution_clock::now();
             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
@@ -2458,6 +2502,27 @@ void MainWindow::show_screen_share_selector() {
                             if (!compositor_->has_layer(source_id)) {
                                 LOG_DEBUG("[DIAG] 图层不存在，创建新图层: " + source_id);
                                 compositor_->add_layer(source_id);
+
+                                // 同步正确的图层顺序和transform
+                                if (scene_manager_ && scene_manager_->get_current_scene()) {
+                                    auto scene = scene_manager_->get_current_scene();
+                                    auto items = scene->get_all_scene_items();
+                                    for (auto& item : items) {
+                                        if (item && item->get_source_id() == source_id) {
+                                            // 设置图层顺序
+                                            compositor_->set_layer_order(source_id, item->get_order());
+
+                                            // 设置图层transform
+                                            const auto& tr = item->get_transform();
+                                            int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
+                                            int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
+                                            compositor_->update_layer_transform(source_id,
+                                                QRectF(tr.x, tr.y, w, h), tr.opacity);
+                                            compositor_->set_layer_visible(source_id, item->is_visible());
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                             LOG_DEBUG("[DIAG] 更新Compositor图层图像: " + source_id);
                             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
@@ -2554,8 +2619,12 @@ void MainWindow::show_screen_share_selector() {
                             }
                         }
                         scene->normalize_orders();
-                        
+
                         update_scene_items();
+
+                        // 同步图层顺序到 Compositor
+                        sync_scene_to_compositor();
+
                         LOG_INFO(std::string("Added ScreenSource to scene for preview: ") + source_id);
                     }
                 }
@@ -3317,8 +3386,8 @@ void MainWindow::sync_scene_to_compositor() {
         const int w = tr.width > 0 ? tr.width : 640;
         const int h = tr.height > 0 ? tr.height : 360;
 
-        // 确保视频内容在画布范围内，不超出边界
-        // initialize_modules 里 load_scenes_config 会早于 setup_canvas_widget，此时 canvas_widget_ 可能为空
+        // 允许源部分超出画布边界，实现裁剪效果
+        // 只对小于画布的源做边界限制，大于等于画布的源允许自由移动
         int canvas_width = canvas_config_.get_width();
         int canvas_height = canvas_config_.get_height();
         if (canvas_widget_) {
@@ -3326,12 +3395,21 @@ void MainWindow::sync_scene_to_compositor() {
             canvas_height = canvas_widget_->get_canvas_config().get_height();
         }
 
-        int clamped_x = (std::max)(0, (std::min)(tr.x, canvas_width - w));
-        int clamped_y = (std::max)(0, (std::min)(tr.y, canvas_height - h));
-        int clamped_w = (std::min)(w, canvas_width - clamped_x);
-        int clamped_h = (std::min)(h, canvas_height - clamped_y);
+        int final_x = tr.x;
+        int final_y = tr.y;
+        int final_w = w;
+        int final_h = h;
 
-        compositor_->update_layer_transform(sid, QRectF(clamped_x, clamped_y, clamped_w, clamped_h), tr.opacity);
+        // 只有当源小于画布时才限制位置
+        if (w < canvas_width) {
+            final_x = (std::max)(0, (std::min)(tr.x, canvas_width - w));
+        }
+        if (h < canvas_height) {
+            final_y = (std::max)(0, (std::min)(tr.y, canvas_height - h));
+        }
+        // 尺寸不做钳制，保留原始尺寸
+
+        compositor_->update_layer_transform(sid, QRectF(final_x, final_y, final_w, final_h), tr.opacity);
         compositor_->set_layer_visible(sid, it->is_visible());
         compositor_->set_layer_order(sid, it->get_order());
     }
@@ -3623,6 +3701,11 @@ void MainWindow::set_landscape_mode() {
     // 应用新的画布配置
     apply_canvas_config_change();
 
+    // 更新按钮文本
+    if (ui->pushButton_toggleOrientation) {
+        ui->pushButton_toggleOrientation->setText("横屏");
+    }
+
     LOG_INFO("Switched to landscape mode: 1920x1080");
     LOG_INFO("========== set_landscape_mode END ==========");
 }
@@ -3652,6 +3735,11 @@ void MainWindow::set_portrait_mode() {
 
     // 应用新的画布配置
     apply_canvas_config_change();
+
+    // 更新按钮文本
+    if (ui->pushButton_toggleOrientation) {
+        ui->pushButton_toggleOrientation->setText("竖屏");
+    }
 
     LOG_INFO("Switched to portrait mode: 1080x1920");
     LOG_INFO("========== set_portrait_mode END ==========");

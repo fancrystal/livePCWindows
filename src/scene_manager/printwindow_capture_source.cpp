@@ -6,6 +6,7 @@
 #include <QImage>
 #include <thread>
 #include <chrono>
+#include <cstring>
 
 #pragma comment(lib, "gdi32.lib")
 
@@ -20,13 +21,11 @@ PrintWindowCaptureSource::~PrintWindowCaptureSource() {
 }
 
 bool PrintWindowCaptureSource::initialize() {
-    // nothing heavy to init for PrintWindow path
     return true;
 }
 
 bool PrintWindowCaptureSource::start() {
     if (running_.exchange(true)) return true;
-    // Launch worker
     worker_ = std::thread(&PrintWindowCaptureSource::worker_loop, this);
     return true;
 }
@@ -39,12 +38,30 @@ bool PrintWindowCaptureSource::stop() {
 
 bool PrintWindowCaptureSource::shutdown() {
     stop();
+    cleanup_dib();
     return true;
 }
 
-
 bool PrintWindowCaptureSource::is_running() const {
     return running_.load();
+}
+
+void PrintWindowCaptureSource::cleanup_dib() {
+    if (cached_hdc_mem_ && cached_old_bitmap_) {
+        SelectObject(cached_hdc_mem_, cached_old_bitmap_);
+        cached_old_bitmap_ = nullptr;
+    }
+    if (cached_hbitmap_) {
+        DeleteObject(cached_hbitmap_);
+        cached_hbitmap_ = nullptr;
+    }
+    if (cached_hdc_mem_) {
+        DeleteDC(cached_hdc_mem_);
+        cached_hdc_mem_ = nullptr;
+    }
+    cached_bits_ = nullptr;
+    cached_width_ = 0;
+    cached_height_ = 0;
 }
 
 void PrintWindowCaptureSource::worker_loop() {
@@ -86,39 +103,37 @@ void PrintWindowCaptureSource::worker_loop() {
             continue;
         }
 
-        HDC hdcMem = CreateCompatibleDC(hdcWindow);
-        BITMAPINFO bmi = {};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
+        // Reuse cached DIB if size matches, otherwise recreate
+        if (!cached_hbitmap_ || cached_width_ != w || cached_height_ != h) {
+            cleanup_dib();
 
-        void* pBits = nullptr;
-        HBITMAP hDIB = CreateDIBSection(hdcWindow, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
-        if (!hDIB) {
-            DeleteDC(hdcMem);
-            ReleaseDC(hwnd, hdcWindow);
-            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
-            continue;
-        }
-        HBITMAP hOld = (HBITMAP)SelectObject(hdcMem, hDIB);
+            cached_hdc_mem_ = CreateCompatibleDC(hdcWindow);
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = w;
+            bmi.bmiHeader.biHeight = -h;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
 
-        BOOL ok = PrintWindow(hwnd, hdcMem, 0);
-        if (ok && pBits) {
-            // PrintWindow returns BGRA data, so we use Format_RGBA8888 which expects RGBA
-            // We'll need to convert BGRA to RGBA
-            QImage img((uchar*)pBits, w, h, QImage::Format_RGBA8888);
-            // Convert BGRA to RGBA by swapping B and R channels
-            for (int y = 0; y < h; ++y) {
-                QRgb* line = (QRgb*)img.scanLine(y);
-                for (int x = 0; x < w; ++x) {
-                    QRgb pixel = line[x];
-                    // BGRA to RGBA: swap B and R
-                    line[x] = qRgba(qBlue(pixel), qGreen(pixel), qRed(pixel), qAlpha(pixel));
-                }
+            cached_hbitmap_ = CreateDIBSection(hdcWindow, &bmi, DIB_RGB_COLORS, &cached_bits_, NULL, 0);
+            if (!cached_hbitmap_) {
+                DeleteDC(cached_hdc_mem_);
+                cached_hdc_mem_ = nullptr;
+                ReleaseDC(hwnd, hdcWindow);
+                std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+                continue;
             }
+            cached_old_bitmap_ = (HBITMAP)SelectObject(cached_hdc_mem_, cached_hbitmap_);
+            cached_width_ = w;
+            cached_height_ = h;
+        }
+
+        BOOL ok = PrintWindow(hwnd, cached_hdc_mem_, 0);
+        if (ok && cached_bits_) {
+            // PrintWindow returns BGRA data
+            // Use Format_ARGB32 which matches BGRA on little-endian systems
+            QImage img((uchar*)cached_bits_, w, h, QImage::Format_ARGB32);
 
             CaptureFrame frame;
             frame.image = img.copy();
@@ -129,14 +144,13 @@ void PrintWindowCaptureSource::worker_loop() {
             emit frameReady(frame);
         }
 
-        SelectObject(hdcMem, hOld);
-        DeleteObject(hDIB);
-        DeleteDC(hdcMem);
         ReleaseDC(hwnd, hdcWindow);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
+
+    // Final cleanup
+    cleanup_dib();
 }
 
 } // namespace live_assistant
-

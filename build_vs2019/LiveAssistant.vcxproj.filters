@@ -130,6 +130,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\scene_manager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\shared_d3d_device.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\source_factory.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -137,15 +140,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\wgc_capture_source.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="D:\work\project\LiveAssistant\src\video_engine\ffmpeg_capture_backend.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="D:\work\project\LiveAssistant\src\video_engine\opencv_capture_backend.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="D:\work\project\LiveAssistant\src\video_engine\video_capture_backend.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\video_engine\video_engine.cpp">
@@ -355,6 +349,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\scene_manager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\shared_d3d_device.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\source_factory.h">

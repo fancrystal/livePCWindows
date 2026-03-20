@@ -1,6 +1,7 @@
 #pragma once
 
 #include "scene_manager/icapture_source.h"
+#include "scene_manager/shared_d3d_device.h"
 
 #include <atomic>
 #include <functional>
@@ -70,13 +71,15 @@ private:
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{ nullptr };
     winrt::Windows::Graphics::SizeInt32 last_size_{};
 
-    // D3D
-    winrt::com_ptr<ID3D11Device> d3d_device_;
-    winrt::com_ptr<ID3D11DeviceContext> d3d_context_;
-    winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice winrt_device_{ nullptr };
+    // D3D (uses shared device from SharedD3D11Device)
     winrt::Windows::Graphics::DirectX::DirectXPixelFormat pixel_format_ = winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
     winrt::com_ptr<IDXGISwapChain1> swapchain_;
+
+    // Cached staging texture for CPU readback (avoid per-frame allocation)
+    winrt::com_ptr<ID3D11Texture2D> cached_staging_texture_;
+    uint32_t cached_staging_width_ = 0;
+    uint32_t cached_staging_height_ = 0;
 };
 
 } // namespace live_assistant

@@ -624,31 +624,31 @@ void WASAPICapturer::OutputFixedFrames() {
             if (callback_) {
                 // 🔧 调试：保存原始音频数据到 PCM 文件
                 // 保存为 16-bit PCM 格式（而非 float），以便播放器能正常播放
-                static FILE* pcm_file = nullptr;
-                static int pcm_frame_count = 0;
-                if (!pcm_file && pcm_frame_count == 0) {
-                    pcm_file = fopen("D:\\test_mic.pcm", "wb");
-                    if (pcm_file) {
-                        LOG_INFO("[WASAPICapturer] Opened PCM file for writing (16-bit PCM)");
-                    }
-                }
-                if (pcm_file && pcm_frame_count < 100) {
-                    // 将 float 数据转换为 16-bit PCM
-                    std::vector<int16_t> pcm16_data(frame_size_samples);
-                    for (size_t i = 0; i < frame_size_samples; i++) {
-                        float sample = frame_data[i];
-                        // 限制范围到 [-1.0, 1.0]
-                        sample = (std::max)(-1.0f, (std::min)(1.0f, sample));
-                        pcm16_data[i] = static_cast<int16_t>(sample * 32767.0f);
-                    }
-                    fwrite(pcm16_data.data(), sizeof(int16_t), pcm16_data.size(), pcm_file);
-                    pcm_frame_count++;
-                    if (pcm_frame_count == 100) {
-                        fclose(pcm_file);
-                        pcm_file = nullptr;
-                        LOG_INFO("[WASAPICapturer] Saved 100 frames (16-bit PCM) to PCM file");
-                    }
-                }
+                //static FILE* pcm_file = nullptr;
+                //static int pcm_frame_count = 0;
+                //if (!pcm_file && pcm_frame_count == 0) {
+                //    pcm_file = fopen("D:\\test_mic.pcm", "wb");
+                //    if (pcm_file) {
+                //        LOG_INFO("[WASAPICapturer] Opened PCM file for writing (16-bit PCM)");
+                //    }
+                //}
+                //if (pcm_file && pcm_frame_count < 100) {
+                //    // 将 float 数据转换为 16-bit PCM
+                //    std::vector<int16_t> pcm16_data(frame_size_samples);
+                //    for (size_t i = 0; i < frame_size_samples; i++) {
+                //        float sample = frame_data[i];
+                //        // 限制范围到 [-1.0, 1.0]
+                //        sample = (std::max)(-1.0f, (std::min)(1.0f, sample));
+                //        pcm16_data[i] = static_cast<int16_t>(sample * 32767.0f);
+                //    }
+                //    fwrite(pcm16_data.data(), sizeof(int16_t), pcm16_data.size(), pcm_file);
+                //    pcm_frame_count++;
+                //    if (pcm_frame_count == 100) {
+                //        fclose(pcm_file);
+                //        pcm_file = nullptr;
+                //        LOG_INFO("[WASAPICapturer] Saved 100 frames (16-bit PCM) to PCM file");
+                //    }
+                //}
 
                 // 计算 PTS（基于累计样本数）
                 // PTS = total_samples / sample_rate * 1000000000 (纳秒)

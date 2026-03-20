@@ -5,6 +5,7 @@
 #include <QPixmap>
 #include <QIcon>
 #include <QLabel>
+#include <QEvent>
 
 namespace live_assistant {
 
@@ -61,6 +62,24 @@ SceneItemRow::SceneItemRow(std::shared_ptr<SceneItem> item, const QString& displ
         b->setIconSize(QSize(16, 16));
         b->setAutoRaise(true);
         b->setToolTip(tip);
+        b->setStyleSheet(
+            "QToolButton {"
+            "  background: transparent;"
+            "  border: none;"
+            "  border-radius: 3px;"
+            "  padding: 2px;"
+            "}"
+            "QToolButton:hover {"
+            "  background: #e0e0e0;"
+            "}"
+            "QToolButton:pressed {"
+            "  background: #d0d0d0;"
+            "}"
+            "QToolButton:disabled {"
+            "  background: transparent;"
+            "  opacity: 0.5;"
+            "}"
+        );
         return b;
     };
 
@@ -70,10 +89,54 @@ SceneItemRow::SceneItemRow(std::shared_ptr<SceneItem> item, const QString& displ
         b->setIconSize(QSize(16, 16));
         b->setAutoRaise(true);
         b->setToolTip(tip);
+        b->setStyleSheet(
+            "QToolButton {"
+            "  background: transparent;"
+            "  border: none;"
+            "  border-radius: 3px;"
+            "  padding: 2px;"
+            "}"
+            "QToolButton:hover {"
+            "  background: #e0e0e0;"
+            "}"
+            "QToolButton:pressed {"
+            "  background: #d0d0d0;"
+            "}"
+            "QToolButton:disabled {"
+            "  background: transparent;"
+            "  opacity: 0.5;"
+            "}"
+        );
         return b;
     };
 
-    btnUp_  = make_btn(QStyle::SP_ArrowUp,                tr("向上一层"));
+    // 向上按钮 - 使用自定义图标并添加悬浮效果
+    btnUp_ = new QToolButton(this);
+    btnUp_->setIcon(QIcon(":/images/arrow_up.svg"));
+    btnUp_->setIconSize(QSize(16, 16));
+    btnUp_->setAutoRaise(true);
+    btnUp_->setToolTip(tr("向上一层"));
+    btnUp_->setStyleSheet(
+        "QToolButton {"
+        "  background: transparent;"
+        "  border: none;"
+        "  border-radius: 3px;"
+        "  padding: 2px;"
+        "}"
+        "QToolButton:hover {"
+        "  background: #e0e0e0;"
+        "}"
+        "QToolButton:pressed {"
+        "  background: #d0d0d0;"
+        "}"
+        "QToolButton:disabled {"
+        "  background: transparent;"
+        "  opacity: 0.5;"
+        "}"
+    );
+    // 安装事件过滤器来处理悬浮图标切换
+    btnUp_->installEventFilter(this);
+    
     btnEye_ = make_btn(QStyle::SP_DialogYesButton,        tr("显示/隐藏"));
     btnSet_ = make_icon_btn(":/images/Setting.png",       tr("设置"));
     btnDel_ = make_icon_btn(":/images/Delete.png",        tr("删除"));
@@ -107,6 +170,20 @@ void SceneItemRow::update_eye_icon() {
                         ":/images/Preview-open(1).png" : 
                         ":/images/Preview-close(1).png";
     btnEye_->setIcon(QIcon(icon_path));
+}
+
+bool SceneItemRow::eventFilter(QObject* obj, QEvent* event) {
+    // 处理向上按钮的悬浮图标切换
+    if (obj == btnUp_) {
+        if (event->type() == QEvent::Enter) {
+            btnUp_->setIcon(QIcon(":/images/arrow_up_hover.svg"));
+            return false;
+        } else if (event->type() == QEvent::Leave) {
+            btnUp_->setIcon(QIcon(":/images/arrow_up.svg"));
+            return false;
+        }
+    }
+    return QWidget::eventFilter(obj, event);
 }
 
 } // namespace live_assistant

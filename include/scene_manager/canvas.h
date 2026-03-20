@@ -97,6 +97,7 @@ private:
     // 辅助方法
     std::shared_ptr<SceneItem> hit_test(int x, int y) const;
     bool is_in_resize_handle(int x, int y, const Transform& transform) const;
+    bool is_in_resize_handle(int x, int y, const Transform& transform, int& handle_index) const;
     bool is_in_camera_resize_handle(int x, int y, int& handle_index) const;
     bool is_in_camera_resize_handle(int x, int y) const;
     void update_mouse_cursor(QMouseEvent *event);  

@@ -22,10 +22,20 @@ public:
 
 private:
     void worker_loop();
+    void cleanup_dib();
 
     CaptureConfig config_;
     std::atomic<bool> running_{false};
     std::thread worker_;
+
+    // Cached DIB resources
+    int cached_width_ = 0;
+    int cached_height_ = 0;
+    void* cached_bits_ = nullptr;
+    HDC cached_hdc_mem_ = nullptr;
+    HBITMAP cached_hbitmap_ = nullptr;
+    HBITMAP cached_old_bitmap_ = nullptr;
+    HDC cached_hdc_window_ = nullptr;
 };
 
 } // namespace live_assistant

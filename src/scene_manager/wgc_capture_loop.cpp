@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -159,31 +161,21 @@ void WGCCaptureLoop::stop()
     if (!running_.exchange(false)) return;
     stopping_ = true;
 
-    // Make sure we wake the message loop.
+    // No message loop to wake - just wait for thread to exit
     if (worker_.joinable()) {
-        PostThreadMessageW(::GetThreadId(static_cast<HANDLE>(worker_.native_handle())), WM_QUIT, 0, 0);
         worker_.join();
     }
 }
 
 bool WGCCaptureLoop::init_d3d()
 {
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    D3D_FEATURE_LEVEL fl;
-    winrt::com_ptr<ID3D11Device> dev;
-    winrt::com_ptr<ID3D11DeviceContext> ctx;
-
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-                                   nullptr, 0, D3D11_SDK_VERSION, dev.put(), &fl, ctx.put());
-    if (FAILED(hr)) {
-        LOG_ERROR("WGCCaptureLoop: D3D11CreateDevice failed");
+    // Use shared D3D device instead of creating per-instance
+    // Call device() to trigger initialization if not already done
+    auto& shared = SharedD3D11Device::instance();
+    if (!shared.device()) {
+        LOG_ERROR("WGCCaptureLoop: SharedD3D11Device initialization failed");
         return false;
     }
-
-    d3d_device_ = dev;
-    d3d_context_ = ctx;
-    winrt_device_ = CreateDirect3DDevice(d3d_device_.get());
-
     return true;
 }
 
@@ -216,14 +208,20 @@ bool WGCCaptureLoop::init_capture_objects()
 {
     last_size_ = item_.Size();
 
-    // Match Win32CaptureSample: swapchain + FramePool::Create
-    auto dxgiDevice = GetDXGIInterfaceFromObject<ID3D11Device>(winrt_device_);
-    dxgiDevice->GetImmediateContext(d3d_context_.put());
+    // Use shared D3D device
+    auto& shared = SharedD3D11Device::instance();
+    auto winrt_device = shared.winrt_device();
+    if (!winrt_device) {
+        LOG_ERROR("WGCCaptureLoop: Failed to get shared WinRT device");
+        return false;
+    }
+
+    auto dxgiDevice = GetDXGIInterfaceFromObject<ID3D11Device>(winrt_device);
 
     swapchain_ = CreateSwapChain(dxgiDevice.get(), static_cast<uint32_t>(last_size_.Width), static_cast<uint32_t>(last_size_.Height),
                                  static_cast<DXGI_FORMAT>(pixel_format_), 2);
 
-    frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::Create(winrt_device_, pixel_format_, 2, last_size_);
+    frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(winrt_device, pixel_format_, 2, last_size_);
     session_ = frame_pool_.CreateCaptureSession(item_);
     session_.IsCursorCaptureEnabled(cfg_.capture_cursor);
     session_.IsBorderRequired(cfg_.capture_border);
@@ -287,14 +285,14 @@ void WGCCaptureLoop::on_frame_arrived(
         winrt::check_hresult(swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(), backBuffer.put_void()));
 
         surfaceTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
-        d3d_context_->CopyResource(backBuffer.get(), surfaceTexture.get());
+        SharedD3D11Device::instance().context()->CopyResource(backBuffer.get(), surfaceTexture.get());
     }
 
     DXGI_PRESENT_PARAMETERS params{};
     swapchain_->Present1(1, 0, &params);
 
     if (resized) {
-        frame_pool_.Recreate(winrt_device_, pixel_format_, 2, last_size_);
+        frame_pool_.Recreate(SharedD3D11Device::instance().winrt_device(), pixel_format_, 2, last_size_);
         return;
     }
 
@@ -354,53 +352,60 @@ QImage WGCCaptureLoop::copy_texture_to_qimage(ID3D11Texture2D* src)
 
     if (desc.Width == 0 || desc.Height == 0) return {};
 
-    D3D11_TEXTURE2D_DESC stagingDesc = desc;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.MiscFlags = 0;
+    // Get shared device
+    auto& shared = SharedD3D11Device::instance();
+    auto d3d_device = shared.device();
+    auto d3d_context = shared.context();
+    if (!d3d_device || !d3d_context) return {};
 
-    winrt::com_ptr<ID3D11Texture2D> staging;
-    if (FAILED(d3d_device_->CreateTexture2D(&stagingDesc, nullptr, staging.put()))) {
-        return {};
+    // Reuse cached staging texture if size matches, otherwise recreate
+    if (!cached_staging_texture_ ||
+        cached_staging_width_ != desc.Width ||
+        cached_staging_height_ != desc.Height) {
+
+        D3D11_TEXTURE2D_DESC stagingDesc = desc;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
+
+        winrt::com_ptr<ID3D11Texture2D> newStaging;
+        if (FAILED(d3d_device->CreateTexture2D(&stagingDesc, nullptr, newStaging.put()))) {
+            return {};
+        }
+
+        cached_staging_texture_ = newStaging;
+        cached_staging_width_ = desc.Width;
+        cached_staging_height_ = desc.Height;
     }
 
-    d3d_context_->CopyResource(staging.get(), src);
+    d3d_context->CopyResource(cached_staging_texture_.get(), src);
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(d3d_context_->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+    if (FAILED(d3d_context->Map(cached_staging_texture_.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
         return {};
     }
 
-    // Surface is BGRA8 by default. Convert to RGBA8888 for Qt.
-    QImage img(desc.Width, desc.Height, QImage::Format_RGBA8888);
+    // D3D11 B8G8R8A8 format matches QImage::Format_ARGB32 on little-endian systems
+    // No color conversion needed - direct memory copy
+    QImage img(desc.Width, desc.Height, QImage::Format_ARGB32);
 
     const uint8_t* srcBytes = static_cast<const uint8_t*>(mapped.pData);
+    const uint32_t rowBytes = desc.Width * 4;
+
     for (uint32_t y = 0; y < desc.Height; ++y) {
-        const uint8_t* row = srcBytes + y * mapped.RowPitch;
-        uint8_t* out = img.scanLine(y);
-        for (uint32_t x = 0; x < desc.Width; ++x) {
-            uint8_t b = row[x * 4 + 0];
-            uint8_t g = row[x * 4 + 1];
-            uint8_t r = row[x * 4 + 2];
-            uint8_t a = row[x * 4 + 3];
-            out[x * 4 + 0] = r;
-            out[x * 4 + 1] = g;
-            out[x * 4 + 2] = b;
-            out[x * 4 + 3] = a;
-        }
+        memcpy(img.scanLine(y), srcBytes + y * mapped.RowPitch, rowBytes);
     }
 
-    d3d_context_->Unmap(staging.get(), 0);
+    d3d_context->Unmap(cached_staging_texture_.get(), 0);
     return img;
 }
 
 void WGCCaptureLoop::thread_proc()
 {
-    winrt::init_apartment(winrt::apartment_type::single_threaded);
+    // Use multi_threaded apartment for CreateFreeThreaded FramePool
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-    // Win32CaptureSample requires a DispatcherQueue when using FramePool::Create
-    // We'll create a hidden message window by running a message pump.
     LOG_INFO("WGCCaptureLoop thread started");
 
     if (!init_d3d() || !init_capture_item() || !init_capture_objects()) {
@@ -409,12 +414,12 @@ void WGCCaptureLoop::thread_proc()
     }
 
     session_.StartCapture();
-    LOG_INFO("WGCCaptureLoop: capture started");
+    LOG_INFO("WGCCaptureLoop: capture started (FreeThreaded mode)");
 
-    MSG msg;
-    while (!stopping_ && GetMessageW(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    // No message loop needed for FreeThreaded FramePool
+    // Just wait for stop signal
+    while (!stopping_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     // Cleanup

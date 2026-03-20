@@ -99,8 +99,9 @@ void Compositor::update_layer_image(const std::string& source_id, const QImage& 
         return;
     }
 
-    // 兼容旧接口：必须深拷贝（因为没有 VideoFrame 管理数据生命周期）
-    it->second.qimage = image.copy();
+    // 直接赋值，不再深拷贝
+    // Qt信号槽跨线程传递时已经做了拷贝，这里再拷贝是多余的
+    it->second.qimage = image;
 
     update();  // Trigger repaint
 }
@@ -116,6 +117,11 @@ void Compositor::update_layer_transform(const std::string& source_id, const QRec
 
     it->second.dest_rect = dest_rect;
     it->second.opacity = opacity;
+    LOG_INFO("Updated layer transform: " + source_id + " -> rect(" +
+             std::to_string(static_cast<int>(dest_rect.x())) + "," +
+             std::to_string(static_cast<int>(dest_rect.y())) + " " +
+             std::to_string(static_cast<int>(dest_rect.width())) + "x" +
+             std::to_string(static_cast<int>(dest_rect.height())) + ")");
     update();  // Trigger repaint
 }
 
@@ -165,9 +171,9 @@ QImage Compositor::render_to_image(int width, int height) {
         return {};
     }
 
-    // 直接使用 RGBA8888 格式，避免后续 convertToFormat() 的深拷贝
-    // 编码桥需要 RGBA8888 -> NV12 的转换，这样格式对齐可以省一次转换
-    QImage img(width, height, QImage::Format_RGBA8888);
+    // Use ARGB32 format to match WGC/BGRA output, avoiding format conversion
+    // sws_scale can handle ARGB32 -> NV12 conversion directly
+    QImage img(width, height, QImage::Format_ARGB32);
     img.fill(Qt::black);
 
     QPainter painter(&img);

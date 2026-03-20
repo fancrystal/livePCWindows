@@ -505,7 +505,7 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
     // 优先使用 Compositor（如果所有源都正确更新了帧到 Compositor）
     // ═══════════════════════════════════════════════════════════════════
     if (compositor_) {
-        // 直接获取 RGBA8888 格式的图像（render_to_image 已优化为 RGBA8888）
+        // Use ARGB32 format to match WGC/BGRA output
         const QImage img = compositor_->render_to_image(width_, height_);
         if (!img.isNull()) {
             return convert_qimage_to_video_frame(img);
@@ -516,14 +516,14 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() 
     // 回退方案：使用 CanvasRenderer（能正确处理所有类型的源）
     // ═══════════════════════════════════════════════════════════════════
     if (canvas_renderer_ && current_scene_) {
-        QImage img(width_, height_, QImage::Format_RGBA8888);
+        QImage img(width_, height_, QImage::Format_ARGB32);
         img.fill(Qt::black);
-        
+
         QPainter painter(&img);
         QRect target_rect(0, 0, width_, height_);
         canvas_renderer_->render(painter, current_scene_, target_rect, nullptr);
         painter.end();
-        
+
         if (!img.isNull()) {
             return convert_qimage_to_video_frame(img);
         }
@@ -596,8 +596,9 @@ void* CompositorEncoderBridge::get_or_create_sws_context(int src_width, int src_
         LOG_INFO("SWS context released due to resolution change");
     }
 
+    // QImage::Format_ARGB32 is BGRA in memory (little-endian), use AV_PIX_FMT_BGRA
     SwsContext* sws = sws_getContext(
-        src_width, src_height, AV_PIX_FMT_RGBA,
+        src_width, src_height, AV_PIX_FMT_BGRA,
         src_width, src_height, AV_PIX_FMT_NV12,
         SWS_BILINEAR,
         nullptr, nullptr, nullptr);

@@ -16,6 +16,9 @@ public:
 
     void set_move_up_enabled(bool enabled);
 
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
 signals:
     void requestDelete(std::shared_ptr<SceneItem>);
     void requestSetting(std::shared_ptr<SceneItem>);
