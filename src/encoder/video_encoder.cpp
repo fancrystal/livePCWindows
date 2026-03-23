@@ -418,8 +418,9 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         // Only set x264-specific params when using libx264 (software) encoder.
         if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
             // ✅ 使用简单可靠的 x264-params
-            // 这些参数由 codec_ctx_->gop_size 和 codec_ctx_->keyint_min 控制
-            std::string x264_params = "ref=1:slice-max-size=400:slices=8:profile=baseline";
+            // 注意：不要设置 slice-max-size 和 slices 参数，让编码器自动处理
+            // 设置过小的 slice-max-size 会导致 slice 数量过多，服务器解码器无法处理
+            std::string x264_params = "ref=1:profile=baseline";
 
             // ✅ 禁用场景检测，严格按照 GOP 间隔生成 IDR 关键帧
             // scenecut=0 表示禁用场景检测，确保第一帧和每 GOP 帧都生成 IDR

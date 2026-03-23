@@ -924,14 +924,39 @@ void MainWindow::restore_capture_sources() {
             if (is_camera) {
                 cfg.type = CaptureConfig::TargetType::CAMERA;
                 cfg.target_id = device_id;
-                cfg.fps = 15;
-                // 从保存的参数中获取帧率和镜像设置
+
+                // 从保存的参数中获取配置
+                if (params.count("resolution")) {
+                    std::string resolution = params.at("resolution");
+                    size_t pos = resolution.find('x');
+                    if (pos != std::string::npos) {
+                        cfg.width = std::stoi(resolution.substr(0, pos));
+                        cfg.height = std::stoi(resolution.substr(pos + 1));
+                    }
+                }
                 if (params.count("fps")) {
                     cfg.fps = std::stoi(params.at("fps"));
+                } else {
+                    cfg.fps = 30;
+                }
+                if (params.count("pixel_format")) {
+                    cfg.pixel_format = string_to_pixel_format(params.at("pixel_format"));
+                } else {
+                    cfg.pixel_format = PixelFormat::YUY2;
+                }
+                if (params.count("capture_mode")) {
+                    cfg.capture_mode = string_to_capture_mode(params.at("capture_mode"));
+                } else {
+                    cfg.capture_mode = CaptureMode::FFMPEG;  // 默认 FFmpeg
                 }
                 if (params.count("mirror")) {
                     cfg.mirror = (params.at("mirror") == "true");
                 }
+
+                LOG_INFO("恢复摄像头配置: resolution=" + cfg.resolution_string() +
+                         ", fps=" + std::to_string(cfg.fps) +
+                         ", pixel_format=" + pixel_format_to_string(cfg.pixel_format) +
+                         ", capture_mode=" + capture_mode_to_string(cfg.capture_mode));
             } else if (is_screen) {
                 // 判断是屏幕还是窗口
                 bool is_screen_mode = true;
@@ -1812,6 +1837,29 @@ void MainWindow::setupBottomButtonsStyle() {
         }
     )";
 
+    // 设置: #9C27B0 -> #E040FB (紫色)
+    QString settingsStyle = R"(
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #9C27B0, stop:1 #E040FB);
+            color: white;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: bold;
+            min-width: 80px;
+            min-height: 28px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #AB47BC, stop:1 #E91E63);
+        }
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                        stop:0 #7B1FA2, stop:1 #C2185B);
+        }
+    )";
+
     // 应用不同的样式并连接点击事件
     if (ui->pushButton_shareScreen) {
         ui->pushButton_shareScreen->setStyleSheet(shareScreenStyle);
@@ -1831,6 +1879,9 @@ void MainWindow::setupBottomButtonsStyle() {
     }
     if (ui->pushButton_insertVideo) {
         ui->pushButton_insertVideo->setStyleSheet(insertVideoStyle);
+    }
+    if (ui->pushButton_settings) {
+        ui->pushButton_settings->setStyleSheet(settingsStyle);
     }
     
     LOG_INFO("Bottom buttons styles applied with different colors");
@@ -2117,7 +2168,7 @@ void MainWindow::show_camera_selector() {
     LOG_INFO("开始获取可用摄像头列表");
     auto camera_choices = video_engine_->get_available_camera_choices();
     LOG_INFO("获取到 " + std::to_string(camera_choices.size()) + " 个摄像头设备");
-    
+
     if (camera_choices.empty()) {
         LOG_WARNING("No cameras found");
         QMessageBox::information(this, "提示", "未检测到摄像头设备");
@@ -2129,35 +2180,61 @@ void MainWindow::show_camera_selector() {
         LOG_INFO("摄像头设备: " + camera.display_name + " (DShow名称: " + camera.dshow_name + ")");
     }
 
-    CameraSettingsDialog dialog(this);
-    // 转换摄像头列表
-    std::vector<std::pair<std::string, std::string>> cameras;
-    for (const auto& choice : camera_choices) {
-        cameras.emplace_back(choice.display_name, choice.dshow_name);
+    // 检查当前是否有摄像头源在运行
+    std::string existing_camera_device_id;
+    bool has_running_camera = false;
+    if (capture_manager_) {
+        auto source_ids = capture_manager_->get_all_source_ids();
+        for (const auto& sid : source_ids) {
+            if (sid.rfind("camera_", 0) == 0) {
+                has_running_camera = true;
+                LOG_INFO("找到已有摄像头源在运行: " + sid);
+                break;
+            }
+        }
     }
-    dialog.set_available_cameras(cameras);
-    dialog.set_resolution("640x360");
-    dialog.set_fps(30);
-    dialog.set_pixel_format("PIXEL_FORMAT_YUY2");
-    dialog.start_preview();
+
+    CameraSettingsDialog dialog(this);
+
+    // 如果已经有摄像头在运行，禁用预览功能避免冲突
+    if (has_running_camera) {
+        LOG_INFO("已有摄像头在运行，禁用预览功能");
+        dialog.set_preview_disabled(true);
+    }
+
+    // 使用新的接口传递摄像头信息（包含 OpenCV 索引）
+    std::vector<std::string> display_names;
+    std::vector<std::string> dshow_names;
+    std::vector<int> opencv_indices;
+    for (const auto& choice : camera_choices) {
+        display_names.push_back(choice.display_name);
+        dshow_names.push_back(choice.dshow_name);
+        opencv_indices.push_back(choice.opencv_index);
+    }
+    dialog.set_available_cameras_with_opencv(display_names, dshow_names, opencv_indices);
 
     if (dialog.exec() == QDialog::Accepted) {
-        const std::string camera_device_id = dialog.get_camera_device_id();
-        QString selected_camera = QString::fromStdString(dialog.get_camera_name());
+        // 获取完整的采集配置
+        CaptureConfig capture_cfg = dialog.get_capture_config();
 
-        std::string resolution = dialog.get_resolution();
-        int fps = dialog.get_fps();
-        std::string pixel_format = dialog.get_pixel_format();
-        bool mirror = dialog.is_mirror();
+        const std::string camera_device_id = capture_cfg.target_id;
+        QString selected_camera = QString::fromStdString(capture_cfg.display_name);
+        int opencv_index = capture_cfg.opencv_index;
 
-        LOG_INFO("选中摄像头: " + selected_camera.toStdString() + " (ID: " + camera_device_id + ")");
-        LOG_INFO("摄像头参数 - 分辨率: " + resolution + ", 帧率: " + std::to_string(fps) + ", 像素格式: " + pixel_format + ", 镜像: " + (mirror ? "开启" : "关闭"));
+        LOG_INFO("选中摄像头: " + selected_camera.toStdString() +
+                 ", OpenCV index: " + std::to_string(opencv_index));
+        LOG_INFO("摄像头参数 - 分辨率: " + capture_cfg.resolution_string() +
+                 ", 帧率: " + std::to_string(capture_cfg.fps) +
+                 ", 像素格式: " + pixel_format_to_string(capture_cfg.pixel_format) +
+                 ", 采集模式: " + capture_mode_to_string(capture_cfg.capture_mode) +
+                 ", 镜像: " + (capture_cfg.mirror ? "开启" : "关闭"));
 
         if (video_engine_) {
-            video_engine_->set_camera_resolution(resolution);
-            video_engine_->set_camera_fps(fps);
-            video_engine_->set_camera_pixel_format(pixel_format);
-            video_engine_->set_camera_mirror(mirror);
+            video_engine_->set_camera_resolution(capture_cfg.resolution_string());
+            video_engine_->set_camera_fps(capture_cfg.fps);
+            video_engine_->set_camera_pixel_format(pixel_format_to_string(capture_cfg.pixel_format));
+            video_engine_->set_camera_mirror(capture_cfg.mirror);
+            video_engine_->set_capture_mode(capture_cfg.capture_mode);
         }
 
         if (camera_device_id.empty()) {
@@ -2165,17 +2242,45 @@ void MainWindow::show_camera_selector() {
             QMessageBox::warning(this, "错误", "摄像头设备标识无效");
             return;
         }
-        on_select_camera(selected_camera, camera_device_id);
+
+        // 检查是否已有该摄像头源
+        const std::string source_id = "camera_" + std::to_string(std::hash<std::string>{}(camera_device_id));
+        if (capture_manager_ && capture_manager_->has_source(source_id)) {
+            LOG_INFO("该摄像头已在使用中，无需重新添加");
+            QMessageBox::information(this, "提示", "该摄像头已在使用中");
+            return;
+        }
+
+        // 尝试从对话框获取预览源（复用已打开的摄像头）
+        auto preview_source = dialog.take_preview_source();
+        if (preview_source) {
+            LOG_INFO("复用对话框已打开的摄像头源");
+            // 使用对话框创建的预览源
+            on_select_camera_with_source(selected_camera, capture_cfg, preview_source);
+        } else {
+            // 对话框没有创建新源，需要创建
+            LOG_INFO("创建新的摄像头源");
+            on_select_camera(selected_camera, capture_cfg);
+        }
     }
+    // 如果取消，对话框的析构函数会自动清理临时预览源
 }
 
-void MainWindow::on_select_camera(const QString& camera_name, const std::string& camera_device_id) {
-    LOG_INFO("Selected camera: '" + camera_name.toStdString() + "' with device_id: " + camera_device_id);
+void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfig& config) {
+    LOG_INFO("Selected camera: '" + camera_name.toStdString() +
+             "' mode=" + capture_mode_to_string(config.capture_mode));
 
     if (!capture_manager_) {
         LOG_ERROR("采集管理器未初始化");
         QMessageBox::warning(this, "错误", "采集管理器未初始化");
         return;
+    }
+
+    // 使用配置中的设备 ID
+    std::string camera_device_id = config.target_id;
+    if (config.capture_mode == CaptureMode::OPENCV) {
+        // OpenCV 模式使用索引
+        camera_device_id = std::to_string(config.opencv_index);
     }
 
     // Use a hash of the unique device_id as the source_id to ensure stability and prevent illegal characters.
@@ -2189,20 +2294,18 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
         return;
     }
 
-    // Get current mirror setting from video engine
-    bool mirror = false;
-    if (video_engine_) {
-        mirror = video_engine_->get_camera_mirror();
-    }
+    // 使用传入的配置
+    CaptureConfig cfg = config;
+    cfg.target_id = camera_device_id;
 
-    LOG_INFO("创建摄像头采集配置");
-    CaptureConfig cfg;
-    cfg.type = CaptureConfig::TargetType::CAMERA;
-    cfg.target_id = camera_device_id; // Use dshow device_name
-    cfg.display_name = camera_name.toStdString(); // Friendly display name
-    cfg.fps = 15; // 降低帧率以减少主线程处理负担
-    cfg.mirror = mirror; // Apply mirror setting
-    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id + ", 显示名=" + cfg.display_name + ", 帧率=" + std::to_string(cfg.fps) + ", 镜像=" + (mirror ? "开启" : "关闭"));
+    LOG_INFO("采集配置: 类型=CAMERA, 目标ID=" + cfg.target_id +
+             ", 显示名=" + cfg.display_name +
+             ", 分辨率=" + cfg.resolution_string() +
+             ", 帧率=" + std::to_string(cfg.fps) +
+             ", 像素格式=" + pixel_format_to_string(cfg.pixel_format) +
+             ", 采集模式=" + capture_mode_to_string(cfg.capture_mode) +
+             ", 镜像=" + (cfg.mirror ? "开启" : "关闭") +
+             ", OpenCV索引=" + std::to_string(cfg.opencv_index));
 
     LOG_INFO("调用CaptureFactory::create_capture_source创建采集源");
     std::shared_ptr<ICaptureSource> src;
@@ -2385,10 +2488,26 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
 
                 // 保存摄像头参数
                 std::unordered_map<std::string, std::string> params;
-                params["resolution"] = "640x360";  // 可以从 dialog 获取实际值
-                params["fps"] = "15";
-                params["pixel_format"] = "YUY2";
-                params["mirror"] = mirror ? "true" : "false";
+
+                // 从 video_engine_ 获取当前配置
+                if (video_engine_) {
+                    params["resolution"] = video_engine_->get_camera_resolution();
+                    params["fps"] = std::to_string(video_engine_->get_camera_fps());
+                    params["pixel_format"] = video_engine_->get_camera_pixel_format();
+                    params["capture_mode"] = capture_mode_to_string(video_engine_->get_capture_mode());
+                } else {
+                    params["resolution"] = "640x360";
+                    params["fps"] = "30";
+                    params["pixel_format"] = "YUY2";
+                    params["capture_mode"] = "FFMPEG";
+                }
+                params["mirror"] = config.mirror ? "true" : "false";
+
+                // 保存 FFmpeg 设备 ID（Friendly Name）和 OpenCV 索引
+                params["ffmpeg_device_id"] = camera_device_id;  // FFmpeg 用 Friendly Name
+                // OpenCV 索引需要从 capture_cfg 获取，但这里没有
+                // 暂时保存 camera_device_id，恢复时如果是 OpenCV 模式会重新枚举
+                params["opencv_index"] = "0";  // 默认索引
                 added_item->set_source_params(params);
 
                 // 使用canvas_config_的逻辑尺寸，确保视频源初始尺寸合理
@@ -2426,6 +2545,139 @@ void MainWindow::on_select_camera(const QString& camera_name, const std::string&
         return;
     }
     LOG_INFO("摄像头采集源启动成功: " + source_id);
+}
+
+void MainWindow::on_select_camera_with_source(const QString& camera_name, const CaptureConfig& config, std::shared_ptr<ICaptureSource> existing_source) {
+    LOG_INFO("on_select_camera_with_source: '" + camera_name.toStdString() +
+             "' mode=" + capture_mode_to_string(config.capture_mode));
+
+    if (!capture_manager_) {
+        LOG_ERROR("采集管理器未初始化");
+        QMessageBox::warning(this, "错误", "采集管理器未初始化");
+        return;
+    }
+
+    // 使用配置中的设备 ID
+    std::string camera_device_id = config.target_id;
+    if (config.capture_mode == CaptureMode::OPENCV) {
+        camera_device_id = std::to_string(config.opencv_index);
+    }
+
+    const std::string source_id = "camera_" + std::to_string(std::hash<std::string>{}(camera_device_id));
+    LOG_INFO("生成的源ID: " + source_id);
+
+    // 检查是否已存在
+    if (capture_manager_->has_source(source_id)) {
+        LOG_INFO("该摄像头已在使用中: " + source_id);
+        QMessageBox::information(this, "提示", "该摄像头已在使用中");
+        return;
+    }
+
+    if (!existing_source) {
+        LOG_ERROR("提供的采集源无效");
+        QMessageBox::warning(this, "错误", "提供的采集源无效");
+        return;
+    }
+
+    // 连接frameReady信号到Compositor的槽函数
+    LOG_INFO("连接frameReady信号到Compositor的槽函数");
+    connect(existing_source.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
+        LOG_DEBUG("[DIAG] 收到frameReady信号，源ID: " + source_id);
+
+        // 更新compositor（用于推流）
+        if (compositor_ && !frame.image.isNull()) {
+            if (!compositor_->has_layer(source_id)) {
+                compositor_->add_layer(source_id);
+
+                // 同步正确的图层顺序和transform
+                if (scene_manager_ && scene_manager_->get_current_scene()) {
+                    auto scene = scene_manager_->get_current_scene();
+                    auto items = scene->get_all_scene_items();
+                    for (auto& item : items) {
+                        if (item && item->get_source_id() == source_id) {
+                            compositor_->set_layer_order(source_id, item->get_order());
+                            const auto& tr = item->get_transform();
+                            int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
+                            int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
+                            compositor_->update_layer_transform(source_id,
+                                QRectF(tr.x, tr.y, w, h), tr.opacity);
+                            compositor_->set_layer_visible(source_id, item->is_visible());
+                            break;
+                        }
+                    }
+                }
+            }
+            compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
+        }
+
+        // 更新 CameraSource（用于预览显示）
+        if (scene_manager_ && scene_manager_->get_current_scene()) {
+            auto scene = scene_manager_->get_current_scene();
+            auto items = scene->get_all_scene_items();
+            for (auto& item : items) {
+                if (item && item->get_source_id() == source_id) {
+                    auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
+                    if (cameraSrc) {
+                        cameraSrc->push_frame(frame.image);
+                    }
+                    break;
+                }
+            }
+        }
+    }, Qt::QueuedConnection);
+    LOG_INFO("信号槽连接成功");
+
+    // 将采集源添加到采集管理器
+    LOG_INFO("将采集源添加到采集管理器: " + source_id);
+    capture_manager_->add_source(source_id, existing_source);
+    LOG_INFO("采集源添加成功");
+
+    // 将摄像头源添加到场景中
+    if (scene_manager_ && scene_manager_->get_current_scene()) {
+        LOG_INFO("将摄像头源添加到场景中");
+        auto scene = scene_manager_->get_current_scene();
+        auto camera_source = SourceFactory::create_camera_source(source_id, camera_name.toStdString());
+        LOG_INFO("初始化场景摄像头源");
+        camera_source->initialize();
+        LOG_INFO("启动场景摄像头源");
+        camera_source->start();
+        LOG_INFO("添加到场景");
+        auto added_item = scene->add_source(camera_source);
+        if (added_item) {
+            // 保存设备ID和参数
+            added_item->set_device_id(camera_device_id);
+            added_item->set_display_name(camera_name.toStdString());
+
+            // 保存摄像头参数
+            std::unordered_map<std::string, std::string> params;
+            params["resolution"] = config.resolution_string();
+            params["fps"] = std::to_string(config.fps);
+            params["pixel_format"] = pixel_format_to_string(config.pixel_format);
+            params["capture_mode"] = capture_mode_to_string(config.capture_mode);
+            params["mirror"] = config.mirror ? "true" : "false";
+            params["ffmpeg_device_id"] = config.target_id;
+            params["opencv_index"] = std::to_string(config.opencv_index);
+            added_item->set_source_params(params);
+
+            int canvas_w = canvas_config_.get_width();
+            int canvas_h = canvas_config_.get_height();
+            int w = canvas_w / 2;
+            int h = canvas_h / 2;
+            int x = (canvas_w - w) / 2;
+            int y = (canvas_h - h) / 2;
+
+            Transform tr(x, y, w, h, 0.0f, 1.0f, config.mirror);
+            scene->set_transform(added_item, tr);
+
+            added_item->set_order(9999);
+            scene->normalize_orders();
+        }
+        LOG_INFO("更新场景项并同步到Compositor");
+        update_scene_items();
+        LOG_INFO("Added camera source to scene: " + camera_name.toStdString() + ", id=" + source_id);
+    }
+
+    LOG_INFO("摄像头采集源复用成功: " + source_id);
 }
 
 void MainWindow::start_camera_preview() {
@@ -3105,23 +3357,23 @@ void MainWindow::show_scene_item_settings(int index) {
         LOG_ERROR("Scene manager or current scene not initialized");
         return;
     }
-    
+
     auto scene = scene_manager_->get_current_scene();
     auto items = scene->get_all_scene_items();
     if (index < 0 || index >= static_cast<int>(items.size())) {
         return;
     }
-    
+
     auto item = items[index];
     auto source = item->get_source();
     if (!source) {
         QMessageBox::information(this, "提示", "设置功能开发中...");
         return;
     }
-    
+
     std::string source_id = source->get_id();
     QString source_type = QString::fromStdString(source->get_metadata());
-    
+
     // 检查是否是摄像头源
     if (QString::fromStdString(source_id).startsWith("camera_")) {
         // 打开设置面板并切换到摄像头页面
@@ -3131,48 +3383,69 @@ void MainWindow::show_scene_item_settings(int index) {
         }
 
         SettingsPanel dlg(this, SettingsTab::Camera);
-        
+
         // 设置视频配置
         dlg.set_video_config(encoder_->get_video_config());
-        
+
         // 设置音频配置
         dlg.set_audio_config(encoder_->get_audio_config());
-        
+
         // 设置麦克风列表
-        dlg.set_available_microphones(audio_engine_->get_available_microphones(), 
+        dlg.set_available_microphones(audio_engine_->get_available_microphones(),
                                        audio_engine_->get_selected_microphone_id());
-        
+
         // 设置扬声器列表
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
                                     audio_engine_->get_selected_speaker_id());
-        
-        // 设置摄像头列表并选中当前摄像头
+
+        // 设置摄像头列表
         auto camera_choices = video_engine_->get_available_camera_choices();
         dlg.set_available_cameras(camera_choices);
-        
+
         // 获取当前摄像头配置
-        // 从当前SceneItem的Transform中读取镜像状态
-        bool current_mirror = false;
+        std::string current_resolution = video_engine_->get_camera_resolution();
+        int current_fps = video_engine_->get_camera_fps();
+        bool current_mirror = video_engine_->get_camera_mirror();
+
+        // 从 SceneItem 的 Transform 中读取镜像状态
         auto current_transform = item->get_transform();
         current_mirror = current_transform.mirror;
-        
-        // 设置摄像头配置（使用当前的镜像状态）
-        dlg.set_camera_config(source_id, "1280x720", 30, current_mirror);
-        
+
+        // 设置摄像头配置（使用当前的实际配置）
+        dlg.set_camera_config(source_id, current_resolution, current_fps, current_mirror);
+
         if (dlg.exec() == QDialog::Accepted) {
             // 应用通用设置
             applySettingsPanelChanges(dlg);
-            
-            // 摄像头特定处理
-            const std::string camera_id = dlg.get_selected_camera_id();
-            
-            // 如果摄像头改变了，需要重新初始化摄像头
-            if (camera_id != source_id) {
-                // 提示用户需要重新添加摄像头
-                QMessageBox::information(this, "提示", 
-                    "摄像头已更改，需要重新添加摄像头。\n请删除当前摄像头后重新添加。");
+
+            // 获取新的摄像头配置
+            std::string new_resolution = dlg.get_camera_resolution();
+            int new_fps = dlg.get_camera_fps();
+            bool new_mirror = dlg.is_camera_mirror();
+
+            LOG_INFO("摄像头设置更新 - 分辨率: " + new_resolution +
+                     ", 帧率: " + std::to_string(new_fps) +
+                     ", 镜像: " + (new_mirror ? "开启" : "关闭"));
+
+            // 更新 video_engine 配置
+            video_engine_->set_camera_resolution(new_resolution);
+            video_engine_->set_camera_fps(new_fps);
+            video_engine_->set_camera_mirror(new_mirror);
+
+            // 更新镜像显示
+            if (current_mirror != new_mirror) {
+                auto transform = item->get_transform();
+                transform.mirror = new_mirror;
+                item->set_transform(transform);
             }
-            
+
+            // 如果分辨率或帧率改变了，提示用户
+            if (new_resolution != current_resolution || new_fps != current_fps) {
+                QMessageBox::information(this, "提示",
+                    "分辨率或帧率已更改，需要重新添加摄像头才能生效。\n"
+                    "如需应用这些更改，请删除当前摄像头后重新添加。");
+            }
+
             LOG_INFO("Camera settings updated for source: " + source_id);
         }
     } else {

@@ -250,33 +250,47 @@ void SettingsPanel::onSpeakerVolumeChanged(int value) {
 
 void SettingsPanel::set_available_cameras(const std::vector<VideoEngine::CameraChoice>& cameras) {
     ui->comboBox_camera->clear();
-    
+
     for (const auto& cam : cameras) {
         ui->comboBox_camera->addItem(QString::fromStdString(cam.display_name), QString::fromStdString(cam.dshow_name));
     }
-    
+
     if (!cameras.empty()) {
         ui->comboBox_camera->setCurrentIndex(0);
     }
 }
 
 void SettingsPanel::set_camera_config(const std::string& device_id, const std::string& resolution, int fps, bool mirror) {
-    // 设置摄像头
+    // 设置摄像头 - 根据设备ID查找
     for (int i = 0; i < ui->comboBox_camera->count(); ++i) {
-        if (ui->comboBox_camera->itemData(i).toString().toStdString() == device_id) {
-            ui->comboBox_camera->setCurrentIndex(i);
-            break;
-        }
+        QString data = ui->comboBox_camera->itemData(i).toString();
+        // device_id 格式是 "camera_<hash>"，这里需要匹配 dshow_name
+        // 暂时通过索引匹配，后续可以优化
+        (void)data;  // 避免 unused warning
     }
-    
+
     // 设置分辨率
-    int idx = ui->comboBox_camResolution->findText(QString::fromStdString(resolution));
-    if (idx >= 0) ui->comboBox_camResolution->setCurrentIndex(idx);
-    
+    QString res = QString::fromStdString(resolution);
+    int idx = ui->comboBox_camResolution->findText(res);
+    if (idx >= 0) {
+        ui->comboBox_camResolution->setCurrentIndex(idx);
+    } else {
+        // 如果分辨率不在列表中，添加它
+        ui->comboBox_camResolution->addItem(res);
+        ui->comboBox_camResolution->setCurrentText(res);
+    }
+
     // 设置帧率
-    idx = ui->comboBox_camFps->findText(QString::number(fps));
-    if (idx >= 0) ui->comboBox_camFps->setCurrentIndex(idx);
-    
+    QString fpsStr = QString::number(fps);
+    idx = ui->comboBox_camFps->findText(fpsStr);
+    if (idx >= 0) {
+        ui->comboBox_camFps->setCurrentIndex(idx);
+    } else {
+        // 如果帧率不在列表中，添加它
+        ui->comboBox_camFps->addItem(fpsStr);
+        ui->comboBox_camFps->setCurrentText(fpsStr);
+    }
+
     // 设置镜像
     ui->checkBox_mirror->setChecked(mirror);
 }

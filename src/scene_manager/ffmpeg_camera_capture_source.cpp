@@ -24,6 +24,12 @@ FFmpegCameraCaptureSource::~FFmpegCameraCaptureSource() {
 }
 
 bool FFmpegCameraCaptureSource::initialize() {
+    // 防止重复初始化
+    if (initialized_.load()) {
+        LOG_INFO("FFmpegCameraCaptureSource: already initialized, skipping");
+        return true;
+    }
+
     if (config_.type != CaptureConfig::TargetType::CAMERA) {
         LOG_ERROR("FFmpegCameraCaptureSource: invalid config type");
         return false;
@@ -51,15 +57,63 @@ bool FFmpegCameraCaptureSource::initialize() {
     if (config_.fps > 0) {
         av_dict_set(&options, "framerate", std::to_string(config_.fps).c_str(), 0);
     }
+    // 设置分辨率
+    if (config_.width > 0 && config_.height > 0) {
+        std::string video_size = std::to_string(config_.width) + "x" + std::to_string(config_.height);
+        av_dict_set(&options, "video_size", video_size.c_str(), 0);
+        LOG_INFO("FFmpegCameraCaptureSource: setting video_size to " + video_size);
+    }
+    // 设置像素格式（FFmpeg dshow 格式名称）
+    if (config_.pixel_format != PixelFormat::UNKNOWN) {
+        std::string pix_fmt = pixel_format_to_string(config_.pixel_format);
+        av_dict_set(&options, "pixel_format", pix_fmt.c_str(), 0);
+        LOG_INFO("FFmpegCameraCaptureSource: setting pixel_format to " + pix_fmt);
+    }
     // 设置超时选项，减少阻塞时间
     av_dict_set(&options, "rtbufsize", "10M", 0);
     av_dict_set(&options, "fflags", "nobuffer", 0);
     av_dict_set(&options, "flush_packets", "1", 0);
-    // 设置读取超时（500ms），以便能够及时响应停止信号
-    av_dict_set(&options, "timeout", "500000", 0); // 500ms in microseconds
-    
+
     int ret = avformat_open_input(&fmt, url.c_str(), const_cast<AVInputFormat*>(ifmt), &options);
     av_dict_free(&options);
+
+    // 如果指定了像素格式但打开失败，尝试不指定像素格式重新打开
+    if ((ret < 0 || !fmt) && config_.pixel_format != PixelFormat::UNKNOWN) {
+        LOG_WARNING("FFmpegCameraCaptureSource: failed with pixel_format, retrying without it");
+        options = nullptr;
+        if (config_.fps > 0) {
+            av_dict_set(&options, "framerate", std::to_string(config_.fps).c_str(), 0);
+        }
+        if (config_.width > 0 && config_.height > 0) {
+            std::string video_size = std::to_string(config_.width) + "x" + std::to_string(config_.height);
+            av_dict_set(&options, "video_size", video_size.c_str(), 0);
+        }
+        av_dict_set(&options, "rtbufsize", "10M", 0);
+        av_dict_set(&options, "fflags", "nobuffer", 0);
+        ret = avformat_open_input(&fmt, url.c_str(), const_cast<AVInputFormat*>(ifmt), &options);
+        av_dict_free(&options);
+    }
+
+    // 如果还是失败，尝试只指定帧率
+    if ((ret < 0 || !fmt) && config_.width > 0 && config_.height > 0) {
+        LOG_WARNING("FFmpegCameraCaptureSource: failed with resolution, retrying with defaults");
+        options = nullptr;
+        if (config_.fps > 0) {
+            av_dict_set(&options, "framerate", std::to_string(config_.fps).c_str(), 0);
+        }
+        av_dict_set(&options, "rtbufsize", "10M", 0);
+        ret = avformat_open_input(&fmt, url.c_str(), const_cast<AVInputFormat*>(ifmt), &options);
+        av_dict_free(&options);
+    }
+
+    // 最后尝试完全不指定任何参数
+    if (ret < 0 || !fmt) {
+        LOG_WARNING("FFmpegCameraCaptureSource: retrying with no parameters");
+        options = nullptr;
+        av_dict_set(&options, "rtbufsize", "10M", 0);
+        ret = avformat_open_input(&fmt, url.c_str(), const_cast<AVInputFormat*>(ifmt), &options);
+        av_dict_free(&options);
+    }
 
     if (ret < 0 || !fmt) {
         // 输出详细的 FFmpeg 错误信息
@@ -119,6 +173,7 @@ bool FFmpegCameraCaptureSource::initialize() {
     fmt_ctx_ = fmt;
     codec_ctx_ = cc;
     video_stream_index_ = vindex;
+    initialized_ = true;
 
     LOG_INFO("FFmpegCameraCaptureSource initialized: " + config_.target_id);
     return true;
@@ -179,6 +234,7 @@ bool FFmpegCameraCaptureSource::shutdown() {
     
 
     video_stream_index_ = -1;
+    initialized_ = false;
     return true;
 }
 

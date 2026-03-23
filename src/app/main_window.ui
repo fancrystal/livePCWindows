@@ -484,9 +484,12 @@
 										</widget>
 									</item>
 
-									<!-- 聊天互动区域 -->
+									<!-- 聊天互动区域 (暂时隐藏，待后续实现) -->
 									<item>
 										<widget class="QTabWidget" name="tabWidget_chat">
+											<property name="visible">
+												<bool>false</bool>
+											</property>
 											<widget class="QWidget" name="tab_chat">
 												<attribute name="title">
 													<string>聊天互动</string>
@@ -856,18 +859,6 @@
 									</item>
 									<item alignment="Qt::AlignVCenter">
 										<widget class="QPushButton" name="pushButton_settings">
-											<property name="minimumSize">
-												<size>
-													<width>80</width>
-													<height>28</height>
-												</size>
-											</property>
-											<property name="maximumSize">
-												<size>
-													<width>80</width>
-													<height>28</height>
-												</size>
-											</property>
 											<property name="text">
 												<string>设置</string>
 											</property>
@@ -882,9 +873,6 @@
 													<width>16</width>
 													<height>16</height>
 												</size>
-											</property>
-											<property name="styleSheet">
-												<string notr="true">QPushButton { padding: 0px; }</string>
 											</property>
 										</widget>
 									</item>

@@ -9,33 +9,57 @@ namespace live_assistant {
 
 std::shared_ptr<ICaptureSource> CaptureFactory::create_capture_source(const CaptureConfig& config) {
     if (config.type == CaptureConfig::TargetType::CAMERA) {
-        // Camera: use OpenCV directly (better device release/LED control on Windows)
-        LOG_INFO("CaptureFactory: creating OpenCVCameraCaptureSource for camera device: " + config.target_id);
+        // 根据 capture_mode 选择采集源
+        if (config.capture_mode == CaptureMode::OPENCV) {
+            // OpenCV 模式
+            LOG_INFO("CaptureFactory: creating OpenCVCameraCaptureSource for camera device: " + config.target_id);
 
-        try {
-            auto opencv_src = std::make_shared<OpenCVCameraCaptureSource>(config);
-            if (opencv_src->initialize()) {
-                LOG_INFO("CaptureFactory: OpenCVCameraCaptureSource initialized successfully");
-                return opencv_src;
+            try {
+                auto opencv_src = std::make_shared<OpenCVCameraCaptureSource>(config);
+                if (opencv_src->initialize()) {
+                    LOG_INFO("CaptureFactory: OpenCVCameraCaptureSource initialized successfully");
+                    return opencv_src;
+                }
+
+                LOG_WARNING("CaptureFactory: OpenCVCameraCaptureSource failed");
+            } catch (const std::exception& ex) {
+                LOG_ERROR("CaptureFactory: Exception during OpenCV camera source creation: " + std::string(ex.what()));
+            } catch (...) {
+                LOG_ERROR("CaptureFactory: Unknown exception during OpenCV camera source creation");
             }
 
-            LOG_WARNING("CaptureFactory: OpenCVCameraCaptureSource failed, trying FFmpeg as fallback");
+            return nullptr;
+        } else {
+            // FFmpeg 模式（默认）
+            LOG_INFO("CaptureFactory: creating FFmpegCameraCaptureSource for camera device: " + config.target_id +
+                     " resolution=" + std::to_string(config.width) + "x" + std::to_string(config.height) +
+                     " format=" + pixel_format_to_string(config.pixel_format));
 
-            // Fallback to FFmpeg if OpenCV fails
-            auto ffmpeg_src = std::make_shared<FFmpegCameraCaptureSource>(config);
-            if (ffmpeg_src->initialize()) {
-                LOG_INFO("CaptureFactory: FFmpegCameraCaptureSource initialized successfully as fallback");
-                return ffmpeg_src;
+            try {
+                auto ffmpeg_src = std::make_shared<FFmpegCameraCaptureSource>(config);
+                if (ffmpeg_src->initialize()) {
+                    LOG_INFO("CaptureFactory: FFmpegCameraCaptureSource initialized successfully");
+                    return ffmpeg_src;
+                }
+
+                LOG_WARNING("CaptureFactory: FFmpegCameraCaptureSource failed, trying OpenCV as fallback");
+
+                // Fallback to OpenCV if FFmpeg fails
+                auto opencv_src = std::make_shared<OpenCVCameraCaptureSource>(config);
+                if (opencv_src->initialize()) {
+                    LOG_INFO("CaptureFactory: OpenCVCameraCaptureSource initialized successfully as fallback");
+                    return opencv_src;
+                }
+
+                LOG_ERROR("CaptureFactory: Both FFmpeg and OpenCV failed to initialize camera");
+            } catch (const std::exception& ex) {
+                LOG_ERROR("CaptureFactory: Exception during camera source creation: " + std::string(ex.what()));
+            } catch (...) {
+                LOG_ERROR("CaptureFactory: Unknown exception during camera source creation");
             }
 
-            LOG_ERROR("CaptureFactory: Both OpenCV and FFmpeg failed to initialize camera");
-        } catch (const std::exception& ex) {
-            LOG_ERROR("CaptureFactory: Exception during camera source creation: " + std::string(ex.what()));
-        } catch (...) {
-            LOG_ERROR("CaptureFactory: Unknown exception during camera source creation");
+            return nullptr;
         }
-
-        return nullptr;
     }
 
     // Try WGC first, fallback to PrintWindow if WGC fails

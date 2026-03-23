@@ -8,6 +8,7 @@
 
 #include "common/error.h"
 #include "common/media_clock.h"
+#include "scene_manager/icapture_source.h"  // 使用统一的 CaptureMode 枚举
 
 namespace live_assistant {
 
@@ -35,16 +36,15 @@ struct VideoEngineConfig {
 
 class VideoEngine {
 public:
-    enum class CaptureMode {
-        FFMPEG,
-        OPENCV
-    };
+    // 使用 live_assistant::CaptureMode 枚举（在 icapture_source.h 中定义）
+    // 不再定义自己的 CaptureMode 枚举
 
     struct CameraChoice {
         std::string display_name;   // UI display
-        std::string dshow_name;     // FFmpeg dshow device_name
+        std::string dshow_name;     // FFmpeg dshow device_name (Friendly Name)
+        int opencv_index = -1;      // OpenCV camera index
     };
-    
+
     VideoEngine();
     ~VideoEngine();
 
@@ -53,7 +53,7 @@ public:
 
     bool start_capture();
     bool stop_capture();
-    
+
     // 获取可用视频设备（显示名）
     std::vector<std::string> get_available_cameras();
 

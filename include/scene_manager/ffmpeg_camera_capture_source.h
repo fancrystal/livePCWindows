@@ -28,6 +28,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_flag_{false};
+    std::atomic<bool> initialized_{false};
 
     std::thread th_;
 

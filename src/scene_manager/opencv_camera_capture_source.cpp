@@ -17,6 +17,12 @@ OpenCVCameraCaptureSource::~OpenCVCameraCaptureSource() {
 }
 
 bool OpenCVCameraCaptureSource::initialize() {
+    // 防止重复初始化
+    if (initialized_.load()) {
+        LOG_INFO("OpenCVCameraCaptureSource: already initialized, skipping");
+        return true;
+    }
+
     if (config_.type != CaptureConfig::TargetType::CAMERA) {
         LOG_ERROR("OpenCVCameraCaptureSource: invalid config type");
         return false;
@@ -84,7 +90,30 @@ bool OpenCVCameraCaptureSource::initialize() {
         cap->set(cv::CAP_PROP_FPS, static_cast<double>(config_.fps));
     }
 
+    // 设置分辨率
+    if (config_.width > 0 && config_.height > 0) {
+        cap->set(cv::CAP_PROP_FRAME_WIDTH, static_cast<double>(config_.width));
+        cap->set(cv::CAP_PROP_FRAME_HEIGHT, static_cast<double>(config_.height));
+        LOG_INFO("OpenCVCameraCaptureSource: setting resolution to " +
+                 std::to_string(config_.width) + "x" + std::to_string(config_.height));
+
+        // 验证实际分辨率
+        double actual_w = cap->get(cv::CAP_PROP_FRAME_WIDTH);
+        double actual_h = cap->get(cv::CAP_PROP_FRAME_HEIGHT);
+        LOG_INFO("OpenCVCameraCaptureSource: actual resolution is " +
+                 std::to_string(static_cast<int>(actual_w)) + "x" +
+                 std::to_string(static_cast<int>(actual_h)));
+    }
+
+    // OpenCV 不直接支持设置像素格式，但可以尝试设置 FOURCC
+    // MJPG 格式可以获得更高的帧率
+    if (config_.pixel_format == PixelFormat::MJPG) {
+        cap->set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+        LOG_INFO("OpenCVCameraCaptureSource: trying to set MJPG format");
+    }
+
     cap_ = cap;
+    initialized_ = true;
     LOG_INFO("OpenCVCameraCaptureSource initialized: index=" + std::to_string(index));
     return true;
 }
@@ -104,26 +133,38 @@ bool OpenCVCameraCaptureSource::start() {
 }
 
 bool OpenCVCameraCaptureSource::stop() {
-    if (!running_.load()) return true;
+    if (!running_.load()) {
+        LOG_INFO("OpenCVCameraCaptureSource::stop() - not running, skipping");
+        return true;
+    }
 
+    LOG_INFO("OpenCVCameraCaptureSource::stop() - stopping capture thread");
     stop_flag_ = true;
     if (th_.joinable()) {
         th_.join();
     }
 
     running_ = false;
+    LOG_INFO("OpenCVCameraCaptureSource::stop() - capture thread stopped");
     return true;
 }
 
 bool OpenCVCameraCaptureSource::shutdown() {
+    LOG_INFO("OpenCVCameraCaptureSource::shutdown() - cap_=" + std::string(cap_ ? "not null" : "null"));
     if (cap_) {
         auto* cap = static_cast<cv::VideoCapture*>(cap_);
-        if (cap->isOpened()) {
+        bool was_opened = cap->isOpened();
+        LOG_INFO("OpenCVCameraCaptureSource::shutdown() - was_opened=" + std::string(was_opened ? "true" : "false"));
+        if (was_opened) {
             cap->release();
+            LOG_INFO("OpenCVCameraCaptureSource::shutdown() - released VideoCapture");
         }
         delete cap;
         cap_ = nullptr;
+        LOG_INFO("OpenCVCameraCaptureSource::shutdown() - deleted VideoCapture object");
     }
+    initialized_ = false;
+    LOG_INFO("OpenCVCameraCaptureSource::shutdown() - complete, initialized_=false");
     return true;
 }
 

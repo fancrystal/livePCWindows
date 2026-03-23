@@ -18,6 +18,7 @@
 #include "common/system_monitor.h"
 #include "http/live_item.h"
 #include "media_pipeline/media_file_source.h"
+#include "scene_manager/icapture_source.h"
 
 class ExitDialog;
 class InsertVideoWidget;
@@ -42,6 +43,7 @@ class CaptureManagerIface;
 class Source;
 class SceneItem;
 class SettingsPanel;
+class ICaptureSource;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -85,7 +87,8 @@ private slots:
     void update_preview();
     void encode_and_push();
     void on_camera_button_clicked();
-    void on_select_camera(const QString& camera_name, const std::string& camera_device_id);
+    void on_select_camera(const QString& camera_name, const CaptureConfig& config);
+    void on_select_camera_with_source(const QString& camera_name, const CaptureConfig& config, std::shared_ptr<ICaptureSource> existing_source);
     void on_camera_frame_ready();
     void on_screen_share_button_clicked();
     void on_select_screen_share(const QString& target_name, bool is_screen_mode, int fps, const QString& resolution, bool capture_cursor, bool capture_border);

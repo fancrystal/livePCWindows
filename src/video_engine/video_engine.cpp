@@ -305,12 +305,15 @@ std::vector<VideoEngine::CameraChoice> VideoEngine::get_available_camera_choices
                     }
 
                     CameraChoice choice;
+                    // display_name 用于 UI 显示
                     choice.display_name = device->device_description ? device->device_description : "Unknown Device";
-                    choice.dshow_name = device->device_name ? device->device_name : "";
+                    // dshow_name 用于 FFmpeg 打开摄像头（需要用 Friendly Name，不是 DirectShow 路径）
+                    // FFmpeg dshow 格式: video="Friendly Name"
+                    choice.dshow_name = device->device_description ? device->device_description : "";
 
                     if (!choice.dshow_name.empty()) {
                         choices.push_back(choice);
-                        LOG_INFO("Found camera: '" + choice.display_name + "' with dshow name: " + choice.dshow_name);
+                        LOG_INFO("Found camera: '" + choice.display_name + "' (dshow_name for FFmpeg: " + choice.dshow_name + ")");
                     }
                 }
             }
@@ -328,11 +331,17 @@ std::vector<VideoEngine::CameraChoice> VideoEngine::get_available_camera_choices
                 if (cap.read(test_frame) && !test_frame.empty()) {
                     CameraChoice choice;
                     choice.display_name = "Camera " + std::to_string(i);
-                    choice.dshow_name = std::to_string(i); // Use index as dshow_name for OpenCV fallback
+                    choice.dshow_name = std::to_string(i);  // OpenCV 用索引
+                    choice.opencv_index = i;
                     choices.push_back(choice);
                     }
                     cap.release();
             }
+        }
+    } else {
+        // FFmpeg 枚举成功，为每个摄像头设置默认 OpenCV 索引
+        for (auto& choice : choices) {
+            choice.opencv_index = 0;  // 默认使用第一个摄像头
         }
     }
 
@@ -370,7 +379,7 @@ bool VideoEngine::set_capture_mode(CaptureMode mode) {
     return true;
 }
 
-VideoEngine::CaptureMode VideoEngine::get_capture_mode() const {
+CaptureMode VideoEngine::get_capture_mode() const {
     return capture_mode_;
 }
 

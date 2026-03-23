@@ -22,10 +22,11 @@ bool CaptureManagerIface::add_source(const std::string& source_id, std::shared_p
         LOG_WARNING("CaptureManagerIface: source exists: " + source_id);
         return false;
     }
-    if (!source->initialize()) {
-        LOG_ERROR("CaptureManagerIface: failed to initialize source: " + source_id);
-        return false;
-    }
+    // CaptureFactory::create_capture_source() 已经调用过 initialize()，这里不再重复调用
+    // if (!source->initialize()) {
+    //     LOG_ERROR("CaptureManagerIface: failed to initialize source: " + source_id);
+    //     return false;
+    // }
     sources_.emplace(source_id, source);
     LOG_INFO("CaptureManagerIface: added source: " + source_id);
     return true;
@@ -34,8 +35,14 @@ bool CaptureManagerIface::add_source(const std::string& source_id, std::shared_p
 bool CaptureManagerIface::remove_source(const std::string& source_id) {
     std::lock_guard<std::mutex> lk(mutex_);
     auto it = sources_.find(source_id);
-    if (it == sources_.end()) return false;
+    if (it == sources_.end()) {
+        LOG_WARNING("CaptureManagerIface: source not found for removal: " + source_id);
+        return false;
+    }
+    LOG_INFO("CaptureManagerIface: removing source: " + source_id);
+    LOG_INFO("CaptureManagerIface: calling stop() for: " + source_id);
     it->second->stop();
+    LOG_INFO("CaptureManagerIface: calling shutdown() for: " + source_id);
     it->second->shutdown();
     sources_.erase(it);
     LOG_INFO("CaptureManagerIface: removed source: " + source_id);

@@ -7,6 +7,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\add_material_dialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_capability_scanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_settings.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -217,6 +220,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\add_material_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_capability_scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_settings.h">

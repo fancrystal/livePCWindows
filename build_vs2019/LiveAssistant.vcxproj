@@ -839,6 +839,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\add_material_dialog.cpp" />
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_capability_scanner.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_settings.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\config.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\customwebengineview.cpp" />
@@ -906,6 +907,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\add_material_dialog.h" />
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_capability_scanner.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_settings.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\config.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\device_check_dialog.h" />

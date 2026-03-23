@@ -252,6 +252,57 @@ QStackedWidget { background-color: #2a2a2a; border: 1px solid #444444; border-ra
            </item>
           </layout>
          </item>
+         <!-- 采集模式 -->
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_captureMode">
+           <item>
+            <widget class="QLabel" name="label_captureMode">
+             <property name="text">
+              <string>采集模式</string>
+             </property>
+             <property name="minimumSize">
+              <size>
+               <width>80</width>
+               <height>0</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="comboBox_captureMode">
+             <property name="minimumSize">
+              <size>
+               <width>200</width>
+               <height>0</height>
+              </size>
+             </property>
+             <item>
+              <property name="text">
+               <string>FFmpeg</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>OpenCV</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_captureMode">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
          <!-- 分辨率 -->
          <item>
           <layout class="QHBoxLayout" name="horizontalLayout_resolution">
