@@ -10,6 +10,9 @@ extern "C" {
 }
 
 #include <cstdio>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 namespace live_assistant {
 
@@ -84,7 +87,7 @@ ErrorCode RTMPPusher::register_audio_stream(AVCodecParameters* codecpar, AVRatio
         LOG_ERROR("Failed to create audio stream");
         return ErrorCode::INIT_FAILED;
     }
-    
+
     if (avcodec_parameters_copy(audio_stream_->codecpar, codecpar) < 0) {
         LOG_ERROR("Failed to copy audio codec parameters");
         return ErrorCode::INIT_FAILED;
@@ -120,11 +123,38 @@ ErrorCode RTMPPusher::register_video_stream(AVCodecParameters* codecpar, AVRatio
         LOG_ERROR("Failed to create video stream");
         return ErrorCode::INIT_FAILED;
     }
-    
+
     if (avcodec_parameters_copy(video_stream_->codecpar, codecpar) < 0) {
         LOG_ERROR("Failed to copy video codec parameters");
         return ErrorCode::INIT_FAILED;
     }
+
+    // Validate/log H264 codecpar and extradata to ensure avcC is propagated.
+    LOG_INFO("[RTMP] Registered video stream:");
+    LOG_INFO("  - codec_id: " + std::to_string(video_stream_->codecpar->codec_id));
+    LOG_INFO("  - width: " + std::to_string(video_stream_->codecpar->width));
+    LOG_INFO("  - height: " + std::to_string(video_stream_->codecpar->height));
+    LOG_INFO("  - bit_rate: " + std::to_string(video_stream_->codecpar->bit_rate));
+    LOG_INFO("  - extradata_size: " + std::to_string(video_stream_->codecpar->extradata_size));
+    if (video_stream_->codecpar->extradata && video_stream_->codecpar->extradata_size > 0) {
+        std::ostringstream oss;
+        const int n = std::min(video_stream_->codecpar->extradata_size, 8);
+        for (int i = 0; i < n; ++i) {
+            if (i) oss << " ";
+            oss << std::hex << std::setw(2) << std::setfill('0')
+                << static_cast<int>(video_stream_->codecpar->extradata[i]);
+        }
+        LOG_INFO("  - extradata[0..7]: " + oss.str());
+
+        if (video_stream_->codecpar->codec_id == AV_CODEC_ID_H264 &&
+            (video_stream_->codecpar->extradata_size < 7 ||
+             video_stream_->codecpar->extradata[0] != 1)) {
+            LOG_WARNING("[RTMP] H264 extradata does not look like avcC (expected first byte 0x01)");
+        }
+    } else if (video_stream_->codecpar->codec_id == AV_CODEC_ID_H264) {
+        LOG_WARNING("[RTMP] H264 stream has no extradata; muxers/players may fail to decode");
+    }
+    LOG_INFO("  - time_base: " + std::to_string(time_base.num) + "/" + std::to_string(time_base.den));
 
     video_stream_->time_base = time_base;
     return ErrorCode::SUCCESS;
@@ -184,8 +214,40 @@ ErrorCode RTMPPusher::connect_and_write_header() {
         return ErrorCode::INIT_FAILED;
     }
 
+    // Override st->time_base after avformat_write_header.
+    // avformat_write_header may set stream time_bases based on codecpar->time_base,
+    // which can be {0,0} for uninitialized codecpar, resulting in st->time_base = {0,1}
+    // and causing av_packet_rescale_ts to divide by zero → AV_NOPTS_VALUE.
+    // We explicitly reset both streams to the intended {1,1000} (millisecond) time base.
+    if (audio_stream_) {
+        audio_stream_->time_base = {1, 1000};
+        LOG_INFO("[RTMP] Audio stream time_base reset to 1/1000 after write_header");
+    }
+    if (video_stream_) {
+        video_stream_->time_base = {1, 1000};
+        LOG_INFO("[RTMP] Video stream time_base reset to 1/1000 after write_header");
+    }
+
     header_written_ = true;
     is_first_video_packet_ = true;
+    have_sent_first_key_ = false;  // 🔧 重置关键帧标志，确保新推流等待第一帧关键帧
+
+    // 初始化滑动窗口统计
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        window_start_time_ = now;
+        video_packets_in_window_ = 0;
+        audio_packets_in_window_ = 0;
+        bytes_in_window_ = 0;
+        last_calculated_fps_ = 0.0;
+        last_calculated_bitrate_ = 0.0;
+        stats_.start_time = now;
+        stats_.bytes_sent = 0;
+        stats_.video_packets_sent = 0;
+        stats_.audio_packets_sent = 0;
+    }
+
     LOG_INFO("Connected and wrote RTMP header");
     return ErrorCode::SUCCESS;
 }
@@ -334,8 +396,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.audio_packets_sent++;
-            last_audio_packet_time_ = std::chrono::steady_clock::now();
-            audio_packets_since_last_calc_++;
+            audio_packets_in_window_++;
         }
     } else {
         if (!video_stream_) {
@@ -345,8 +406,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.video_packets_sent++;
-            last_video_packet_time_ = std::chrono::steady_clock::now();
-            video_packets_since_last_calc_++;
+            video_packets_in_window_++;
         }
 
         // If caller marked packet as keyframe, respect it
@@ -359,9 +419,10 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             avpkt->flags |= AV_PKT_FLAG_KEY;
         }
 
-        // 🔧 修复：确保第一帧视频是关键帧，但最多只等待100ms
+        // 🔧 修复：确保第一帧视频是关键帧，但最多只等待150ms
         // 这样可以避免视频延迟，同时确保第一帧质量
-        static auto first_video_wait_start = std::chrono::steady_clock::now();
+        // 注意：libx264 可能会先输出一个非关键帧作为编码种子，需要等待真正的 IDR
+        static std::chrono::steady_clock::time_point first_video_wait_start;
         static bool first_video_wait_initialized = false;
 
         if (packet->type == MediaType::VIDEO && !have_sent_first_key_) {
@@ -376,8 +437,8 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                 auto elapsed = std::chrono::steady_clock::now() - first_video_wait_start;
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
-                // 最多等待100ms，超过则接受非关键帧
-                if (elapsed_ms < 100) {
+                // 最多等待150ms，超过则接受非关键帧（避免无限等待）
+                if (elapsed_ms < 150) {
                     LOG_WARNING("[RTMP] Dropping non-key video packet, waiting for keyframe (" +
                                std::to_string(elapsed_ms) + "ms elapsed)");
                     return ErrorCode::SUCCESS;
@@ -428,9 +489,11 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     // Note: Packet was already cloned at the beginning of this function
     // write_pkt and pkt_to_free are already set
 
-    // For video packets, check if we need fragmentation (only for AVCC format)
+    // For video packets, check if we need fragmentation (only for AVCC format).
+    // Disabled intentionally: rely on FFmpeg muxer to packetize H264.
+    // Manual fragmentation caused AnnexB/AVCC parsing ambiguities in production streams.
     bool fragmented = false;
-    if (packet->type == MediaType::VIDEO && st->codecpar &&
+    if (false && packet->type == MediaType::VIDEO && st->codecpar &&
         st->codecpar->codec_id == AV_CODEC_ID_H264 &&
         st->codecpar->extradata && st->codecpar->extradata_size >= 5 &&
         write_pkt->size > 64 * 1024) { // Only fragment packets > 64KB
@@ -493,6 +556,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                 offset += nal_len;
                 remaining -= (nal_len + 4);
                 stats_.bytes_sent += (nal_len + 4);
+                bytes_in_window_ += (nal_len + 4);
             }
 
             if (!fragmented) {
@@ -532,14 +596,6 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                   ", dts=" + std::to_string(write_pkt->dts) +
                   ", size=" + std::to_string(write_pkt->size) +
                   ", mode=" + std::string(config_.use_interleaved_write ? "interleaved" : "direct"));
-        
-        // 🔧 增强调试日志：打印rescale后的时间戳
-        int64_t pts_in_ms = (write_pkt->pts != AV_NOPTS_VALUE && st->time_base.den > 0) 
-            ? (write_pkt->pts * 1000 * st->time_base.num / st->time_base.den) : -1;
-        LOG_INFO("[RTMP] After rescale: " + media_type +
-                 " pts=" + std::to_string(write_pkt->pts) +
-                 ", dts=" + std::to_string(write_pkt->dts) +
-                 ", pts_ms=" + std::to_string(pts_in_ms) + "ms");
 
         // Save size before potential free
         int packet_size = write_pkt->size;
@@ -562,9 +618,23 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
             LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
             if (pkt_to_free) av_packet_free(&pkt_to_free);
+
+            // -10053 (WSAECONNABORTED) 等网络错误意味着服务器已主动断开连接。
+            // 此时 muxer 内部状态已被污染，继续发送后续包会产生 INT64_MIN 空包。
+            // 必须重置 muxer 状态并返回 NOT_CONNECTED，触发 push_loop 的重连逻辑。
+            if (ret == -10053 || ret == -10054 || ret == AVERROR_EOF) {
+                LOG_ERROR("[RTMP] Network error indicates connection lost, resetting muxer state");
+                free_resources();
+                return ErrorCode::NOT_CONNECTED;
+            }
+
             return ErrorCode::SEND_FAILED;
         }
-        stats_.bytes_sent += packet_size;
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.bytes_sent += packet_size;
+            bytes_in_window_ += packet_size;
+        }
     }
 
     if (pkt_to_free) {
@@ -584,23 +654,41 @@ RTMPPusher::Stats RTMPPusher::get_stats() const {
     Stats current_stats = stats_;
     auto now = std::chrono::steady_clock::now();
 
-    // 计算运行时间
-    auto total_duration = std::chrono::duration_cast<std::chrono::seconds>(now - stats_.start_time);
-    if (total_duration.count() > 0) {
-        // 计算带宽 (kbps)
-        current_stats.bandwidth_kbps = static_cast<double>(stats_.bytes_sent * 8) / 1000.0 / total_duration.count();
+    // 滑动窗口统计：计算最近 1 秒的实时 FPS 和码率
+    auto window_duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start_time_);
+    double window_seconds = window_duration.count() / 1000.0;
 
-        // 计算视频帧率 (基于最近的包发送情况)
-        auto video_duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_video_packet_time_);
-        if (video_duration.count() > 0 && video_packets_since_last_calc_ > 0) {
-            current_stats.video_fps = static_cast<double>(video_packets_since_last_calc_) / video_duration.count();
+    if (window_duration.count() >= 1000) {
+        // 窗口超过 1 秒，重新计算并重置窗口
+        if (video_packets_in_window_ > 0 && window_seconds > 0) {
+            last_calculated_fps_ = video_packets_in_window_ / window_seconds;
+        }
+        if (bytes_in_window_ > 0 && window_seconds > 0) {
+            last_calculated_bitrate_ = (bytes_in_window_ * 8.0) / 1000.0 / window_seconds;
         }
 
-        // 计算音频包发送速率
-        auto audio_duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_audio_packet_time_);
-        if (audio_duration.count() > 0 && audio_packets_since_last_calc_ > 0) {
-            current_stats.audio_packets_per_sec = static_cast<double>(audio_packets_since_last_calc_) / audio_duration.count();
-        }
+        // 重置窗口
+        window_start_time_ = now;
+        video_packets_in_window_ = 0;
+        audio_packets_in_window_ = 0;
+        bytes_in_window_ = 0;
+
+        // 使用刚才计算的值
+        current_stats.video_fps = last_calculated_fps_;
+        current_stats.bandwidth_kbps = last_calculated_bitrate_;
+    } else if (window_seconds > 0) {
+        // 窗口还没满 1 秒，实时计算当前窗口内的统计
+        current_stats.video_fps = video_packets_in_window_ / window_seconds;
+        current_stats.bandwidth_kbps = (bytes_in_window_ * 8.0) / 1000.0 / window_seconds;
+    } else {
+        // 窗口刚开始，使用上次计算的值
+        current_stats.video_fps = last_calculated_fps_;
+        current_stats.bandwidth_kbps = last_calculated_bitrate_;
+    }
+
+    // 计算音频包发送速率
+    if (window_seconds > 0 && audio_packets_in_window_ > 0) {
+        current_stats.audio_packets_per_sec = audio_packets_in_window_ / window_seconds;
     }
 
     current_stats.total_bytes_sent = stats_.bytes_sent;
@@ -612,10 +700,14 @@ void RTMPPusher::reset_stats() {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     auto now = std::chrono::steady_clock::now();
     stats_ = {connected_, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, now};
-    last_video_packet_time_ = now;
-    last_audio_packet_time_ = now;
-    video_packets_since_last_calc_ = 0;
-    audio_packets_since_last_calc_ = 0;
+
+    // 重置滑动窗口统计
+    window_start_time_ = now;
+    video_packets_in_window_ = 0;
+    audio_packets_in_window_ = 0;
+    bytes_in_window_ = 0;
+    last_calculated_fps_ = 0.0;
+    last_calculated_bitrate_ = 0.0;
 }
 
 void RTMPPusher::free_resources() {

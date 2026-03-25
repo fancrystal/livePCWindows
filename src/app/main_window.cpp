@@ -1096,10 +1096,15 @@ void MainWindow::stop_all_capture_sources() {
 void MainWindow::build_scene_list() {
     if (!listWidget_sceneItems_) return;
     if (!scene_manager_ || !scene_manager_->get_current_scene()) {
+        listWidget_sceneItems_->blockSignals(true);
         listWidget_sceneItems_->clear();
+        listWidget_sceneItems_->blockSignals(false);
+        updateStagePlaceholderVisibility();
         return;
     }
 
+    // 阻断信号传播，避免在构建过程中触发不必要的更新
+    listWidget_sceneItems_->blockSignals(true);
     listWidget_sceneItems_->clear();
 
     auto scene = scene_manager_->get_current_scene();
@@ -1218,6 +1223,10 @@ void MainWindow::build_scene_list() {
 
         listWidget_sceneItems_->setItemWidget(lw_item, row);
     }
+
+    // 恢复信号
+    listWidget_sceneItems_->blockSignals(false);
+
     // update placeholder visibility after rebuilding scene list
     updateStagePlaceholderVisibility();
 }
@@ -1313,6 +1322,13 @@ void MainWindow::setCredentials(const QString& socketUrl, const QString& userId,
 
 void MainWindow::setLiveItem(const LiveItem& liveItem) {
     LOG_INFO("========== setLiveItem START ==========");
+
+    // 同步 live_id_ 与 LiveItem
+    bool live_id_changed = !liveItem.liveId.isEmpty() && live_id_ != liveItem.liveId;
+    if (live_id_changed) {
+        LOG_INFO(QString("Live ID changed: %1 -> %2").arg(live_id_).arg(liveItem.liveId).toStdString());
+    }
+
     current_live_item_ = liveItem;
 
     LOG_INFO(QString("LiveItem set - liveId: %1, title: %2, status: %3")
@@ -1321,6 +1337,21 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
         .arg(liveItem.status == LiveStatus::LIVE ? "直播中" :
             liveItem.status == LiveStatus::PENDING ? "待开播" : "已结束")
         .toStdString());
+
+    // 如果 live_id 发生变化，清理旧场景列表 UI 并准备重新加载
+    if (live_id_changed) {
+        live_id_ = liveItem.liveId;
+
+        // 清理场景列表 UI
+        if (listWidget_sceneItems_) {
+            listWidget_sceneItems_->blockSignals(true);
+            listWidget_sceneItems_->clear();
+            listWidget_sceneItems_->blockSignals(false);
+        }
+
+        // 重新加载该直播间的场景配置
+        load_scenes_config();
+    }
 
     // 如果有推流地址，自动设置RTMP目标
     if (!liveItem.pushUrl.isEmpty() && !liveItem.pushUrl[0].isEmpty()) {
@@ -1507,7 +1538,36 @@ void MainWindow::setup_ui_connections() {
         if (video_engine_) {
             dlg.set_available_cameras(video_engine_->get_available_camera_choices());
             dlg.set_video_engine(video_engine_);
+
+            // 获取当前摄像头配置
+            std::string current_camera_device_id;  // 原始设备ID
+            std::string current_resolution = video_engine_->get_camera_resolution();
+            int current_fps = video_engine_->get_camera_fps();
+            bool current_mirror = video_engine_->get_camera_mirror();
+
+            // 从当前场景中获取摄像头信息
+            if (scene_manager_ && scene_manager_->get_current_scene()) {
+                auto scene = scene_manager_->get_current_scene();
+                auto items = scene->get_all_scene_items();
+                for (const auto& item : items) {
+                    if (item && item->get_source() &&
+                        QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
+                        // 获取原始设备ID（用于匹配下拉框）
+                        current_camera_device_id = item->get_device_id();
+                        // 从 SceneItem 的 Transform 中获取镜像状态
+                        auto transform = item->get_transform();
+                        current_mirror = transform.mirror;
+                        break;
+                    }
+                }
+            }
+
+            // 设置当前摄像头配置
+            dlg.set_camera_config(current_camera_device_id, current_resolution, current_fps, current_mirror);
         }
+
+        // 隐藏背景tab页（功能未实现）
+        dlg.hide_background_tab();
 
         if (dlg.exec() == QDialog::Accepted) {
             applySettingsPanelChanges(dlg);
@@ -1670,6 +1730,7 @@ void MainWindow::setup_ui_connections() {
                             update_audio_status("正常", "green");
                         }
                     }
+
                     ui->pushButton_startLive->setText("停止直播");
                     // 禁用画布切换按钮
                     if (ui->pushButton_toggleOrientation) {
@@ -2511,8 +2572,8 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                 added_item->set_source_params(params);
 
                 // 使用canvas_config_的逻辑尺寸，确保视频源初始尺寸合理
-                int canvas_w = canvas_config_.get_width(); // 默认1920
-                int canvas_h = canvas_config_.get_height(); // 默认1080
+                int canvas_w = canvas_config_.get_width(); // 默认1280
+                int canvas_h = canvas_config_.get_height(); // 默认720
                 int w = canvas_w / 2;
                 int h = canvas_h / 2;
                 int x = (canvas_w - w) / 2;
@@ -2838,13 +2899,13 @@ void MainWindow::show_screen_share_selector() {
                             added_item->set_source_params(params);
 
                             // 使用canvas_config_的逻辑尺寸，让视频源自适应满画布
-                            int canvas_w = canvas_config_.get_width(); // 默认1920
-                            int canvas_h = canvas_config_.get_height(); // 默认1080
+                            int canvas_w = canvas_config_.get_width();
+                            int canvas_h = canvas_config_.get_height();
 
                             // 假设视频源的原始宽高比（这里使用16:9作为默认值，实际应该从视频源获取）
                             // 注意：实际应用中应该从视频源获取真实的宽高比
-                            int src_w = 1920; // 假设视频源宽度
-                            int src_h = 1080; // 假设视频源高度
+                            int src_w = 1280; // 假设视频源宽度
+                            int src_h = 720; // 假设视频源高度
 
                             // 计算缩放比例，取较小值以保证完全显示
                             double scale_w = static_cast<double>(canvas_w) / src_w;
@@ -3407,12 +3468,13 @@ void MainWindow::show_scene_item_settings(int index) {
         int current_fps = video_engine_->get_camera_fps();
         bool current_mirror = video_engine_->get_camera_mirror();
 
-        // 从 SceneItem 的 Transform 中读取镜像状态
+        // 从 SceneItem 的 Transform 中读取镜像状态，以及获取原始设备ID
         auto current_transform = item->get_transform();
         current_mirror = current_transform.mirror;
+        std::string current_device_id = item->get_device_id();  // 原始设备ID
 
         // 设置摄像头配置（使用当前的实际配置）
-        dlg.set_camera_config(source_id, current_resolution, current_fps, current_mirror);
+        dlg.set_camera_config(current_device_id, current_resolution, current_fps, current_mirror);
 
         if (dlg.exec() == QDialog::Accepted) {
             // 应用通用设置
@@ -3457,16 +3519,41 @@ void MainWindow::show_scene_item_settings(int index) {
 void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     // Apply video settings
     auto new_v = dlg.get_video_config();
-    
+
+    // 同步更新画布配置（分辨率改变时）
+    if (canvas_config_.get_width() != new_v.width || canvas_config_.get_height() != new_v.height) {
+        LOG_INFO(QString("分辨率改变: %1x%2 -> %3x%4")
+            .arg(canvas_config_.get_width()).arg(canvas_config_.get_height())
+            .arg(new_v.width).arg(new_v.height).toStdString());
+
+        // 更新画布配置
+        if (new_v.width > new_v.height) {
+            // 横屏模式
+            canvas_config_ = CanvasConfig(CanvasConfig::DisplayMode::LANDSCAPE_16_9);
+        } else {
+            // 竖屏模式
+            canvas_config_ = CanvasConfig(CanvasConfig::DisplayMode::PORTRAIT_9_16);
+        }
+        // 手动设置为用户选择的分辨率
+        // 注意：CanvasConfig 会根据 aspect ratio 自动计算，这里我们直接设置
+        is_portrait_mode_ = (new_v.width < new_v.height);
+
+        // 更新画布 widget
+        if (canvas_widget_) {
+            canvas_widget_->set_canvas_config(canvas_config_);
+        }
+    }
+
     // Apply audio settings
     auto new_a = dlg.get_audio_config();
-    new_a.bitrate = encoder_->get_audio_config().bitrate; // Keep bitrate from existing config
-    
+    // 保留音频码率配置，允许用户在设置面板中修改
+    // new_a.bitrate 从设置面板获取，使用用户设置的值
+
     const std::string mic_id = dlg.get_selected_microphone_id();
     const std::string speaker_id = dlg.get_selected_speaker_id();
     float mic_volume = dlg.get_microphone_volume();
     float speaker_volume = dlg.get_speaker_volume();
-    
+
     // Apply camera mirror setting
     bool mirror = dlg.is_camera_mirror();
     if (video_engine_) {
@@ -3478,7 +3565,7 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
         auto scene = scene_manager_->get_current_scene();
         auto items = scene->get_all_scene_items();
         for (auto& item : items) {
-            if (item && item->get_source() && 
+            if (item && item->get_source() &&
                 QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
                 // Update the Transform with new mirror setting
                 Transform tr = item->get_transform();
@@ -3506,7 +3593,7 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     if (!mic_id.empty()) {
         audio_engine_->select_microphone(mic_id);
     }
-    
+
     // Select speaker
     if (!speaker_id.empty()) {
         audio_engine_->select_speaker(speaker_id);
@@ -3894,6 +3981,37 @@ void MainWindow::on_streaming_stopped() {
 
 void MainWindow::on_streaming_error(const QString& error) {
     LOG_ERROR("推流错误: " + error.toStdString());
+
+    // 停止推流
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        encoder_bridge_->stop_streaming();
+    }
+    if (stream_pusher_ && stream_pusher_->is_pushing()) {
+        stream_pusher_->stop();
+    }
+
+    // 停止音频采集
+    if (audio_engine_ && audio_engine_->is_capturing()) {
+        audio_engine_->stop_capture();
+        update_audio_status("已停止", "gray");
+    }
+
+    // 停止编码桥接器
+    if (encoder_bridge_) {
+        encoder_bridge_->stop();
+    }
+
+    // 更新UI状态
+    if (ui->pushButton_startLive) {
+        ui->pushButton_startLive->setText("开始直播");
+        ui->pushButton_startLive->setStyleSheet("");
+    }
+    if (ui->label_status) {
+        ui->label_status->setText("推流失败");
+        ui->label_status->setStyleSheet("color: red; font-weight: bold;");
+    }
+
+    // 显示错误弹窗
     QMessageBox::warning(this, "推流错误", error);
 }
 
@@ -3948,7 +4066,7 @@ const CanvasConfig& MainWindow::get_canvas_config() const {
     return canvas_config_;
 }
 
-// 设置为横屏模式 16:9 (1920x1080)
+// 设置为横屏模式 16:9 (1280x720)
 void MainWindow::set_landscape_mode() {
     LOG_INFO("========== set_landscape_mode START ==========");
     if (!is_portrait_mode_) {
@@ -3965,7 +4083,7 @@ void MainWindow::set_landscape_mode() {
         return;
     }
 
-    LOG_INFO("Switching to landscape mode (1920x1080)");
+    LOG_INFO("Switching to landscape mode (1280x720)");
 
     // 更新画布配置
     canvas_config_ = CanvasConfig::get_default();
@@ -3979,11 +4097,11 @@ void MainWindow::set_landscape_mode() {
         ui->pushButton_toggleOrientation->setText("横屏");
     }
 
-    LOG_INFO("Switched to landscape mode: 1920x1080");
+    LOG_INFO("Switched to landscape mode: 1280x720");
     LOG_INFO("========== set_landscape_mode END ==========");
 }
 
-// 设置为竖屏模式 9:16 (1080x1920)
+// 设置为竖屏模式 9:16 (720x1280)
 void MainWindow::set_portrait_mode() {
     LOG_INFO("========== set_portrait_mode START ==========");
     if (is_portrait_mode_) {
@@ -4000,7 +4118,7 @@ void MainWindow::set_portrait_mode() {
         return;
     }
 
-    LOG_INFO("Switching to portrait mode (1080x1920)");
+    LOG_INFO("Switching to portrait mode (720x1280)");
 
     // 更新画布配置
     canvas_config_ = CanvasConfig::get_portrait();
@@ -4014,7 +4132,7 @@ void MainWindow::set_portrait_mode() {
         ui->pushButton_toggleOrientation->setText("竖屏");
     }
 
-    LOG_INFO("Switched to portrait mode: 1080x1920");
+    LOG_INFO("Switched to portrait mode: 720x1280");
     LOG_INFO("========== set_portrait_mode END ==========");
 }
 

@@ -90,10 +90,14 @@ private:
     mutable std::mutex stats_mutex_;
     int64_t last_bytes_snapshot_ = 0;
     std::chrono::steady_clock::time_point last_snapshot_time_;
-    std::chrono::steady_clock::time_point last_video_packet_time_;
-    std::chrono::steady_clock::time_point last_audio_packet_time_;
-    int video_packets_since_last_calc_ = 0;
-    int audio_packets_since_last_calc_ = 0;
+
+    // 滑动窗口统计（最近 1 秒的实时统计）
+    mutable std::chrono::steady_clock::time_point window_start_time_;
+    mutable int video_packets_in_window_ = 0;   // 窗口内视频包数
+    mutable int audio_packets_in_window_ = 0;   // 窗口内音频包数
+    mutable int64_t bytes_in_window_ = 0;       // 窗口内字节数
+    mutable double last_calculated_fps_ = 0.0;       // 上次计算的 FPS
+    mutable double last_calculated_bitrate_ = 0.0;   // 上次计算的码率 (kbps)
     
     // Allow stopping reconnect loops if destructor runs
     std::atomic<bool> stop_reconnect_{false};

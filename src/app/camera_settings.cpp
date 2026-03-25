@@ -143,6 +143,14 @@ CameraSettingsDialog::CameraSettingsDialog(QWidget *parent) :
     // 设置默认选中基础设置页面
     ui->pushButton_basic->setChecked(true);
     ui->stackedWidget->setCurrentWidget(ui->page_basic);
+
+    // 隐藏其他tab页（美颜、身形、美妆、滤镜、特效、镜头功能暂不开放）
+    ui->pushButton_beauty->hide();
+    ui->pushButton_body->hide();
+    ui->pushButton_makeup->hide();
+    ui->pushButton_filter->hide();
+    ui->pushButton_effects->hide();
+    ui->pushButton_lens->hide();
 }
 
 CameraSettingsDialog::~CameraSettingsDialog()

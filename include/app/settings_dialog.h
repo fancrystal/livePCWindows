@@ -36,7 +36,10 @@ public:
 
     // 设置默认标签页（打开时自动切换）
     void setDefaultTab(SettingsTab tab);
-    
+
+    // 隐藏背景tab页
+    void hide_background_tab();
+
     // ===== 视频设置 =====
     void set_video_config(const VideoEncoderConfig& config);
     VideoEncoderConfig get_video_config() const;

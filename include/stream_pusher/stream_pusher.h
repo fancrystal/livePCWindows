@@ -40,7 +40,7 @@ public:
     // 发送编码包到推流（线程安全入队）
     ErrorCode push_packet(EncodedPacketPtr packet);
 
-    // 清空推流队列（用于reset前清除旧包）
+    // 清空推流队列（用于reset前清空旧包）
     void clear_queue();
 
     // 获取当前推流状态

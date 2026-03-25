@@ -39,6 +39,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
+    void onCloseButtonClicked();
     void onRefreshClicked();
     void onPlayClicked();
     void onStopPreviewClicked();

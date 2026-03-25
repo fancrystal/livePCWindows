@@ -76,8 +76,8 @@ public:
     const CanvasConfig& get_canvas_config() const;
 
     // 画布方向切换（横屏/竖屏）
-    void set_landscape_mode();   // 设置为横屏 16:9 (1920x1080)
-    void set_portrait_mode();    // 设置为竖屏 9:16 (1080x1920)
+    void set_landscape_mode();   // 设置为横屏 16:9 (1280x720)
+    void set_portrait_mode();    // 设置为竖屏 9:16 (720x1280)
     void toggle_canvas_orientation();  // 切换横竖屏
 
     // 根据服务器配置设置画布方向（预留接口）

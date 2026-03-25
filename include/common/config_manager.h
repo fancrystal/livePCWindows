@@ -20,8 +20,8 @@ public:
      * 画布显示模式
      */
     enum class DisplayMode {
-        LANDSCAPE_16_9,    // 横屏16:9 (1920x1080)
-        PORTRAIT_9_16      // 竖屏9:16 (1080x1920) - 预留
+        LANDSCAPE_16_9,    // 横屏16:9 (1280x720)
+        PORTRAIT_9_16      // 竖屏9:16 (720x1280) - 预留
     };
 
     /**

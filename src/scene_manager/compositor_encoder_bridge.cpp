@@ -288,6 +288,9 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
 
     if (encoder_) {
         encoder_->reset_audio_encoder();
+        // 🔧 强制下一帧视频为关键帧，确保推流开始时有 IDR 帧可供解码
+        encoder_->force_keyframe();
+        LOG_INFO("[BRIDGE] Requested keyframe for streaming start");
         // 注意：不在这里重置视频编码器，因为 reset() 可能导致编码器状态异常
         // 视频编码器应该在停止推流时清理，而不是在开始时重置
     }
@@ -347,14 +350,11 @@ void CompositorEncoderBridge::stop_streaming() {
     // ═══════════════════════════════════════════════════════════════
     // 🔧 停止编码线程池
     // ═══════════════════════════════════════════════════════════════
-    stop_encoder_threads();
+    stop();  // stops capture thread + encoder threads + media_clock
 
     if (stream_pusher_) {
         stream_pusher_->stop();
     }
-
-    // 停止媒体时钟
-    media_clock_.stop();
 
     streaming_ = false;
     stream_url_.clear();
@@ -878,9 +878,61 @@ void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
                     stream_pusher_->push_packet(p);
                 }
             }
+
+            // 🔧 检查推流器是否进入错误状态（重连失败等）
+            if (stream_pusher_ && stream_pusher_->is_in_error()) {
+                LOG_ERROR("[BRIDGE] Stream pusher entered error state, stopping streaming");
+                QMetaObject::invokeMethod(this, [this]() {
+                    emit streaming_error(QString::fromUtf8("推流失败：连接服务器失败，已停止推流"));
+                    stop_streaming();
+                }, Qt::QueuedConnection);
+                break;
+            }
         } catch (const std::exception& ex) {
             LOG_ERROR("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Exception: " + std::string(ex.what()));
         }
+    }
+
+    // Drain remaining frames in queue after stop signal, so no frames are lost.
+    // The push side is already stopped (capture thread stopped by stop()), so no new frames arrive.
+    int drained = 0;
+    while (true) {
+        PreEncodeVideoFrame pre_frame;
+        {
+            std::lock_guard<std::mutex> lock(encode_queue_mutex_);
+            if (pre_encode_queue_.empty()) {
+                break;
+            }
+            pre_frame = pre_encode_queue_.front();
+            pre_encode_queue_.pop_front();
+        }
+
+        if (!pre_frame.frame) continue;
+
+        std::vector<EncodedPacketPtr> video_packets;
+        ErrorCode drain_result = encoder_->encode_video_frame(pre_frame.frame, video_packets);
+        if (drain_result == ErrorCode::SUCCESS && !video_packets.empty() &&
+            stream_pusher_ && stream_pusher_->is_pushing()) {
+            for (auto& p : video_packets) {
+                if (!p) continue;
+                p->wallclock_us = pre_frame.wallclock_us;
+                stream_pusher_->push_packet(p);
+            }
+        }
+
+        // 🔧 检查推流器是否进入错误状态
+        if (stream_pusher_ && stream_pusher_->is_in_error()) {
+            LOG_ERROR("[BRIDGE] Stream pusher entered error state during drain, stopping streaming");
+            QMetaObject::invokeMethod(this, [this]() {
+                emit streaming_error(QString::fromUtf8("推流失败：连接服务器失败，已停止推流"));
+                stop_streaming();
+            }, Qt::QueuedConnection);
+            break;
+        }
+        drained++;
+    }
+    if (drained > 0) {
+        LOG_INFO("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Drained " + std::to_string(drained) + " remaining frames before exit");
     }
 
     LOG_INFO("[BRIDGE] Encoder thread #" + std::to_string(thread_id) + " stopped");

@@ -100,7 +100,7 @@ struct VideoEncoderConfig {
     int width = 1280;  // 默认宽度 (720p)
     int height = 720;  // 默认高度 (720p)
     int fps = 30;  // 默认帧率
-    int bitrate = 1500000;  // 默认比特率 (1500kbps) - 降低以减小文件大小
+    int bitrate = 2500000;  // 默认比特率 (2500kbps) - 720p 30fps 推荐码率
     // 默认使用 VBR，更友好地适应网络波动；用户可切换为 CBR 或 CQP
     VideoEncodingMode mode = VideoEncodingMode::VBR;
     

@@ -80,25 +80,25 @@ CanvasConfig::CanvasConfig(DisplayMode mode) : mode_(mode) {
 void CanvasConfig::initialize_config() {
     switch (mode_) {
         case DisplayMode::LANDSCAPE_16_9:
-            width_ = 1920;
-            height_ = 1080;
+            width_ = 1280;
+            height_ = 720;
             aspect_ratio_ = 16.0 / 9.0;
-            name_ = "Landscape 16:9 (1920x1080)";
+            name_ = "Landscape 16:9 (1280x720)";
             break;
 
         case DisplayMode::PORTRAIT_9_16:
-            width_ = 1080;
-            height_ = 1920;
+            width_ = 720;
+            height_ = 1280;
             aspect_ratio_ = 9.0 / 16.0;
-            name_ = "Portrait 9:16 (1080x1920)";
+            name_ = "Portrait 9:16 (720x1280)";
             break;
 
         default:
             // 默认使用横屏16:9
-            width_ = 1920;
-            height_ = 1080;
+            width_ = 1280;
+            height_ = 720;
             aspect_ratio_ = 16.0 / 9.0;
-            name_ = "Landscape 16:9 (1920x1080)";
+            name_ = "Landscape 16:9 (1280x720)";
             break;
     }
 }

@@ -22,9 +22,6 @@ InsertVideoWidget::InsertVideoWidget(QWidget *parent)
     : QDialog(parent), is_previewing_(false) {
     setupUI();
     setWindowTitle(QString::fromUtf8("插播视频"));
-    setMinimumSize(1100, 650);
-    resize(1100, 650);
-    setModal(true);
 
     // 连接 InsertFileManager 信号
     auto manager = InsertFileManager::instance();
@@ -45,22 +42,17 @@ void InsertVideoWidget::setupUI() {
     mainLayout->setSpacing(10);
     mainLayout->setContentsMargins(15, 15, 15, 15);
 
+    
+    setMinimumSize(1100, 650);
+    resize(1100, 650);
+    setModal(true);
+
     // 标题栏
     auto* titleLayout = new QHBoxLayout();
     auto* titleLabel = new QLabel(QString::fromUtf8("添加插播视频"), this);
     titleLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;");
     titleLayout->addWidget(titleLabel);
     titleLayout->addStretch();
-
-    // 关闭按钮
-    auto* closeButton = new QPushButton("✕", this);
-    closeButton->setFixedSize(30, 30);
-    closeButton->setStyleSheet(
-        "QPushButton { border: none; background: transparent; font-size: 16px; color: #ffffff; }"
-        "QPushButton:hover { color: #ff6a6a; }"
-    );
-    connect(closeButton, &QPushButton::clicked, this, &QDialog::reject);
-    titleLayout->addWidget(closeButton);
     mainLayout->addLayout(titleLayout);
 
     // 搜索栏
@@ -314,6 +306,28 @@ void InsertVideoWidget::updateVlcPrewarmUi() {
     playButton_->setToolTip(ready ? QString() : QString::fromUtf8("播放器初始化中，请稍候..."));
 }
 
+void InsertVideoWidget::onCloseButtonClicked() {
+    // 停止预览
+    if (vlc_player_ && is_previewing_) {
+        vlc_player_->stop();
+        is_previewing_ = false;
+    }
+
+    // 设置标志位阻止回调
+    is_previewing_ = false;
+
+    // 重置VLC播放器
+    vlc_player_.reset();
+
+    if (vlc_prewarm_timer_) {
+        vlc_prewarm_timer_->stop();
+        vlc_prewarm_timer_->deleteLater();
+        vlc_prewarm_timer_ = nullptr;
+    }
+
+    reject(); // 关闭对话框
+}
+
 void InsertVideoWidget::onRefreshClicked() {
     refreshVideoList();
 }
@@ -554,7 +568,6 @@ void InsertVideoWidget::updateVideoTable() {
             );
             progress_bars_[file->fileId] = progressBar;
             statusWidget = progressBar;
-            statusText = QString::fromUtf8("下载中...");
         } else {
             // 显示状态文本
             auto* label = new QLabel(statusText, this);
@@ -569,8 +582,6 @@ void InsertVideoWidget::updateVideoTable() {
             statusWidget = label;
         }
 
-        auto* statusItem = new QTableWidgetItem(statusText);
-        tableWidget_->setItem(row, 5, statusItem);
         tableWidget_->setCellWidget(row, 5, statusWidget);
 
         row++;

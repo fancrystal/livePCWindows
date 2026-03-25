@@ -135,20 +135,23 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     codec_ctx_->ch_layout = make_channel_layout(config_.channels);
     codec_ctx_->sample_fmt = AV_SAMPLE_FMT_FLTP;  // AAC编码必须使用 FLTP
 
+    // 🔧 AAC-LC 设置（双重保险）
+    // 1. 设置 codec_ctx_->profile
+    codec_ctx_->profile = FF_PROFILE_AAC_LOW;
+
     // 🔧 诊断：打印 frame_size
     LOG_INFO("[AACEncoder] codec_ctx_->frame_size before open: " + std::to_string(codec_ctx_->frame_size));
-
-    codec_ctx_->profile = FF_PROFILE_AAC_LOW;
 
     // For FLV/RTMP, extradata (AudioSpecificConfig) is required
     codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    // 设置AAC编码参数（与原项目一致）
+    // 设置AAC编码参数
     AVDictionary* opts = nullptr;
+    // 🔧 关键：使用编码器选项强制指定 AAC-LC profile（放在最前面）
+    av_dict_set(&opts, "profile", "aac_low", 0);
     av_dict_set(&opts, "aac_coder", "twoloop", 0);
-    av_dict_set(&opts, "prediction", "1", 0);
-    av_dict_set(&opts, "aac_pred", "1", 0);
     av_dict_set(&opts, "cutoff", "18000", 0);
+    // 注意：移除 prediction/aac_pred，因为它们是 AAC Main profile 特性
 
     if (avcodec_open2(codec_ctx_, codec_, &opts) < 0) {
         LOG_ERROR("Failed to open AAC encoder");
@@ -157,8 +160,58 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     }
     av_dict_free(&opts);
 
+    // 🔧 验证编码器使用的profile
+    LOG_INFO("[AACEncoder] Encoder opened with profile: " +
+             std::to_string(codec_ctx_->profile) +
+             " (FF_PROFILE_AAC_LOW=" + std::to_string(FF_PROFILE_AAC_LOW) +
+             ", FF_PROFILE_AAC_MAIN=" + std::to_string(FF_PROFILE_AAC_MAIN) + ")");
+
     // 🔧 诊断：打印 frame_size 在打开编码器之后
     LOG_INFO("[AACEncoder] codec_ctx_->frame_size after open: " + std::to_string(codec_ctx_->frame_size));
+
+    // 🔧 AAC-LC 兼容性修复：检查并强制替换 extradata 为 AAC-LC 格式
+    // FFmpeg 可能仍然生成 Main profile 的 extradata
+    if (codec_ctx_->extradata && codec_ctx_->extradata_size >= 2) {
+        int audioObjectType = (codec_ctx_->extradata[0] >> 3) & 0x1F;
+        LOG_INFO("[AACEncoder] Current extradata: audioObjectType=" + std::to_string(audioObjectType) +
+                 ", bytes=[0x" + std::to_string(static_cast<int>(codec_ctx_->extradata[0])) +
+                 ", 0x" + std::to_string(static_cast<int>(codec_ctx_->extradata[1])) + "]");
+
+        // AAC-LC 的 audioObjectType = 2, AAC-Main = 1
+        // 如果不是 AAC-LC，强制替换 extradata
+        if (audioObjectType != 2) {
+            LOG_WARNING("[AACEncoder] Detected non-LC profile (audioObjectType=" +
+                       std::to_string(audioObjectType) + "), forcing AAC-LC extradata");
+
+            // 根据采样率选择索引
+            int samplingFreqIndex = 3;  // 默认 48000Hz
+            if (config_.sample_rate == 44100) samplingFreqIndex = 4;
+            else if (config_.sample_rate == 22050) samplingFreqIndex = 7;
+            else if (config_.sample_rate == 32000) samplingFreqIndex = 5;
+            else if (config_.sample_rate == 16000) samplingFreqIndex = 8;
+            else if (config_.sample_rate == 8000) samplingFreqIndex = 11;
+
+            // 构造 AAC-LC AudioSpecificConfig (2 字节)
+            // audioObjectType = 2 (AAC-LC)
+            uint8_t asc[2];
+            asc[0] = (2 << 3) | (samplingFreqIndex >> 1);  // audioObjectType=2 (LC)
+            asc[1] = ((samplingFreqIndex & 1) << 7) | (config_.channels << 3);
+
+            // 释放旧 extradata 并分配新的
+            av_free(codec_ctx_->extradata);
+            codec_ctx_->extradata = (uint8_t*)av_malloc(2 + AV_INPUT_BUFFER_PADDING_SIZE);
+            if (codec_ctx_->extradata) {
+                memcpy(codec_ctx_->extradata, asc, 2);
+                codec_ctx_->extradata_size = 2;
+                memset(codec_ctx_->extradata + 2, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+                LOG_INFO("[AACEncoder] ✓ Replaced extradata with AAC-LC: [0x" +
+                        std::to_string(static_cast<int>(asc[0])) +
+                        ", 0x" + std::to_string(static_cast<int>(asc[1])) + "]");
+            }
+        } else {
+            LOG_INFO("[AACEncoder] ✓ extradata is already AAC-LC (audioObjectType=2)");
+        }
+    }
 
     frame_ = av_frame_alloc();
     if (!frame_) {

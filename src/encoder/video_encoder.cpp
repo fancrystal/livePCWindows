@@ -332,12 +332,14 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     codec_ctx_->thread_count = 1;  // 单线程编码，减少延迟
     codec_ctx_->thread_type = 0;   // 禁用帧级并行
 
-    // ✅ GOP: 参考原项目，使用 1 秒关键帧间隔
-    int gop_size = config_.fps;  // 1秒 @ 30fps = 30帧
+    // ✅ GOP: 固定 2 秒关键帧间隔
+    int gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
     codec_ctx_->gop_size = gop_size;
-    codec_ctx_->keyint_min = config_.fps / 2;  // 最小关键帧间隔
+    codec_ctx_->keyint_min = config_.fps;  // 最小关键帧间隔 = 1秒
 
-    LOG_INFO("[H264Encoder] GOP size set to " + std::to_string(gop_size) + " frames (1 second @ " + std::to_string(config_.fps) + " fps)");
+    LOG_INFO("[H264Encoder] GOP size set to " + std::to_string(gop_size) + " frames (" +
+             std::to_string(gop_size / (config_.fps > 0 ? config_.fps : 30)) + " seconds @ " +
+             std::to_string(config_.fps) + " fps)");
 
     // 🔧 像素格式设置
     if (is_qsv_encoder_) {
@@ -433,6 +435,11 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             // ✅ 降低编码延迟：使用单线程模式，减少帧缓冲
             x264_params += ":threads=1";
 
+            // Force AVCC output (length-prefixed NAL units) for FLV/RTMP muxing.
+            // This avoids Annex-B start codes leaking into downstream packet handling.
+            x264_params += ":annexb=0";
+            x264_params += ":repeat-headers=0";
+
             av_opt_set(codec_ctx_->priv_data, "x264-params", x264_params.c_str(), 0);
             LOG_INFO(std::string("H264Encoder: set x264-params: ") + x264_params);
         } else {
@@ -514,6 +521,37 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
              " fps=" + std::to_string(config_.fps) + " bitrate=" + std::to_string(config_.bitrate));
     LOG_INFO("[H264Encoder] Using encoder: " + encoder_type +
              " (" + (is_hw ? "Hardware" : "Software") + ")");
+
+    // 🔧 诊断：检查 extradata (SPS/PPS) 是否正确生成
+    if (codec_ctx_->extradata && codec_ctx_->extradata_size > 0) {
+        LOG_INFO("[H264Encoder] extradata generated: size=" + std::to_string(codec_ctx_->extradata_size));
+        // 打印前几个字节用于调试（avcC 格式第一字节应该是 0x01）
+        std::string hex;
+        for (int i = 0; i < std::min(codec_ctx_->extradata_size, 20); i++) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", codec_ctx_->extradata[i]);
+            hex += buf;
+        }
+        LOG_INFO("[H264Encoder] extradata (first 20 bytes): " + hex);
+
+        // 验证 avcC 格式
+        if (codec_ctx_->extradata[0] == 0x01) {
+            LOG_INFO("[H264Encoder] ✓ extradata is valid avcC format (first byte = 0x01)");
+        } else if (codec_ctx_->extradata[0] == 0x00 && codec_ctx_->extradata_size >= 4 &&
+                   codec_ctx_->extradata[1] == 0x00 && codec_ctx_->extradata[2] == 0x00) {
+            LOG_WARNING("[H264Encoder] ✗ extradata appears to be Annex-B format (start code detected)!");
+            LOG_WARNING("[H264Encoder]   This may cause issues with FLV/RTMP muxing!");
+        } else {
+            LOG_WARNING("[H264Encoder] ? extradata format unknown (first byte = 0x" +
+                       std::to_string(codec_ctx_->extradata[0]) + ")");
+        }
+    } else {
+        LOG_WARNING("[H264Encoder] WARNING: No extradata generated! This may cause issues with FLV/RTMP.");
+    }
+
+    // 🔧 检查 AV_CODEC_FLAG_GLOBAL_HEADER 标志
+    bool has_global_header = (codec_ctx_->flags & AV_CODEC_FLAG_GLOBAL_HEADER) != 0;
+    LOG_INFO("[H264Encoder] AV_CODEC_FLAG_GLOBAL_HEADER: " + std::to_string(has_global_header));
 
     return ErrorCode::SUCCESS;
 }
@@ -799,7 +837,10 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
         out->type = MediaType::VIDEO;
         out->pts = pkt->pts;
         out->dts = pkt->dts;
-        out->duration = pkt->duration;
+        // x264 通常不对每个 packet 填 duration，导致帧时长为 0，进而让 HLS/m3u8 播放器卡住
+        // 兜底：用 fps 推算一帧的毫秒时长（整数），与音频 encoder 策略一致
+        out->duration = (pkt->duration > 0) ? pkt->duration
+                                           : (config_.fps > 0 ? (1000 / config_.fps) : 33);
         out->encoder_time_base = get_time_base();
         out->is_keyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
         out->priority = 1;
@@ -1057,7 +1098,7 @@ bool H264Encoder::switch_to_next_encoder() {
         if (new_codec_ctx->priv_data) {
             av_opt_set(new_codec_ctx->priv_data, "preset", "ultrafast", 0);
             av_opt_set(new_codec_ctx->priv_data, "tune", "zerolatency", 0);
-            std::string x264_params = "ref=1:slice-max-size=400:slices=4:profile=baseline";
+            std::string x264_params = "ref=1:slice-max-size=400:slices=4:profile=baseline:annexb=0:repeat-headers=0";
             av_opt_set(new_codec_ctx->priv_data, "x264-params", x264_params.c_str(), 0);
         }
     } else {

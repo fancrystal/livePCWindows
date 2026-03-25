@@ -190,6 +190,7 @@ void StreamPusher::push_thread_func() {
 
     EncodedPacketPtr packet;
     auto last_reconnect_attempt = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    int consecutive_reconnect_failures = 0;  // 连续重连失败计数
 
     while (!stop_thread_) {
         if (push_queue_.pop(packet, 100)) {
@@ -212,6 +213,7 @@ void StreamPusher::push_thread_func() {
                             if (reconnect_result == ErrorCode::SUCCESS) {
                                 Log::info("Reconnected to RTMP server successfully");
                                 set_state(StreamState::PUSHING);
+                                consecutive_reconnect_failures = 0;  // 重置失败计数
                                 // Retry sending the current packet after successful reconnection
                                 result = rtmp_pusher_.send_packet(packet);
                                 if (result != ErrorCode::SUCCESS) {
@@ -219,13 +221,24 @@ void StreamPusher::push_thread_func() {
                                 }
                             } else {
                                 Log::error("Reconnect attempt failed, will retry later");
-                                // Don't break - continue processing packets
+                                consecutive_reconnect_failures++;
+
+                                // 检查是否达到最大重连失败次数
+                                if (consecutive_reconnect_failures >= config_.max_reconnect_attempts) {
+                                    Log::error("Reconnect failed " + std::to_string(consecutive_reconnect_failures) +
+                                              " times, giving up and stopping streaming");
+                                    set_state(StreamState::ERR);
+                                    push_queue_.clear();  // 清空队列
+                                    stop_thread_ = true;
+                                    break;
+                                }
                             }
                         }
                         // else: too soon since last attempt, skip reconnection this time
                     } else {
                         Log::error("Connection lost and auto-reconnect disabled");
                         set_state(StreamState::ERR);
+                        push_queue_.clear();
                         break;
                     }
                 } else if (result == ErrorCode::SEND_FAILED) {

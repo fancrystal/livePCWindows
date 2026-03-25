@@ -13,6 +13,7 @@
 #include <QPixmap>
 #include <QLabel>
 #include <QEvent>
+#include <QResizeEvent>
 #include <QGraphicsDropShadowEffect>
 #include <QMouseEvent>
 #include <QPoint>
@@ -63,6 +64,11 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         // create button: gradient pill - 往左移，给关闭按钮留空间
         ui->createLiveButton->setStyleSheet(
             "QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4a6ef0, stop:1 #f05a6a); color: white; border-radius: 6px; padding: 6px 12px; }"
+        );
+        // refresh button: gradient purple style (like settings button in main window)
+        ui->refreshButton->setStyleSheet(
+            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #9C27B0, stop:1 #E040FB); color: white; border-radius: 4px; font-size: 14px; padding: 0px; }"
+            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #AB47BC, stop:1 #EA80FC); }"
         );
         // pagination and grid spacing
         if (ui->gridLayout) {
@@ -171,6 +177,7 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         suffixLabel->setStyleSheet("color: rgba(255,255,255,0.95);");
         tl->addWidget(titleLabel);
         tl->addWidget(suffixLabel);
+
         titleContainer->setLayout(tl);
 
         // insert into header layout after the existing logoLabel (index 1)
@@ -275,15 +282,26 @@ LiveListWindow::~LiveListWindow() {
 }
 
 void LiveListWindow::setup_live_list() {
+    // 记录当前窗口位置，防止布局更新导致窗口偏移
+    QPoint windowPos = this->pos();
+
     // 清空当前列表
-    QLayoutItem* item;
-    while ((item = ui->gridLayout->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
+    if (ui && ui->gridLayout) {
+        QLayoutItem* item;
+        while ((item = ui->gridLayout->takeAt(0)) != nullptr) {
+            if (item->widget()) {
+                item->widget()->hide();
+                delete item->widget();
+            }
+            delete item;
+        }
+
+        // 重新设置布局参数
+        ui->gridLayout->setHorizontalSpacing(18);
+        ui->gridLayout->setVerticalSpacing(18);
+        ui->gridLayout->setContentsMargins(8, 8, 8, 8);
+        ui->gridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     }
-    
-    // 设置网格布局的对齐方式为左上对齐，不要居中
-    ui->gridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     
     // Pagination: display subset of live_list_ per page
     const int page_size = 8;
@@ -476,7 +494,12 @@ void LiveListWindow::setup_live_list() {
 
     // 更新分页按钮状态
     update_pagination();
-    
+
+    // 恢复窗口位置（防止 Qt 内部布局计算导致窗口偏移）
+    if (this->pos() != windowPos) {
+        this->move(windowPos);
+    }
+
     LOG_INFO("Live list setup completed");
 }
 
@@ -843,13 +866,23 @@ int LiveListWindow::getCurrentRoomState() const {
 // 状态筛选下拉框切换
 void LiveListWindow::on_categoryComboBox_currentIndexChanged(int index) {
     if (index < 0 || index > 2) return;
-    
+
     current_status_index_ = index;
     current_page_ = 1;  // 切换状态时重置到第一页
     load_live_list();
-    
+
     QString statusNames[] = {"待开播", "直播中", "已结束"};
     LOG_INFO(QString("切换状态筛选: %1").arg(statusNames[index]).toStdString());
+}
+
+void LiveListWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+
+    // 确保 gridLayout 在窗口大小改变后正确更新
+    if (ui && ui->gridLayout) {
+        ui->gridLayout->invalidate();
+        ui->gridLayout->activate();
+    }
 }
 
 } // namespace live_assistant

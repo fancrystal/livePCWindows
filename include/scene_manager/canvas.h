@@ -113,8 +113,8 @@ private:
 
     // 画布属性
     CanvasConfig canvas_config_ = CanvasConfig::get_default();
-    int canvas_width_ = 1920;
-    int canvas_height_ = 1080;
+    int canvas_width_ = 1280;
+    int canvas_height_ = 720;
     bool interaction_enabled_ = true;
     
     // 鼠标交互状态

@@ -1,7 +1,6 @@
 #include "app/settings_dialog.h"
 #include "app/device_check_dialog.h"
 #include "ui_settings_panel.h"
-#include "ui_settings_dialog.h"
 #include "common/log.h"
 
 #include <QStringList>
@@ -48,34 +47,42 @@ void SettingsPanel::setupConnections() {
     connect(ui->pushButton_video, &QPushButton::clicked, this, [this]() {
         showTab(SettingsTab::Video);
     });
-    
+
     // 音频按钮
     connect(ui->pushButton_audio, &QPushButton::clicked, this, [this]() {
         showTab(SettingsTab::Audio);
     });
-    
+
     // 摄像头按钮
     connect(ui->pushButton_camera, &QPushButton::clicked, this, [this]() {
         showTab(SettingsTab::Camera);
     });
-    
-    // 背景按钮
-    connect(ui->pushButton_background, &QPushButton::clicked, this, [this]() {
-        showTab(SettingsTab::Background);
-    });
-    
+
+    // 背景按钮 - 隐藏背景设置（功能未实现）
+    ui->pushButton_background->hide();
+
     // 麦克风音量滑块
     connect(ui->slider_micVolume, &QSlider::valueChanged, this, &SettingsPanel::onMicVolumeChanged);
-    
+
     // 扬声器音量滑块
     connect(ui->slider_speakerVolume, &QSlider::valueChanged, this, &SettingsPanel::onSpeakerVolumeChanged);
-    
+
     // 背景模糊滑块
     connect(ui->slider_bgBlur, &QSlider::valueChanged, this, &SettingsPanel::onBgBlurChanged);
 
     // 设备检测按钮
     connect(ui->pushButton_checkDevice, &QPushButton::clicked, this, [this]() {
         openDeviceCheckDialog();
+    });
+
+    // 确定按钮
+    connect(ui->pushButton_ok, &QPushButton::clicked, this, [this]() {
+        accept();
+    });
+
+    // 取消按钮
+    connect(ui->pushButton_cancel, &QPushButton::clicked, this, [this]() {
+        reject();
     });
 }
 
@@ -134,6 +141,12 @@ void SettingsPanel::showTab(SettingsTab tab) {
 
 void SettingsPanel::setDefaultTab(SettingsTab tab) {
     showTab(tab);
+}
+
+void SettingsPanel::hide_background_tab() {
+    // 隐藏背景tab按钮和页面
+    ui->pushButton_background->hide();
+    ui->page_background->hide();
 }
 
 // ===== 视频设置 =====
@@ -261,12 +274,19 @@ void SettingsPanel::set_available_cameras(const std::vector<VideoEngine::CameraC
 }
 
 void SettingsPanel::set_camera_config(const std::string& device_id, const std::string& resolution, int fps, bool mirror) {
-    // 设置摄像头 - 根据设备ID查找
-    for (int i = 0; i < ui->comboBox_camera->count(); ++i) {
-        QString data = ui->comboBox_camera->itemData(i).toString();
-        // device_id 格式是 "camera_<hash>"，这里需要匹配 dshow_name
-        // 暂时通过索引匹配，后续可以优化
-        (void)data;  // 避免 unused warning
+    // 设置摄像头 - 根据设备ID查找并选中
+    // device_id 可能是 dshow_name (FFMPEG模式) 或 索引字符串 (OpenCV模式)
+    // comboBox_camera 的 itemData 存储的是 dshow_name
+    if (!device_id.empty()) {
+        for (int i = 0; i < ui->comboBox_camera->count(); ++i) {
+            QString data = ui->comboBox_camera->itemData(i).toString();
+            // 尝试匹配 dshow_name（FFMPEG 模式）
+            if (data.toStdString() == device_id) {
+                ui->comboBox_camera->setCurrentIndex(i);
+                break;
+            }
+        }
+        // 如果没有匹配到，可能是 OpenCV 索引模式，保持第一个选项
     }
 
     // 设置分辨率
