@@ -10,6 +10,7 @@
 #include <QPainter>
 #include <cstring>
 #include <chrono>
+#include <cmath>
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -313,6 +314,10 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     // 🔧 OBS 风格 PTS 偏移归零：重置偏移变量，等待第一帧到达时重新记录
     first_video_pts_ms_ = -1;
     streaming_pts_initialized_ = false;
+    // 🔧 重置漂移校正状态
+    audio_total_samples_received_ = 0;
+    audio_drift_correction_us_ = 0;
+    last_drift_check_ms_ = 0;
     LOG_INFO("[BRIDGE] PTS offset reset, waiting for first frame");
 
     media_clock_.start();
@@ -651,6 +656,58 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
     
     // 应用 PTS 偏移，确保音视频使用同一个基准
     int64_t adjusted_timestamp_ms = current_timestamp_ms - first_video_pts_ms_;
+
+    // 🔧 OBS 风格音频时钟漂移校正
+    // 声卡硬件时钟（WASAPI）和 CPU steady_clock（media_clock）可能存在微小频率差异
+    // 声卡标称 48000Hz 实际可能是 47999.4Hz，15小时累积 ~1 秒漂移
+    {
+        // 计算本次数据包含的采样数（data 是 float interleaved: samples * channels * sizeof(float)）
+        int channels = 2;  // stereo
+        int bytes_per_sample = sizeof(float);
+        int64_t samples_in_this_chunk = data.size() / (channels * bytes_per_sample);
+        audio_total_samples_received_ += samples_in_this_chunk;
+
+        int64_t elapsed_ms = adjusted_timestamp_ms;
+        if (elapsed_ms > 0 && elapsed_ms - last_drift_check_ms_ >= DRIFT_CHECK_INTERVAL_MS) {
+            last_drift_check_ms_ = elapsed_ms;
+
+            // media_clock 认为应该有多少采样
+            int64_t expected_samples = elapsed_ms * 48LL;  // 48000 Hz = 48 samples/ms
+            int64_t actual_samples = audio_total_samples_received_;
+            int64_t sample_diff = actual_samples - expected_samples;
+
+            // 将采样差异转换为微秒
+            int64_t drift_us = sample_diff * 1000000LL / 48000LL;
+
+            // 每 60 秒或漂移变化显著时记录日志
+            static int64_t last_drift_log_ms = 0;
+            if (elapsed_ms - last_drift_log_ms >= 60000 || std::abs(drift_us) > DRIFT_THRESHOLD_US) {
+                last_drift_log_ms = elapsed_ms;
+                LOG_INFO("[BRIDGE][AV-SYNC] Drift check at " + std::to_string(elapsed_ms / 1000) + "s: "
+                         "expected_samples=" + std::to_string(expected_samples) +
+                         ", actual_samples=" + std::to_string(actual_samples) +
+                         ", drift=" + std::to_string(drift_us / 1000.0) + "ms" +
+                         ", correction=" + std::to_string(audio_drift_correction_us_ / 1000.0) + "ms");
+            }
+
+            // 超过阈值时应用渐进校正（每次校正漂移的 50%，避免 PTS 跳跃）
+            if (std::abs(drift_us) > DRIFT_THRESHOLD_US) {
+                int64_t correction_step = drift_us / 2;
+                audio_drift_correction_us_ += correction_step;
+                LOG_INFO("[BRIDGE][AV-SYNC] Applied drift correction: step=" +
+                         std::to_string(correction_step / 1000.0) + "ms, total=" +
+                         std::to_string(audio_drift_correction_us_ / 1000.0) + "ms");
+            }
+        }
+
+        // 应用漂移校正到时间戳
+        if (audio_drift_correction_us_ != 0) {
+            adjusted_timestamp_ms += audio_drift_correction_us_ / 1000;
+            if (adjusted_timestamp_ms < 0) {
+                adjusted_timestamp_ms = 0;
+            }
+        }
+    }
 
     static int audio_frame_count = 0;
     audio_frame_count++;

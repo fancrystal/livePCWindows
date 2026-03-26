@@ -214,11 +214,8 @@ void StreamPusher::push_thread_func() {
                                 Log::info("Reconnected to RTMP server successfully");
                                 set_state(StreamState::PUSHING);
                                 consecutive_reconnect_failures = 0;  // 重置失败计数
-                                // Retry sending the current packet after successful reconnection
-                                result = rtmp_pusher_.send_packet(packet);
-                                if (result != ErrorCode::SUCCESS) {
-                                    Log::warn("Failed to send packet immediately after reconnection");
-                                }
+                                // 重连成功后，丢弃旧包，等待新包
+                                push_queue_.clear();
                             } else {
                                 Log::error("Reconnect attempt failed, will retry later");
                                 consecutive_reconnect_failures++;
@@ -228,7 +225,7 @@ void StreamPusher::push_thread_func() {
                                     Log::error("Reconnect failed " + std::to_string(consecutive_reconnect_failures) +
                                               " times, giving up and stopping streaming");
                                     set_state(StreamState::ERR);
-                                    push_queue_.clear();  // 清空队列
+                                    push_queue_.clear();
                                     stop_thread_ = true;
                                     break;
                                 }
@@ -246,8 +243,6 @@ void StreamPusher::push_thread_func() {
                 }
             }
         }
-        // Note: No additional sleep needed here - push_queue_.pop() already handles
-        // waiting with 100ms timeout using condition variable, which is more efficient
     }
 
     Log::info("Push thread exited");

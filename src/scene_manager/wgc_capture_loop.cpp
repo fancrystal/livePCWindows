@@ -274,19 +274,22 @@ void WGCCaptureLoop::on_frame_arrived(
     bool resized = false;
     winrt::com_ptr<ID3D11Texture2D> surfaceTexture;
 
-    {
-        auto frame = sender.TryGetNextFrame();
-        if (!frame) return;
+        {
+            auto frame = sender.TryGetNextFrame();
+            if (!frame) return;
 
-        resized = try_resize_swapchain(frame);
+            resized = try_resize_swapchain(frame);
 
-        // back buffer
-        winrt::com_ptr<ID3D11Texture2D> backBuffer;
-        winrt::check_hresult(swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(), backBuffer.put_void()));
+            // back buffer
+            winrt::com_ptr<ID3D11Texture2D> backBuffer;
+            winrt::check_hresult(swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(), backBuffer.put_void()));
 
-        surfaceTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
-        SharedD3D11Device::instance().context()->CopyResource(backBuffer.get(), surfaceTexture.get());
-    }
+            surfaceTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
+            SharedD3D11Device::instance().context()->CopyResource(backBuffer.get(), surfaceTexture.get());
+            
+            // 显式关闭frame，尽早释放FramePool的buffer
+            frame.Close();
+        }
 
     DXGI_PRESENT_PARAMETERS params{};
     swapchain_->Present1(1, 0, &params);

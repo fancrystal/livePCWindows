@@ -295,49 +295,48 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     AVPacket* avpkt = packet->pkt.get();
 
-    // 🔧 调试日志：打印每一帧的 PTS（音频和视频）
+    // 调试日志：打印每一帧的 PTS（仅首帧和每50帧）
+    static int frame_count = 0;
+    frame_count++;
     if (packet->type == MediaType::AUDIO) {
-        static int audio_frame_count = 0;
-        audio_frame_count++;
-        LOG_INFO("[DEBUG] AUDIO frame #" + std::to_string(audio_frame_count) + 
-                 ": pts=" + std::to_string(packet->pts) + "ms" +
-                 ", dts=" + std::to_string(packet->dts) + "ms" +
-                 ", duration=" + std::to_string(packet->duration) + "ms" +
-                 ", wallclock=" + std::to_string(packet->wallclock_us / 1000) + "ms");
+        if (frame_count <= 3) {
+            LOG_DEBUG("[RTMP] AUDIO frame #" + std::to_string(frame_count) + 
+                     ": pts=" + std::to_string(packet->pts) + "ms" +
+                     ", dts=" + std::to_string(packet->dts) + "ms" +
+                     ", duration=" + std::to_string(packet->duration) + "ms");
+        }
     } else {
-        static int video_frame_count = 0;
-        video_frame_count++;
-        LOG_INFO("[DEBUG] VIDEO frame #" + std::to_string(video_frame_count) + 
-                 ": pts=" + std::to_string(packet->pts) + "ms" +
-                 ", dts=" + std::to_string(packet->dts) + "ms" +
-                 ", duration=" + std::to_string(packet->duration) + "ms" +
-                 ", wallclock=" + std::to_string(packet->wallclock_us / 1000) + "ms" +
-                 ", is_keyframe=" + std::to_string(packet->is_keyframe ? 1 : 0));
+        if (frame_count <= 3 || frame_count % 50 == 0) {
+            LOG_DEBUG("[RTMP] VIDEO frame #" + std::to_string(frame_count) + 
+                     ": pts=" + std::to_string(packet->pts) + "ms" +
+                     ", dts=" + std::to_string(packet->dts) + "ms" +
+                     ", duration=" + std::to_string(packet->duration) + "ms" +
+                     ", is_keyframe=" + std::to_string(packet->is_keyframe ? 1 : 0));
+        }
     }
 
-    // 🔧 诊断第一帧 PTS 问题
+    // 🔧 诊断第一帧 PTS 问题（仅前几帧）
     static int64_t first_audio_pts = -1;
     static int64_t first_video_pts = -1;
     static int64_t first_audio_wallclock = -1;
     static int64_t first_video_wallclock = -1;
+    static int first_frame_count = 0;
     
     if (packet->type == MediaType::AUDIO && first_audio_pts == -1) {
         first_audio_pts = packet->pts;
         first_audio_wallclock = packet->wallclock_us / 1000;
         LOG_INFO("[RTMP] First AUDIO packet: pts=" + std::to_string(packet->pts) + 
-                 ", wallclock=" + std::to_string(first_audio_wallclock) + "ms" +
-                 ", dts=" + std::to_string(packet->dts));
+                 ", wallclock=" + std::to_string(first_audio_wallclock) + "ms");
     } else if (packet->type == MediaType::VIDEO && first_video_pts == -1) {
         first_video_pts = packet->pts;
         first_video_wallclock = packet->wallclock_us / 1000;
         LOG_INFO("[RTMP] First VIDEO packet: pts=" + std::to_string(packet->pts) + 
-                 ", wallclock=" + std::to_string(first_video_wallclock) + "ms" +
-                 ", dts=" + std::to_string(packet->dts));
+                 ", wallclock=" + std::to_string(first_video_wallclock) + "ms");
         
         // 打印音视频第一帧的对比
         if (first_audio_pts != -1) {
-            LOG_INFO("[RTMP] AV Sync Check: first_audio_pts=" + std::to_string(first_audio_pts) + 
-                     "ms, first_video_pts=" + std::to_string(first_video_pts) + "ms" +
+            LOG_INFO("[RTMP] AV Sync Check: audio_pts=" + std::to_string(first_audio_pts) + 
+                     "ms, video_pts=" + std::to_string(first_video_pts) + "ms" +
                      ", diff=" + std::to_string(first_video_pts - first_audio_pts) + "ms");
         }
     }
@@ -382,16 +381,15 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         }
         st = audio_stream_;
         
-        // Log audio packet details for debugging
-        static int audio_packet_count = 0;
-        audio_packet_count++;
-        if (audio_packet_count % 50 == 0) {
-            LOG_INFO("[RTMP] Audio packet #" + std::to_string(audio_packet_count) + 
-                     ": pts=" + std::to_string(packet->pts) + 
-                     ", duration=" + std::to_string(packet->duration) +
-                     ", size=" + std::to_string(packet->pkt ? packet->pkt->size : 0) +
-                     ", stream_time_base=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den));
-        }
+        // Log audio packet details for debugging (every 50 packets)
+    static int audio_packet_count = 0;
+    audio_packet_count++;
+    if (audio_packet_count % 50 == 0) {
+        LOG_DEBUG("[RTMP] Audio packet #" + std::to_string(audio_packet_count) + 
+                 ": pts=" + std::to_string(packet->pts) + 
+                 ", duration=" + std::to_string(packet->duration) +
+                 ", size=" + std::to_string(packet->pkt ? packet->pkt->size : 0));
+    }
         
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -567,53 +565,35 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     // Send the original packet if not fragmented or fragmentation failed
     if (!fragmented) {
-        // 🔧 增强调试日志：打印音视频packet的完整时间戳信息
+        // 🔧 增强调试日志：打印音视频packet的完整时间戳信息（仅首帧）
+    static int write_frame_count = 0;
+    write_frame_count++;
+    if (write_frame_count <= 3) {
         std::string media_type = (packet->type == MediaType::VIDEO) ? "VIDEO" : "AUDIO";
-        LOG_INFO("[RTMP] Before write: " + media_type +
+        LOG_DEBUG("[RTMP] Before write: " + media_type +
                  " pts=" + std::to_string(packet->pts) +
                  ", dts=" + std::to_string(packet->dts) +
-                 ", duration=" + std::to_string(packet->duration) +
-                 ", encoder_tb=" + std::to_string(packet->encoder_time_base.num) + "/" + std::to_string(packet->encoder_time_base.den) +
-                 ", stream_tb=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den) +
-                 ", stream_index=" + std::to_string(write_pkt->stream_index));
-        
-        LOG_DEBUG("[RTMP] Before write: pts=" + std::to_string(write_pkt->pts) +
-                  ", dts=" + std::to_string(write_pkt->dts) +
-                  ", size=" + std::to_string(write_pkt->size) +
-                  ", duration=" + std::to_string(write_pkt->duration) +
-                  ", stream_index=" + std::to_string(write_pkt->stream_index));
+                 ", size=" + std::to_string(write_pkt->size));
+    }
 
-        // 根据配置选择写入模式
-        int ret;
-        if (config_.use_interleaved_write) {
-            ret = av_interleaved_write_frame(format_ctx_, write_pkt);
-        } else {
-            ret = av_write_frame(format_ctx_, write_pkt);
-        }
+    // 根据配置选择写入模式
+    int ret;
+    if (config_.use_interleaved_write) {
+        ret = av_interleaved_write_frame(format_ctx_, write_pkt);
+    } else {
+        ret = av_write_frame(format_ctx_, write_pkt);
+    }
 
-        LOG_DEBUG("[RTMP] After write: ret=" + std::to_string(ret) +
-                  ", pts=" + std::to_string(write_pkt->pts) +
-                  ", dts=" + std::to_string(write_pkt->dts) +
-                  ", size=" + std::to_string(write_pkt->size) +
-                  ", mode=" + std::string(config_.use_interleaved_write ? "interleaved" : "direct"));
-
-        // Save size before potential free
-        int packet_size = write_pkt->size;
+    // Save size before potential free
+    int packet_size = write_pkt->size;
 
         if (ret < 0) {
             char errbuf[128] = {0};
             av_strerror(ret, errbuf, sizeof(errbuf));
 
-            // Log detailed debug info for audio packets
+            // Log detailed debug info for audio packets (errors only)
             if (packet->type == MediaType::AUDIO) {
                 LOG_ERROR("[RTMP] Audio send failed: ret=" + std::to_string(ret) + " (" + errbuf + ")");
-                LOG_ERROR("  - pts=" + std::to_string(write_pkt->pts) + ", dts=" + std::to_string(write_pkt->dts));
-                LOG_ERROR("  - duration=" + std::to_string(write_pkt->duration) + ", size=" + std::to_string(packet_size));
-                LOG_ERROR("  - stream_index=" + std::to_string(write_pkt->stream_index));
-                LOG_ERROR("  - stream.time_base=" + std::to_string(st->time_base.num) + "/" + std::to_string(st->time_base.den));
-                //LOG_ERROR("  - codecpar.channels=" + std::to_string(st->codecpar->channels));
-                LOG_ERROR("  - codecpar.sample_rate=" + std::to_string(st->codecpar->sample_rate));
-                LOG_ERROR("  - codecpar.extradata_size=" + std::to_string(st->codecpar->extradata_size));
             }
 
             LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);

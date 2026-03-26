@@ -180,9 +180,9 @@ private:
     void capture_and_queue_frame();
     
     // 编码前视频帧队列（线程安全）
-    // 🔧 编码队列大小：增加到 20 帧（约 600ms @ 30fps）
-    // 之前只有 5 帧导致频繁溢出丢帧
-    static constexpr size_t MAX_ENCODE_QUEUE_SIZE = 20;
+    // 🔧 编码队列大小：4帧（约133ms @ 30fps）
+    // 减少内存堆积：从20帧改为4帧
+    static constexpr size_t MAX_ENCODE_QUEUE_SIZE = 4;
     std::deque<PreEncodeVideoFrame> pre_encode_queue_;
     std::mutex encode_queue_mutex_;
     std::condition_variable encode_queue_cv_;
@@ -241,6 +241,15 @@ private:
     // 🔧 OBS 风格 PTS 偏移归零（确保第一帧 PTS=0）
     int64_t first_video_pts_ms_ = -1;      // 第一帧音/视频的 PTS（毫秒），音视频共用
     bool streaming_pts_initialized_ = false;  // 推流 PTS 是否已初始化
+
+    // 🔧 OBS 风格音频时钟漂移校正
+    // 声卡硬件时钟和 CPU steady_clock 可能存在微小频率差异
+    // 15小时可累积约1秒的音视频不同步
+    int64_t audio_total_samples_received_ = 0;  // 从声卡实际收到的总采样数
+    int64_t audio_drift_correction_us_ = 0;     // 累积的漂移校正量（微秒）
+    int64_t last_drift_check_ms_ = 0;           // 上次漂移检查的 media_clock 时间
+    static constexpr int64_t DRIFT_CHECK_INTERVAL_MS = 10000;   // 每 10 秒检测一次
+    static constexpr int64_t DRIFT_THRESHOLD_US = 40000;        // 超过 40ms 才校正
 
     // ═══════════════════════════════════════════════════════════════
     // 🔧 插播视频帧同步器（用于与直播流时间同步）

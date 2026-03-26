@@ -4657,7 +4657,19 @@ void MainWindow::onTrayExitAction() {
 }
 
 void MainWindow::handleExit() {
-    LOG_INFO("User requested to exit live room - emit request_return_to_live_list signal");
+    LOG_INFO("User requested to exit live room");
+
+    // 🔧 检查是否正在推流
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        int ret = QMessageBox::question(this, "推流进行中",
+            "当前正在推流直播中，确定要退出吗？\n退出后将中断直播推流。",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ret == QMessageBox::No) {
+            return;
+        }
+        // 用户确认停止推流
+        encoder_bridge_->stop_streaming();
+    }
 
     // 保存场景配置（返回直播列表时也保存）
     save_scenes_config();

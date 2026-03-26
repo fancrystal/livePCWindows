@@ -4,6 +4,10 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <queue>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
 
 #include <QByteArray>
 #include <QObject>
@@ -87,6 +91,23 @@ private:
     ErrorCode receive_packets(std::vector<EncodedPacketPtr>& packets);
     ErrorCode ensure_swr();
     int convert_input_data(const uint8_t* input_data, int input_size, AVFrame* frame);
+    void process_audio_data(const QByteArray& data, int64_t timestamp);
+
+    // 🔧 音频编码缓冲结构（用于异步编码队列）
+    struct AudioEncodeJob {
+        QByteArray data;
+        int64_t timestamp_ms;
+    };
+
+    // 🔧 异步编码：音频数据队列和编码线程
+    std::queue<AudioEncodeJob> encode_queue_;
+    std::mutex encode_queue_mutex_;
+    std::condition_variable encode_cv_;
+    std::thread encode_thread_;
+    std::atomic<bool> encode_thread_running_{false};
+
+    // 编码线程函数
+    void encode_thread_func();
 
     AudioEncoderConfig config_;
     bool initialized_ = false;
@@ -111,7 +132,8 @@ private:
     int64_t output_frame_count_;
     
     int64_t frame_duration_ms_;
-    
+    int64_t frame_duration_us_ = 0;  // 微秒精度帧时长，避免整数截断漂移
+
     int64_t frame_offset_in_batch_;
     
     int frame_samples_;

@@ -917,7 +917,7 @@ ErrorCode H264Encoder::encode(const std::shared_ptr<VideoFrame>& frame, std::vec
     static int frame_count = 0;
     frame_count++;
     if (encode_duration > 50 || frame_count <= 3 || frame_count % 100 == 0) {
-        LOG_INFO("[H264Encoder] Encode #" + std::to_string(frame_count) +
+        LOG_DEBUG("[H264Encoder] Encode #" + std::to_string(frame_count) +
                  " pts=" + std::to_string(pts_start) + "ms" +
                  " total=" + std::to_string(encode_duration) + "ms" +
                  " (send=" + std::to_string(receive_duration) + "ms" +
