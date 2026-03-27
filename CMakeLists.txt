@@ -24,7 +24,7 @@ if(WIN32)
 endif()
 
 # Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture, MultimediaWidgets for QVideoWidget, PrintSupport for QCustomPlot)
-find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport WebEngineWidgets Concurrent)
+find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport WebEngineWidgets Concurrent OpenGL OpenGLWidgets)
 qt_standard_project_setup()
 
 # Third-party library paths
@@ -144,6 +144,8 @@ target_link_libraries(LiveAssistant PRIVATE
     Qt6::PrintSupport
     Qt6::WebEngineWidgets
     Qt6::Concurrent
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     # FFmpeg libraries
     ${FFMPEG_DIR}/lib/x64/avformat.lib
     ${FFMPEG_DIR}/lib/x64/avcodec.lib
@@ -179,6 +181,7 @@ if(WIN32)
         dxgi.lib
         dwmapi.lib
         windowsapp.lib
+        opengl32.lib
     )
 endif()
 

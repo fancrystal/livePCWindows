@@ -13,6 +13,7 @@
 #include <dxgi1_2.h>
 
 #include "common/config_manager.h"
+#include "scene_manager/gpu_texture_ref.h"
 
 namespace live_assistant {
 
@@ -24,6 +25,8 @@ struct CompositorLayer {
     ID3D11Texture2D* d3d_texture = nullptr;
     QImage qimage;  // Legacy: 用于非插播视频源
     std::shared_ptr<VideoFrame> video_frame;  // 零拷贝：插播视频使用，共享数据
+    // Phase 1: GPU 纹理直传（WGC 捕获帧，D3D11_USAGE_DEFAULT，可作为 SRV 输入）
+    GpuTextureRef gpu_texture_ref;
     QRectF dest_rect;  // Destination rectangle in canvas coordinates
     float opacity = 1.0f;
     bool visible = true;
@@ -47,6 +50,8 @@ public:
     void update_layer_texture(const std::string& source_id, ID3D11Texture2D* texture);
     void update_layer_image(const std::string& source_id, const QImage& image);
     void update_layer_video_frame(const std::string& source_id, std::shared_ptr<VideoFrame> frame);
+    // Phase 1: GPU 纹理直传更新（WGC 捕获帧，线程安全）
+    void update_layer_gpu_texture(const std::string& source_id, const GpuTextureRef& tex_ref);
     void update_layer_transform(const std::string& source_id, const QRectF& dest_rect, float opacity = 1.0f);
     void set_layer_visible(const std::string& source_id, bool visible);
     void set_layer_order(const std::string& source_id, int order);
@@ -55,6 +60,8 @@ public:
 
     // Layer ordering and state access
     std::optional<CompositorLayer> get_layer_state(const std::string& source_id) const;
+    // GPU 路径接线：返回所有图层的快照（线程安全），供 GpuCompositor 使用
+    std::vector<CompositorLayer> get_all_layers() const;
     void move_layer_up(const std::string& source_id);
     void move_layer_down(const std::string& source_id);
 

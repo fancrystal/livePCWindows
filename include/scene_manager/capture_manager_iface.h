@@ -19,6 +19,12 @@ public:
     bool has_source(const std::string& source_id) const;
     std::vector<std::string> get_all_source_ids() const;
 
+    // 获取指定的采集源
+    std::shared_ptr<ICaptureSource> get_source(const std::string& source_id) const;
+
+    // 更新采集源的共享设置（仅对 WGC 源有效）
+    void update_share_settings(const std::string& source_id, bool capture_cursor, bool capture_border);
+
 private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::shared_ptr<ICaptureSource>> sources_;

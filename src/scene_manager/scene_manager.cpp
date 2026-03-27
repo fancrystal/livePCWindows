@@ -316,7 +316,8 @@ ErrorCode SceneManager::remove_scene(const std::string& name) {
         if (was_current_scene && !scenes_.empty()) {
             current_scene_index_ = 0;
         } else if (current_scene_index_ >= scenes_.size()) {
-            current_scene_index_ = scenes_.empty() ? 0 : current_scene_index_;
+            // 修复：越界时修正为最后一个有效索引，原逻辑保留越界值会导致崩溃
+            current_scene_index_ = scenes_.empty() ? 0 : static_cast<int>(scenes_.size()) - 1;
         }
 
         return ErrorCode::SUCCESS;

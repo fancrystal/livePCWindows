@@ -197,49 +197,62 @@ void StreamPusher::push_thread_func() {
             ErrorCode result = rtmp_pusher_.send_packet(packet);
 
             if (result != ErrorCode::SUCCESS) {
-                Log::error("Failed to send packet: " + std::to_string(static_cast<int>(result)));
+                Log::error("[PUSH] send_packet failed: error_code=" + std::to_string(static_cast<int>(result)) +
+                           ", queue_size=" + std::to_string(push_queue_.size()));
 
                 if (result == ErrorCode::NOT_CONNECTED) {
+                    Log::error("[PUSH] NOT_CONNECTED: auto_reconnect=" + std::to_string(config_.auto_reconnect) +
+                               ", reconnect_interval=" + std::to_string(config_.reconnect_interval_sec) + "s");
                     if (config_.auto_reconnect) {
-                        // Non-blocking reconnection: only attempt once if enough time has passed
                         auto now = std::chrono::steady_clock::now();
-                        auto time_since_last_attempt = std::chrono::duration_cast<std::chrono::seconds>(now - last_reconnect_attempt);
+                        auto time_since_last_attempt = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_reconnect_attempt);
 
-                        if (time_since_last_attempt.count() >= config_.reconnect_interval_sec) {
+                        Log::info("[PUSH] Time since last reconnect attempt: " +
+                                  std::to_string(time_since_last_attempt.count()) + "ms" +
+                                  ", threshold=" + std::to_string(config_.reconnect_interval_sec * 1000) + "ms");
+
+                        if (time_since_last_attempt.count() >= config_.reconnect_interval_sec * 1000) {
                             reconnect_attempts_++;
                             last_reconnect_attempt = now;
+                            Log::info("[PUSH] Starting reconnect attempt #" + std::to_string(reconnect_attempts_));
 
                             ErrorCode reconnect_result = rtmp_pusher_.connect_and_write_header();
+                            Log::info("[PUSH] Reconnect result: " + std::to_string(static_cast<int>(reconnect_result)));
+
                             if (reconnect_result == ErrorCode::SUCCESS) {
-                                Log::info("Reconnected to RTMP server successfully");
+                                Log::info("[PUSH] Reconnected to RTMP server successfully, clearing queue");
                                 set_state(StreamState::PUSHING);
-                                consecutive_reconnect_failures = 0;  // 重置失败计数
-                                // 重连成功后，丢弃旧包，等待新包
+                                consecutive_reconnect_failures = 0;
                                 push_queue_.clear();
                             } else {
-                                Log::error("Reconnect attempt failed, will retry later");
+                                Log::error("[PUSH] Reconnect attempt #" + std::to_string(reconnect_attempts_) +
+                                           " failed (result=" + std::to_string(static_cast<int>(reconnect_result)) +
+                                           "), consecutive_failures=" + std::to_string(consecutive_reconnect_failures + 1));
                                 consecutive_reconnect_failures++;
 
-                                // 检查是否达到最大重连失败次数
                                 if (consecutive_reconnect_failures >= config_.max_reconnect_attempts) {
-                                    Log::error("Reconnect failed " + std::to_string(consecutive_reconnect_failures) +
-                                              " times, giving up and stopping streaming");
+                                    Log::error("[PUSH] Reconnect failed " + std::to_string(consecutive_reconnect_failures) +
+                                              " times (max=" + std::to_string(config_.max_reconnect_attempts) +
+                                              "), giving up and stopping streaming");
                                     set_state(StreamState::ERR);
                                     push_queue_.clear();
                                     stop_thread_ = true;
                                     break;
                                 }
                             }
+                        } else {
+                            Log::info("[PUSH] Too soon since last reconnect attempt, waiting...");
                         }
-                        // else: too soon since last attempt, skip reconnection this time
                     } else {
-                        Log::error("Connection lost and auto-reconnect disabled");
+                        Log::error("[PUSH] Connection lost and auto-reconnect disabled, stopping push thread");
                         set_state(StreamState::ERR);
                         push_queue_.clear();
                         break;
                     }
                 } else if (result == ErrorCode::SEND_FAILED) {
-                    Log::warn("Failed to send one packet, continuing...");
+                    Log::warn("[PUSH] Failed to send one packet (SEND_FAILED), continuing...");
+                } else if (result == ErrorCode::INVALID_STATE) {
+                    Log::error("[PUSH] INVALID_STATE in send_packet (stream/encoder not ready?), continuing...");
                 }
             }
         }

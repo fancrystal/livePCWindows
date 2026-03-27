@@ -38,6 +38,8 @@ class Encoder;
 class StreamPusher;
 class CanvasWidget;
 class Compositor;
+class GpuCompositor;
+class GpuColorConverter;
 class CompositorEncoderBridge;
 class CaptureManagerIface;
 class Source;
@@ -171,6 +173,8 @@ private:
 
     // Compositor and encoder bridge
     std::shared_ptr<Compositor> compositor_;
+    std::shared_ptr<GpuCompositor> gpu_compositor_;
+    std::shared_ptr<GpuColorConverter> gpu_color_converter_;
     std::shared_ptr<CompositorEncoderBridge> encoder_bridge_;
 
     // Preview timer
@@ -238,6 +242,9 @@ private:
 
     // Tech stats label (bottom bar)
     QLabel* tech_stats_label_ = nullptr;
+
+    // Live title label (top bar)
+    QLabel* live_title_label_ = nullptr;
 
     // 系统监控日志打印计数器
     int system_log_counter_ = 0;

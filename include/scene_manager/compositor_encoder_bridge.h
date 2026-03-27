@@ -12,6 +12,9 @@
 #include <QObject>
 
 #include "scene_manager/compositor.h"
+#include "scene_manager/gpu_compositor.h"
+#include "scene_manager/gpu_color_converter.h"
+#include "scene_manager/gpu_texture_ref.h"
 #include "encoder/encoder.h"
 #include "stream_pusher/stream_pusher.h"
 #include "common/media_clock.h"
@@ -28,6 +31,8 @@ namespace live_assistant {
 // 🔧 编码前视频帧结构（用于编码队列）
 struct PreEncodeVideoFrame {
     std::shared_ptr<VideoFrame> frame;
+    // Phase 4 GPU path: 当 gpu_nv12_ref.is_valid() 时，优先走 encode_video_gpu_texture()
+    GpuTextureRef gpu_nv12_ref;
     int64_t pts_ms;           // PTS（毫秒）
     int64_t wallclock_us;     // 壁挂钟时间（微秒）
     int64_t frame_count;      // 帧序号
@@ -61,6 +66,9 @@ public:
     // 设置组件
     void set_compositor(std::shared_ptr<Compositor> compositor);
     void set_encoder(std::shared_ptr<Encoder> encoder);
+    // GPU 管线接线（Phase 2-4）：设置后自动启用 GPU 路径
+    void set_gpu_compositor(std::shared_ptr<GpuCompositor> gpu_compositor);
+    void set_gpu_color_converter(std::shared_ptr<GpuColorConverter> gpu_color_converter);
     void set_stream_pusher(std::shared_ptr<StreamPusher> stream_pusher);
     void set_audio_engine(std::shared_ptr<class AudioEngine> audio_engine);
     // 静音回退开关（当麦克风不可用时启用静音帧）
@@ -138,6 +146,9 @@ private:
 
     // 组件
     std::shared_ptr<Compositor> compositor_;
+    // GPU 路径（Phase 2-4），可选——未设置时回退 CPU 路径
+    std::shared_ptr<GpuCompositor>    gpu_compositor_;
+    std::shared_ptr<GpuColorConverter> gpu_color_converter_;
     std::shared_ptr<CanvasRenderer> canvas_renderer_;  // 回退方案：用于推流捕获
     std::shared_ptr<Scene> current_scene_;            // 当前场景（用于 CanvasRenderer 渲染）
     std::shared_ptr<Encoder> encoder_;
@@ -180,9 +191,9 @@ private:
     void capture_and_queue_frame();
     
     // 编码前视频帧队列（线程安全）
-    // 🔧 编码队列大小：4帧（约133ms @ 30fps）
-    // 减少内存堆积：从20帧改为4帧
-    static constexpr size_t MAX_ENCODE_QUEUE_SIZE = 4;
+    // 🔧 编码队列大小：10帧（约333ms @ 30fps）
+    // 提供足够缓冲避免因编码波动导致的丢帧
+    static constexpr size_t MAX_ENCODE_QUEUE_SIZE = 10;
     std::deque<PreEncodeVideoFrame> pre_encode_queue_;
     std::mutex encode_queue_mutex_;
     std::condition_variable encode_queue_cv_;
@@ -242,19 +253,24 @@ private:
     int64_t first_video_pts_ms_ = -1;      // 第一帧音/视频的 PTS（毫秒），音视频共用
     bool streaming_pts_initialized_ = false;  // 推流 PTS 是否已初始化
 
-    // 🔧 OBS 风格音频时钟漂移校正
-    // 声卡硬件时钟和 CPU steady_clock 可能存在微小频率差异
-    // 15小时可累积约1秒的音视频不同步
+    // 音频时钟漂移监控（仅诊断，不修正 PTS）
     int64_t audio_total_samples_received_ = 0;  // 从声卡实际收到的总采样数
-    int64_t audio_drift_correction_us_ = 0;     // 累积的漂移校正量（微秒）
     int64_t last_drift_check_ms_ = 0;           // 上次漂移检查的 media_clock 时间
     static constexpr int64_t DRIFT_CHECK_INTERVAL_MS = 10000;   // 每 10 秒检测一次
-    static constexpr int64_t DRIFT_THRESHOLD_US = 40000;        // 超过 40ms 才校正
+    static constexpr int64_t DRIFT_THRESHOLD_US = 40000;        // 日志输出阈值
+
+    // 🔧 on_audio_encoded 诊断计数（成员变量，替换 static 本地变量，每次推流重置）
+    int64_t diag_first_audio_pts_ = -1;
+    int diag_audio_count_ = 0;
 
     // ═══════════════════════════════════════════════════════════════
     // 🔧 插播视频帧同步器（用于与直播流时间同步）
     // ═══════════════════════════════════════════════════════════════
     std::unique_ptr<VideoFrameSynchronizer> insert_video_synchronizer_;
+
+    // 🔧 GPU 路径：capture_compositor_frame() → capture_and_queue_frame() 传递 NV12 纹理引用
+    // 只在捕获线程访问，无需加锁
+    GpuTextureRef pending_gpu_nv12_ref_;
 
     // 线程安全：保护状态变量的互斥锁
     mutable std::mutex state_mutex_;

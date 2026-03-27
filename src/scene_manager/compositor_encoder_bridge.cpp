@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "scene_manager/compositor_encoder_bridge.h"
 #include "common/log.h"
 #include "common/error.h"
@@ -5,6 +6,9 @@
 #include "audio_engine/audio_engine.h"
 #include "encoder/audio_encoder.h"
 #include "media_pipeline/media_file_source.h"
+#include "scene_manager/gpu_compositor.h"
+#include "scene_manager/gpu_color_converter.h"
+#include <d3d11.h>
 
 #include <QImage>
 #include <QPainter>
@@ -92,6 +96,16 @@ void CompositorEncoderBridge::set_canvas_renderer(std::shared_ptr<CanvasRenderer
     canvas_renderer_ = renderer;
     current_scene_ = scene;
     LOG_INFO("CanvasRenderer set for encoder bridge (fallback mode)");
+}
+
+void CompositorEncoderBridge::set_gpu_compositor(std::shared_ptr<GpuCompositor> gpu_compositor) {
+    gpu_compositor_ = gpu_compositor;
+    LOG_INFO("GpuCompositor set for encoder bridge");
+}
+
+void CompositorEncoderBridge::set_gpu_color_converter(std::shared_ptr<GpuColorConverter> gpu_color_converter) {
+    gpu_color_converter_ = gpu_color_converter;
+    LOG_INFO("GpuColorConverter set for encoder bridge");
 }
 
 void CompositorEncoderBridge::set_encoder(std::shared_ptr<Encoder> encoder) {
@@ -284,8 +298,8 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
 
     running_ = false;
     // 不再需要停止 QTimer
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // 注意：移除了 50ms sleep，避免这段时间内 WASAPI 捕获的音频因 streaming_=false 被丢弃
+    // 这会导致推流开始时第一个音节被截断
 
     if (encoder_) {
         encoder_->reset_audio_encoder();
@@ -314,10 +328,12 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     // 🔧 OBS 风格 PTS 偏移归零：重置偏移变量，等待第一帧到达时重新记录
     first_video_pts_ms_ = -1;
     streaming_pts_initialized_ = false;
-    // 🔧 重置漂移校正状态
+    // 重置漂移监控状态
     audio_total_samples_received_ = 0;
-    audio_drift_correction_us_ = 0;
     last_drift_check_ms_ = 0;
+    // 🔧 重置音频诊断计数（原来是 static 本地变量，每次推流必须重置）
+    diag_first_audio_pts_ = -1;
+    diag_audio_count_ = 0;
     LOG_INFO("[BRIDGE] PTS offset reset, waiting for first frame");
 
     media_clock_.start();
@@ -488,7 +504,10 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
             pre_frame.pts_ms = adjusted_pts_ms;
             pre_frame.wallclock_us = adjusted_pts_ms * 1000;
             pre_frame.frame_count = video_frame_count_;
-            
+            // GPU 路径：若 capture_compositor_frame() 走了 GPU 路径，则传递 NV12 纹理引用
+            pre_frame.gpu_nv12_ref = pending_gpu_nv12_ref_;
+            pending_gpu_nv12_ref_ = GpuTextureRef{};  // 消费后清零
+
             push_to_encode_queue(pre_frame);
 
             // [DIAG] Frame capture total time
@@ -506,6 +525,58 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
 }
 
 std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() {
+    // ═══════════════════════════════════════════════════════════════════
+    // GPU 路径（Phase 2-4）：GpuCompositor → GpuColorConverter → NV12 纹理
+    // 仅当 gpu_compositor_ 和 gpu_color_converter_ 都已设置时使用
+    // ═══════════════════════════════════════════════════════════════════
+    if (gpu_compositor_ && gpu_color_converter_ && compositor_) {
+        // 从 CPU Compositor 获取所有图层快照（包含 GpuTextureRef）
+        std::vector<CompositorLayer> cpu_layers = compositor_->get_all_layers();
+
+        // 构建 GPU 合成器图层列表
+        std::vector<GpuCompositorLayer> gpu_layers;
+        gpu_layers.reserve(cpu_layers.size());
+        for (const auto& layer : cpu_layers) {
+            if (!layer.visible) continue;
+            // 只处理有 GPU 纹理的图层
+            if (!layer.gpu_texture_ref.is_valid()) continue;
+            GpuCompositorLayer gl;
+            gl.source_id = layer.source_id;
+            gl.texture   = layer.gpu_texture_ref.texture.get();
+            gl.dest_x    = static_cast<float>(layer.dest_rect.x());
+            gl.dest_y    = static_cast<float>(layer.dest_rect.y());
+            gl.dest_w    = static_cast<float>(layer.dest_rect.width());
+            gl.dest_h    = static_cast<float>(layer.dest_rect.height());
+            gl.opacity   = layer.opacity;
+            gl.z_order   = layer.z_order;
+            gpu_layers.push_back(std::move(gl));
+        }
+
+        if (!gpu_layers.empty()) {
+            // GPU 合成：输出 BGRA 纹理
+            GpuTextureRef bgra_ref = gpu_compositor_->compose(gpu_layers);
+            if (bgra_ref.is_valid()) {
+                // 颜色转换：BGRA → NV12
+                GpuTextureRef nv12_ref = gpu_color_converter_->convert(bgra_ref.texture.get());
+                if (nv12_ref.is_valid()) {
+                    // GPU 路径成功：返回一个最小 VideoFrame 占位，
+                    // 真正的纹理通过 pre_frame.gpu_nv12_ref 传递
+                    // 注意：调用方 capture_and_queue_frame 需要处理 gpu_nv12_ref
+                    // 此处将 NV12 ref 缓存到成员变量，供 capture_and_queue_frame 读取
+                    pending_gpu_nv12_ref_ = nv12_ref;
+                    // 返回空帧作为占位（表示 GPU 路径成功）
+                    auto frame = std::make_shared<VideoFrame>();
+                    frame->format = VideoFrame::PixelFormat::NV12;
+                    frame->width = width_;
+                    frame->height = height_;
+                    return frame;  // 调用方检查 pending_gpu_nv12_ref_.is_valid()
+                }
+            }
+        }
+        // GPU 路径失败，回退到 CPU 路径
+        pending_gpu_nv12_ref_ = GpuTextureRef{};
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // 优先使用 Compositor（如果所有源都正确更新了帧到 Compositor）
     // ═══════════════════════════════════════════════════════════════════
@@ -657,12 +728,11 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
     // 应用 PTS 偏移，确保音视频使用同一个基准
     int64_t adjusted_timestamp_ms = current_timestamp_ms - first_video_pts_ms_;
 
-    // 🔧 OBS 风格音频时钟漂移校正
-    // 声卡硬件时钟（WASAPI）和 CPU steady_clock（media_clock）可能存在微小频率差异
-    // 声卡标称 48000Hz 实际可能是 47999.4Hz，15小时累积 ~1 秒漂移
+    // 音频时钟漂移监控（仅诊断，不修正 PTS）
+    // 音视频 PTS 均来自同一个 media_clock，天然同步，无需 PTS 层面的修正。
+    // 修正 PTS 会导致时间戳回退，触发 AACEncoder 清空缓冲区和 EINVAL 错误。
     {
-        // 计算本次数据包含的采样数（data 是 float interleaved: samples * channels * sizeof(float)）
-        int channels = 2;  // stereo
+        int channels = 2;
         int bytes_per_sample = sizeof(float);
         int64_t samples_in_this_chunk = data.size() / (channels * bytes_per_sample);
         audio_total_samples_received_ += samples_in_this_chunk;
@@ -671,40 +741,18 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
         if (elapsed_ms > 0 && elapsed_ms - last_drift_check_ms_ >= DRIFT_CHECK_INTERVAL_MS) {
             last_drift_check_ms_ = elapsed_ms;
 
-            // media_clock 认为应该有多少采样
             int64_t expected_samples = elapsed_ms * 48LL;  // 48000 Hz = 48 samples/ms
             int64_t actual_samples = audio_total_samples_received_;
             int64_t sample_diff = actual_samples - expected_samples;
-
-            // 将采样差异转换为微秒
             int64_t drift_us = sample_diff * 1000000LL / 48000LL;
 
-            // 每 60 秒或漂移变化显著时记录日志
             static int64_t last_drift_log_ms = 0;
             if (elapsed_ms - last_drift_log_ms >= 60000 || std::abs(drift_us) > DRIFT_THRESHOLD_US) {
                 last_drift_log_ms = elapsed_ms;
-                LOG_INFO("[BRIDGE][AV-SYNC] Drift check at " + std::to_string(elapsed_ms / 1000) + "s: "
+                LOG_INFO("[BRIDGE][AV-SYNC] Drift monitor at " + std::to_string(elapsed_ms / 1000) + "s: "
                          "expected_samples=" + std::to_string(expected_samples) +
                          ", actual_samples=" + std::to_string(actual_samples) +
-                         ", drift=" + std::to_string(drift_us / 1000.0) + "ms" +
-                         ", correction=" + std::to_string(audio_drift_correction_us_ / 1000.0) + "ms");
-            }
-
-            // 超过阈值时应用渐进校正（每次校正漂移的 50%，避免 PTS 跳跃）
-            if (std::abs(drift_us) > DRIFT_THRESHOLD_US) {
-                int64_t correction_step = drift_us / 2;
-                audio_drift_correction_us_ += correction_step;
-                LOG_INFO("[BRIDGE][AV-SYNC] Applied drift correction: step=" +
-                         std::to_string(correction_step / 1000.0) + "ms, total=" +
-                         std::to_string(audio_drift_correction_us_ / 1000.0) + "ms");
-            }
-        }
-
-        // 应用漂移校正到时间戳
-        if (audio_drift_correction_us_ != 0) {
-            adjusted_timestamp_ms += audio_drift_correction_us_ / 1000;
-            if (adjusted_timestamp_ms < 0) {
-                adjusted_timestamp_ms = 0;
+                         ", drift=" + std::to_string(drift_us / 1000.0) + "ms");
             }
         }
     }
@@ -764,29 +812,27 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     //     }
     // }
 
-    // 🔧 诊断音频包
-    static int64_t first_audio_pts = -1;
-    static int audio_count = 0;
-    audio_count++;
+    // 🔧 诊断音频包（使用成员变量，每次推流重置，避免 static 跨会话污染）
+    diag_audio_count_++;
 
     // ✅ 修复负数 PTS：AAC 编码器会有编码延迟（如 -1024），需要修正为 0
     int64_t adjusted_timestamp = timestamp;
     if (timestamp < 0) {
         adjusted_timestamp = 0;
-        if (audio_count <= 5) {
+        if (diag_audio_count_ <= 5) {
             LOG_WARNING("[BRIDGE] Adjusted negative audio PTS from " + std::to_string(timestamp) +
                        " to 0 (AAC encoder delay)");
         }
     }
 
-    if (first_audio_pts == -1) {
-        first_audio_pts = adjusted_timestamp;
+    if (diag_first_audio_pts_ == -1) {
+        diag_first_audio_pts_ = adjusted_timestamp;
         LOG_INFO("[BRIDGE] First AUDIO packet: pts=" + std::to_string(adjusted_timestamp) +
                  "ms, size=" + std::to_string(size) +
                  ", media_clock=" + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
-    } else if (audio_count <= 5) {
-        int64_t delta_ms = adjusted_timestamp - first_audio_pts;
-        LOG_INFO("[BRIDGE] Audio packet #" + std::to_string(audio_count) +
+    } else if (diag_audio_count_ <= 5) {
+        int64_t delta_ms = adjusted_timestamp - diag_first_audio_pts_;
+        LOG_INFO("[BRIDGE] Audio packet #" + std::to_string(diag_audio_count_) +
                  ": pts=" + std::to_string(adjusted_timestamp) +
                  "ms, delta=" + std::to_string(delta_ms) + "ms" +
                  ", media_clock=" + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
@@ -908,9 +954,24 @@ void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
 
             auto process_start = std::chrono::high_resolution_clock::now();
 
-            // 编码视频帧
+            // 编码视频帧：优先走 GPU 纹理直编路径（Phase 4），回退 CPU 路径
             std::vector<EncodedPacketPtr> video_packets;
-            ErrorCode video_result = encoder_->encode_video_frame(pre_frame.frame, video_packets);
+            ErrorCode video_result = ErrorCode::INVALID_STATE;
+
+            if (pre_frame.gpu_nv12_ref.is_valid() && encoder_->is_gpu_texture_encode_available()) {
+                // GPU 路径：直接编码 NV12 纹理，跳过 sws_scale + av_hwframe_transfer_data
+                video_result = encoder_->encode_video_gpu_texture(
+                    pre_frame.gpu_nv12_ref.texture.get(), pre_frame.pts_ms, video_packets);
+                if (video_result != ErrorCode::SUCCESS) {
+                    LOG_WARNING("[BRIDGE][Thread#" + std::to_string(thread_id) +
+                                "] GPU texture encode failed (pts=" + std::to_string(pre_frame.pts_ms) +
+                                "), falling back to CPU path");
+                    video_result = encoder_->encode_video_frame(pre_frame.frame, video_packets);
+                }
+            } else {
+                // CPU 路径（回退）
+                video_result = encoder_->encode_video_frame(pre_frame.frame, video_packets);
+            }
 
             auto process_end = std::chrono::high_resolution_clock::now();
             auto process_time = std::chrono::duration_cast<std::chrono::milliseconds>(process_end - process_start).count();
@@ -919,6 +980,7 @@ void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
             if (wait_time > 100 || process_time > 50 || encode_count <= 3 || encode_count % 50 == 0) {
                 LOG_INFO("[BRIDGE][Thread#" + std::to_string(thread_id) + "] Frame #" +
                          std::to_string(pre_frame.frame_count) +
+                         (pre_frame.gpu_nv12_ref.is_valid() ? " [GPU]" : " [CPU]") +
                          " wait=" + std::to_string(wait_time) + "ms" +
                          " encode=" + std::to_string(process_time) + "ms" +
                          " pts=" + std::to_string(pre_frame.pts_ms) + "ms" +
@@ -998,20 +1060,21 @@ void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
 void CompositorEncoderBridge::push_to_encode_queue(const PreEncodeVideoFrame& frame) {
     std::lock_guard<std::mutex> lock(encode_queue_mutex_);
 
-    // 如果队列满了，丢弃最旧的帧
+    // 如果队列满了，丢弃最新帧（而非最旧帧）
+    // 原因：最旧帧可能正在被编码线程消费或即将被取出编码，
+    // 丢弃最旧帧会导致PTS跳变和画面跳跃
     if (pre_encode_queue_.size() >= MAX_ENCODE_QUEUE_SIZE) {
-        pre_encode_queue_.pop_front();
-        LOG_WARNING("[BRIDGE] Encode queue full, dropping oldest frame, queue_size=" + std::to_string(pre_encode_queue_.size()));
+        static int drop_count = 0;
+        drop_count++;
+        if (drop_count <= 20 || drop_count % 100 == 0) {
+            LOG_WARNING("[BRIDGE] Encode queue full, dropping NEWEST frame #" +
+                       std::to_string(frame.frame_count) + " (total dropped: " +
+                       std::to_string(drop_count) + ")");
+        }
+        return;
     }
 
     pre_encode_queue_.push_back(frame);
-
-    // 🔧 诊断：只在队列异常时记录
-    static int warn_count = 0;
-    if (pre_encode_queue_.size() > 10 && warn_count++ < 10) {
-        LOG_INFO("[BRIDGE] Queue push: size=" + std::to_string(pre_encode_queue_.size()) +
-                 " pts=" + std::to_string(frame.pts_ms) + "ms");
-    }
 
     encode_queue_cv_.notify_one();
 }

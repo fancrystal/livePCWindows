@@ -25,7 +25,8 @@ struct StreamConfig {
     int send_buffer_ms = 500;
     
     // 最大队列大小（包数量）
-    int max_queue_size = 100;
+    // 30fps视频约1秒的包量（30视频+约46音频=76），设为80可快速排空
+    int max_queue_size = 80;
     
     // 启用自动重连
     bool auto_reconnect = true;

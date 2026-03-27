@@ -12,7 +12,13 @@ WGCaptureSourceAdapter::~WGCaptureSourceAdapter() { shutdown(); }
 bool WGCaptureSourceAdapter::initialize() {
     if (loop_) return true;
     loop_ = std::make_unique<WGCCaptureLoop>(cfg_);
-    loop_->set_frame_callback([this](const QImage& img) { on_image(img); });
+    if (gpu_texture_mode_) {
+        // GPU 路径：纹理直传，跳过 CPU 回读
+        loop_->set_texture_callback([this](const GpuTextureRef& ref) { on_texture(ref); });
+    } else {
+        // CPU 路径（默认，向后兼容）
+        loop_->set_frame_callback([this](const QImage& img) { on_image(img); });
+    }
     return true;
 }
 
@@ -54,6 +60,33 @@ void WGCaptureSourceAdapter::on_image(const QImage& img) {
 
     LOG_DEBUG("[DIAG] WGCaptureSourceAdapter::on_image - 发送frameReady信号，源ID: " + cfg_.target_id);
     emit frameReady(frame);
+}
+
+void WGCaptureSourceAdapter::enable_gpu_texture_mode()
+{
+    if (!loop_) initialize();
+    gpu_texture_mode_ = true;
+    if (loop_) {
+        loop_->set_texture_callback([this](const GpuTextureRef& ref) { on_texture(ref); });
+    }
+    LOG_INFO("[WGC] GPU texture mode enabled for source: " + cfg_.target_id);
+}
+
+void WGCaptureSourceAdapter::on_texture(const GpuTextureRef& tex_ref)
+{
+    if (!tex_ref.is_valid()) return;
+    emit textureReady(tex_ref, QString::fromStdString(cfg_.target_id));
+}
+
+void WGCaptureSourceAdapter::update_share_settings(bool capture_cursor, bool capture_border) {
+    if (loop_) {
+        loop_->update_settings(capture_cursor, capture_border);
+        cfg_.capture_cursor = capture_cursor;
+        cfg_.capture_border = capture_border;
+        LOG_INFO("WGCaptureSourceAdapter: Updated share settings - cursor=" +
+                 std::string(capture_cursor ? "true" : "false") +
+                 ", border=" + std::string(capture_border ? "true" : "false"));
+    }
 }
 
 } // namespace live_assistant

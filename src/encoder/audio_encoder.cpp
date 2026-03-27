@@ -178,10 +178,19 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
                  ", 0x" + std::to_string(static_cast<int>(codec_ctx_->extradata[1])) + "]");
 
         // AAC-LC 的 audioObjectType = 2, AAC-Main = 1
-        // 如果不是 AAC-LC，强制替换 extradata
-        if (audioObjectType != 2) {
-            LOG_WARNING("[AACEncoder] Detected non-LC profile (audioObjectType=" +
-                       std::to_string(audioObjectType) + "), forcing AAC-LC extradata");
+        // 还需要检查 extradata_size：FFmpeg 原生编码器可能产生 5 字节扩展格式
+        // （samplingFreqIndex=15 escape + 24 位明文频率），该格式与标准 2 字节格式
+        // 均符合 AAC 规范，但腾讯 CSS 等 CDN 的 HLS 转码器通常只处理 2 字节紧凑格式。
+        // 因此，不论什么情况，只要不是 2 字节紧凑格式就强制替换为标准 2 字节格式。
+        if (audioObjectType != 2 || codec_ctx_->extradata_size != 2) {
+            if (audioObjectType != 2) {
+                LOG_WARNING("[AACEncoder] Detected non-LC profile (audioObjectType=" +
+                           std::to_string(audioObjectType) + "), forcing AAC-LC extradata");
+            } else {
+                LOG_WARNING("[AACEncoder] extradata is AAC-LC but size=" +
+                           std::to_string(codec_ctx_->extradata_size) +
+                           " (extended/escape format), normalizing to compact 2-byte for CDN compatibility");
+            }
 
             // 根据采样率选择索引
             int samplingFreqIndex = 3;  // 默认 48000Hz
@@ -209,7 +218,7 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
                         ", 0x" + std::to_string(static_cast<int>(asc[1])) + "]");
             }
         } else {
-            LOG_INFO("[AACEncoder] ✓ extradata is already AAC-LC (audioObjectType=2)");
+            LOG_INFO("[AACEncoder] ✓ extradata is compact 2-byte AAC-LC (audioObjectType=2, size=2)");
         }
     }
 

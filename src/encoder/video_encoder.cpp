@@ -1,7 +1,9 @@
+#define NOMINMAX  // 防止 Windows 头文件定义 min/max 宏，与 std::min/max 冲突
 #include "encoder/video_encoder.h"
 #include "common/log.h"
 #include "common/error.h"
 #include "video_engine/video_engine.h"  // For VideoFrame definition
+#include "scene_manager/shared_d3d_device.h"
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -12,7 +14,10 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
 }
+
+#include <d3d11.h>
 
 namespace live_assistant {
 
@@ -23,6 +28,50 @@ H264Encoder::H264Encoder() {
 H264Encoder::~H264Encoder() {
     shutdown();
     LOG_INFO("H264Encoder destructor");
+}
+
+bool H264Encoder::initialize_shared_d3d11va()
+{
+    auto& shared = SharedD3D11Device::instance();
+    if (!shared.device() || !shared.context()) {
+        LOG_WARNING("[H264Encoder] SharedD3D11Device not ready, skipping D3D11VA sharing");
+        return false;
+    }
+
+    d3d11va_device_ctx_ = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!d3d11va_device_ctx_) {
+        LOG_ERROR("[H264Encoder] av_hwdevice_ctx_alloc(D3D11VA) failed");
+        return false;
+    }
+
+    auto* hw_dev_ctx  = reinterpret_cast<AVHWDeviceContext*>(d3d11va_device_ctx_->data);
+    auto* d3d11va_ctx = reinterpret_cast<AVD3D11VADeviceContext*>(hw_dev_ctx->hwctx);
+
+    // Pre-fill with SharedD3D11Device's device/context.
+    // FFmpeg will call Release() when the AVHWDeviceContext is freed, so AddRef() here.
+    d3d11va_ctx->device         = shared.device();
+    d3d11va_ctx->device_context = shared.context();
+    d3d11va_ctx->device->AddRef();
+    d3d11va_ctx->device_context->AddRef();
+    // video_device / video_context: leave nullptr; FFmpeg will QueryInterface them
+    d3d11va_ctx->video_device   = nullptr;
+    d3d11va_ctx->video_context  = nullptr;
+    // lock/unlock: nullptr — SharedD3D11Device already has ID3D11Multithread protection
+    d3d11va_ctx->lock   = nullptr;
+    d3d11va_ctx->unlock = nullptr;
+
+    int ret = av_hwdevice_ctx_init(d3d11va_device_ctx_);
+    if (ret < 0) {
+        char errbuf[128];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_WARNING("[H264Encoder] D3D11VA device init failed: " + std::string(errbuf) +
+                    " — will use independent QSV device");
+        av_buffer_unref(&d3d11va_device_ctx_);
+        return false;
+    }
+
+    LOG_INFO("[H264Encoder] D3D11VA device context initialized from SharedD3D11Device (Phase 4)");
+    return true;
 }
 
 std::string H264Encoder::preset_to_string(VideoEncodingPreset preset) const {
@@ -135,9 +184,7 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             LOG_INFO("[H264Encoder] Unknown CPU vendor → Priority: NVENC → QSV → AMF → Software");
         }
 
-        // 🔧 临时测试：暂时跳过硬件编码器，只使用软编
-        candidates = {"libx264"};
-        LOG_INFO("[H264Encoder] [TEST] Using software encoder only for testing");
+        // 硬件编码器按优先级自动探测，支持回退到软件编码
 
         // Probe each candidate by trying to open a temporary codec context and checking codec parameters.
         for (size_t i = 0; i < candidates.size(); ++i) {
@@ -197,9 +244,12 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             }
 
             // 🔧 根据编码器类型选择合适的像素格式
-            // 注意：虽然QSV硬件加速通常要求NV12，但YUV420P也支持
-            // YUV420P更稳定，优先使用
-            probe_ctx->pix_fmt = AV_PIX_FMT_YUV420P;  // 统一使用 YUV420P
+            // QSV 要求 NV12 格式，YUV420P 会导致 avcodec_open2 失败
+            if (std::string(hw_name).find("qsv") != std::string::npos) {
+                probe_ctx->pix_fmt = AV_PIX_FMT_NV12;  // QSV 必须使用 NV12
+            } else {
+                probe_ctx->pix_fmt = AV_PIX_FMT_YUV420P;  // NVENC/AMF/libx264 使用 YUV420P
+            }
 
             probe_ctx->bit_rate = config_.bitrate;
             probe_ctx->gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
@@ -329,8 +379,10 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
 
     // ✅ 降低编码延迟的关键设置
     codec_ctx_->max_b_frames = 0;  // 禁用 B 帧
-    codec_ctx_->thread_count = 1;  // 单线程编码，减少延迟
-    codec_ctx_->thread_type = 0;   // 禁用帧级并行
+    // 硬件编码器(QSV/NVENC/AMF)不支持FFmpeg软件线程切片，保持默认
+    // 软件编码器(libx264)通过x264-params配置自己的多线程
+    codec_ctx_->thread_count = 0;  // 0 = 让编码器自行决定
+    codec_ctx_->thread_type = 0;   // 由编码器自行决定
 
     // ✅ GOP: 固定 2 秒关键帧间隔
     int gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
@@ -349,19 +401,44 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         LOG_INFO("[H264Encoder] Using QSV pixel format (hardware acceleration)");
 
         // ✅ 创建 QSV 硬件设备上下文
+        // Phase 4: 首先尝试从 SharedD3D11Device 派生（共享同一 D3D11 设备，支持 GPU→GPU 零拷贝）
         if (!hw_device_ctx_) {
-            int ret = av_hwdevice_ctx_create(&hw_device_ctx_, AV_HWDEVICE_TYPE_QSV,
-                                            "d3d11va", nullptr, 0);
-            if (ret < 0) {
-                LOG_WARNING("[H264Encoder] QSV+d3d11va failed, trying default...");
-                ret = av_hwdevice_ctx_create(&hw_device_ctx_, AV_HWDEVICE_TYPE_QSV,
-                                            nullptr, nullptr, 0);
+            bool shared_ok = false;
+            if (!d3d11va_device_ctx_) {
+                shared_ok = initialize_shared_d3d11va();
+            } else {
+                shared_ok = true;
             }
-            if (ret < 0) {
-                LOG_ERROR("[H264Encoder] Failed to create QSV device context");
-                return ErrorCode::INIT_FAILED;
+
+            if (shared_ok && d3d11va_device_ctx_) {
+                int ret = av_hwdevice_ctx_create_derived(
+                    &hw_device_ctx_, AV_HWDEVICE_TYPE_QSV, d3d11va_device_ctx_, 0);
+                if (ret >= 0) {
+                    LOG_INFO("[H264Encoder] QSV device derived from shared D3D11VA (Phase 4 GPU path enabled)");
+                } else {
+                    char errbuf[128];
+                    av_strerror(ret, errbuf, sizeof(errbuf));
+                    LOG_WARNING("[H264Encoder] QSV derive from shared D3D11VA failed: " +
+                                std::string(errbuf) + " — falling back to independent QSV device");
+                    av_buffer_unref(&d3d11va_device_ctx_);
+                }
             }
-            LOG_INFO("[H264Encoder] QSV hardware device context created");
+
+            // 回退：独立 QSV 设备（与以往行为相同）
+            if (!hw_device_ctx_) {
+                int ret = av_hwdevice_ctx_create(&hw_device_ctx_, AV_HWDEVICE_TYPE_QSV,
+                                                "d3d11va", nullptr, 0);
+                if (ret < 0) {
+                    LOG_WARNING("[H264Encoder] QSV+d3d11va failed, trying default...");
+                    ret = av_hwdevice_ctx_create(&hw_device_ctx_, AV_HWDEVICE_TYPE_QSV,
+                                                nullptr, nullptr, 0);
+                }
+                if (ret < 0) {
+                    LOG_ERROR("[H264Encoder] Failed to create QSV device context");
+                    return ErrorCode::INIT_FAILED;
+                }
+                LOG_INFO("[H264Encoder] QSV hardware device context created (independent device)");
+            }
         }
 
         // ✅ 创建 QSV 硬件帧上下文（指定实际像素格式为 NV12）
@@ -399,16 +476,31 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     // For FLV/RTMP, extradata is typically required
     codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    // 🔧 NVENC 低延迟配置（必须在 avcodec_open2 之前设置）
-    if (codec_ctx_->priv_data && codec_ &&
-        std::string(codec_->name).find("nvenc") != std::string::npos) {
-        // 强制低延迟模式，减少编码延迟
-        av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
-        // zerolatency 模式优化延迟
-        av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);  // ll = low latency
-        // 禁用B帧以减少延迟和不连续性（B帧会导致dts/pts不同步）
-        codec_ctx_->max_b_frames = 0;
-        LOG_INFO("H264Encoder: configured NVENC for low-latency streaming");
+    // 🔧 硬件编码器公共配置：强制 avcC 格式（非 Annex-B）
+    // NVENC/AMF 默认可能生成 Annex-B 格式的 extradata（start code 00 00 00 01），
+    // FLV/RTMP 容器要求 avcC 格式（length-prefixed NAL units，首字节 0x01）
+    if (codec_ctx_->priv_data && codec_) {
+        std::string enc_name = codec_->name;
+
+        if (enc_name.find("nvenc") != std::string::npos) {
+            // NVENC: 强制 avcC 输出格式（设置 h264_demuxer 为 avcC）
+            av_opt_set(codec_ctx_->priv_data, "h264_demuxer", "avc", 0);
+            // 低延迟配置
+            av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
+            av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);
+            codec_ctx_->max_b_frames = 0;
+            LOG_INFO("H264Encoder: configured NVENC: avcC format, low-latency");
+        } else if (enc_name.find("amf") != std::string::npos) {
+            // AMF: usage=transcoding 产出 avcC 格式 extradata
+            av_opt_set(codec_ctx_->priv_data, "usage", "transcoding", 0);
+            codec_ctx_->max_b_frames = 0;
+            LOG_INFO("H264Encoder: configured AMF: avcC format (usage=transcoding)");
+        } else if (enc_name.find("qsv") != std::string::npos) {
+            // QSV: h264_demuxer=avc 强制 avcC 格式 extradata
+            av_opt_set(codec_ctx_->priv_data, "h264_demuxer", "avc", 0);
+            codec_ctx_->max_b_frames = 0;
+            LOG_INFO("H264Encoder: configured QSV: avcC format (h264_demuxer=avc)");
+        }
     }
 
     // x264 options (works when underlying encoder is libx264)
@@ -432,8 +524,8 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             // 没有这个参数，第一个 I 帧可能不是 IDR，会导致推流时大量丢帧
             x264_params += ":forced-idr=1";
 
-            // ✅ 降低编码延迟：使用单线程模式，减少帧缓冲
-            x264_params += ":threads=1";
+            // ✅ 使用多线程编码提升吞吐量
+            x264_params += ":threads=4";
 
             // Force AVCC output (length-prefixed NAL units) for FLV/RTMP muxing.
             // This avoids Annex-B start codes leaking into downstream packet handling.
@@ -585,6 +677,16 @@ ErrorCode H264Encoder::shutdown() {
         hw_device_ctx_ = nullptr;
     }
 
+    // Phase 4: 释放 D3D11VA 上下文（在 hw_device_ctx_ 之后，因为 QSV 可能持有对它的引用）
+    if (d3d11va_frame_ctx_) {
+        av_buffer_unref(&d3d11va_frame_ctx_);
+        d3d11va_frame_ctx_ = nullptr;
+    }
+    if (d3d11va_device_ctx_) {
+        av_buffer_unref(&d3d11va_device_ctx_);
+        d3d11va_device_ctx_ = nullptr;
+    }
+
     if (frame_) {
         av_frame_free(&frame_);
         frame_ = nullptr;
@@ -631,6 +733,9 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
             }
         }
 
+        // 释放上一帧对帧池 buffer 的引用，否则帧池（默认 20 帧）会在第 21 帧时耗尽
+        av_frame_unref(hw_frame_);
+
         // 从硬件帧池获取一个帧
         int ret = av_hwframe_get_buffer(hw_frame_ctx_, hw_frame_, 0);
         if (ret < 0) {
@@ -657,32 +762,39 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
             }
         }
 
-        // 将输入数据转换为 NV12（软件帧）
-        AVPixelFormat target_fmt = AV_PIX_FMT_NV12;
-        if (!sws_ctx_ || sws_src_fmt_ != src_fmt) {
-            if (sws_ctx_) {
-                sws_freeContext(sws_ctx_);
-                sws_ctx_ = nullptr;
-            }
-
-            sws_ctx_ = sws_getContext(
-                config_.width, config_.height, src_fmt,
-                config_.width, config_.height, target_fmt,
-                SWS_BILINEAR, nullptr, nullptr, nullptr);
-            if (!sws_ctx_) {
-                LOG_ERROR("[H264Encoder] Failed to create sws context for QSV");
-                return ErrorCode::ENCODING_ERROR;
-            }
-            sws_src_fmt_ = src_fmt;
-        }
-
-        // 转换输入数据到软件帧（NV12）
+        // 将输入数据写入软件帧（NV12）
         if (in->format == VideoFrame::PixelFormat::NV12) {
-            const uint8_t* src_slices[2] = {in->data.get(), in->data_uv.get()};
-            int src_stride[2] = {in->stride, in->stride_uv};
-            sws_scale(sws_ctx_, src_slices, src_stride, 0, in->height,
-                     sw_frame_->data, sw_frame_->linesize);
+            // NV12 直接 memcpy：避免 sws NV12→NV12 因内部中间格式转换导致色彩偏差（绿屏）
+            // Y 平面：逐行复制，处理 src/dst stride 不同的情况
+            const int copy_w = std::min(in->width, sw_frame_->width);
+            const int copy_h = std::min(in->height, sw_frame_->height);
+            for (int y = 0; y < copy_h; ++y) {
+                memcpy(sw_frame_->data[0] + y * sw_frame_->linesize[0],
+                       in->data.get() + y * in->stride, copy_w);
+            }
+            // UV 平面（NV12 interleaved，行数为 height/2，每行字节数与 Y 相同）
+            for (int y = 0; y < copy_h / 2; ++y) {
+                memcpy(sw_frame_->data[1] + y * sw_frame_->linesize[1],
+                       in->data_uv.get() + y * in->stride_uv, copy_w);
+            }
         } else {
+            // 非 NV12 输入：使用 sws 转换
+            AVPixelFormat target_fmt = AV_PIX_FMT_NV12;
+            if (!sws_ctx_ || sws_src_fmt_ != src_fmt) {
+                if (sws_ctx_) {
+                    sws_freeContext(sws_ctx_);
+                    sws_ctx_ = nullptr;
+                }
+                sws_ctx_ = sws_getContext(
+                    config_.width, config_.height, src_fmt,
+                    config_.width, config_.height, target_fmt,
+                    SWS_BILINEAR, nullptr, nullptr, nullptr);
+                if (!sws_ctx_) {
+                    LOG_ERROR("[H264Encoder] Failed to create sws context for QSV");
+                    return ErrorCode::ENCODING_ERROR;
+                }
+                sws_src_fmt_ = src_fmt;
+            }
             const uint8_t* src_slices[1] = {reinterpret_cast<const uint8_t*>(in->data.get())};
             int src_stride[1] = {in->stride > 0 ? in->stride : in->width * 4};
             sws_scale(sws_ctx_, src_slices, src_stride, 0, in->height,
@@ -850,6 +962,116 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
     }
 
     return ErrorCode::SUCCESS;
+}
+
+// ─── Phase 4: GPU 纹理直接编码 ────────────────────────────────────────────────
+// 完全跳过 CPU：无 sws_scale，无 av_hwframe_transfer_data（CPU→GPU upload）
+// 流程：GpuColorConverter NV12 纹理 → av_hwframe_map 解包 QSV 帧的 D3D11 纹理
+//        → D3D11 CopySubresourceRegion（纯 GPU Copy）→ avcodec_send_frame
+
+ErrorCode H264Encoder::encode_gpu_texture(ID3D11Texture2D* nv12_texture, int64_t pts_ms,
+                                            std::vector<EncodedPacketPtr>& packets)
+{
+    packets.clear();
+
+    if (!initialized_ || !nv12_texture) return ErrorCode::INVALID_PARAM;
+
+    if (!is_qsv_encoder_ || !hw_frame_ctx_ || !d3d11va_device_ctx_) {
+        LOG_ERROR("[H264Encoder] encode_gpu_texture requires QSV encoder with shared D3D11VA device");
+        return ErrorCode::INVALID_PARAM;
+    }
+
+    // ── 1. 懒初始化 D3D11VA 帧上下文（供 av_hwframe_map 使用）──────────────
+    if (!d3d11va_frame_ctx_) {
+        d3d11va_frame_ctx_ = av_hwframe_ctx_alloc(d3d11va_device_ctx_);
+        if (!d3d11va_frame_ctx_) {
+            LOG_ERROR("[H264Encoder] av_hwframe_ctx_alloc(D3D11VA frames) failed");
+            return ErrorCode::ENCODING_ERROR;
+        }
+        auto* fc        = reinterpret_cast<AVHWFramesContext*>(d3d11va_frame_ctx_->data);
+        fc->format      = AV_PIX_FMT_D3D11;
+        fc->sw_format   = AV_PIX_FMT_NV12;
+        fc->width       = config_.width;
+        fc->height      = config_.height;
+        fc->initial_pool_size = 1;  // 最小池，满足 init 要求；实际使用 av_hwframe_map 映射 QSV 帧
+
+        int r = av_hwframe_ctx_init(d3d11va_frame_ctx_);
+        if (r < 0) {
+            char errbuf[128]; av_strerror(r, errbuf, sizeof(errbuf));
+            LOG_ERROR("[H264Encoder] D3D11VA frame ctx init failed: " + std::string(errbuf));
+            av_buffer_unref(&d3d11va_frame_ctx_);
+            return ErrorCode::ENCODING_ERROR;
+        }
+        LOG_INFO("[H264Encoder] D3D11VA frames context initialized (for av_hwframe_map)");
+    }
+
+    // ── 2. 从 QSV 帧池获取一帧 ───────────────────────────────────────────────
+    if (!hw_frame_) {
+        hw_frame_ = av_frame_alloc();
+        if (!hw_frame_) return ErrorCode::ENCODING_ERROR;
+    }
+    // 释放上一帧对帧池 buffer 的引用，否则帧池会在第 21 帧时耗尽
+    av_frame_unref(hw_frame_);
+    int ret = av_hwframe_get_buffer(hw_frame_ctx_, hw_frame_, 0);
+    if (ret < 0) {
+        char errbuf[128]; av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR("[H264Encoder] av_hwframe_get_buffer failed: " + std::string(errbuf));
+        return ErrorCode::ENCODING_ERROR;
+    }
+
+    // ── 3. 将 QSV 帧映射为 D3D11 纹理（通过 D3D11VA interop）───────────────
+    // av_hwframe_map: QSV → D3D11（要求 QSV 从 D3D11VA 派生）
+    AVFrame* mapped = av_frame_alloc();
+    if (!mapped) return ErrorCode::ENCODING_ERROR;
+
+    mapped->format = AV_PIX_FMT_D3D11;
+
+    ret = av_hwframe_map(mapped, hw_frame_,
+                         AV_HWFRAME_MAP_WRITE | AV_HWFRAME_MAP_OVERWRITE);
+    if (ret < 0) {
+        // av_hwframe_map 不支持时，记录一次 warning 并拒绝 GPU 路径
+        char errbuf[128]; av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR("[H264Encoder] av_hwframe_map(QSV→D3D11) failed: " + std::string(errbuf) +
+                  " — encode_gpu_texture unavailable (QSV may not be derived from D3D11VA)");
+        av_frame_free(&mapped);
+        return ErrorCode::ENCODING_ERROR;
+    }
+
+    // mapped->data[0] = ID3D11Texture2D*（QSV 帧的 D3D11 后备纹理）
+    // mapped->data[1] = (uint8_t*)(uintptr_t) array_index
+    auto* dst_tex   = reinterpret_cast<ID3D11Texture2D*>(mapped->data[0]);
+    auto  dst_idx   = static_cast<UINT>(reinterpret_cast<uintptr_t>(mapped->data[1]));
+
+    // ── 4. GPU Copy：GpuColorConverter NV12 → QSV D3D11 纹理 ────────────────
+    auto& shared = SharedD3D11Device::instance();
+    shared.context()->CopySubresourceRegion(
+        dst_tex,       dst_idx,      0, 0, 0,  // 目标：QSV 帧的纹理（可能是数组切片）
+        nv12_texture,  0,            nullptr);  // 源：GpuColorConverter 输出，单纹理
+
+    av_frame_unref(mapped);   // 解映射（必须在 CopySubresourceRegion 后）
+    av_frame_free(&mapped);
+
+    // ── 5. 设置 PTS 和关键帧标志 ─────────────────────────────────────────────
+    hw_frame_->pts = pts_ms;
+    if (force_keyframe_) {
+        hw_frame_->pict_type = AV_PICTURE_TYPE_I;
+        hw_frame_->key_frame = 1;
+        force_keyframe_ = false;
+        LOG_INFO("[H264Encoder] [GPU] Force IDR frame at pts=" + std::to_string(pts_ms));
+    } else {
+        hw_frame_->pict_type = AV_PICTURE_TYPE_NONE;
+        hw_frame_->key_frame = 0;
+    }
+
+    // ── 6. 送入编码器 ─────────────────────────────────────────────────────────
+    ret = avcodec_send_frame(codec_ctx_, hw_frame_);
+    if (ret < 0) {
+        char errbuf[128]; av_strerror(ret, errbuf, sizeof(errbuf));
+        LOG_ERROR("[H264Encoder] avcodec_send_frame (gpu texture) failed: " + std::string(errbuf));
+        return ErrorCode::ENCODING_ERROR;
+    }
+
+    return receive_packets(packets);
 }
 
 ErrorCode H264Encoder::encode(const std::shared_ptr<VideoFrame>& frame, std::vector<EncodedPacketPtr>& packets) {
@@ -1093,6 +1315,11 @@ bool H264Encoder::switch_to_next_encoder() {
         new_codec_ctx->hw_frames_ctx = av_buffer_ref(new_hw_frame_ctx);
         av_buffer_unref(&new_hw_frame_ctx);
         av_buffer_unref(&new_hw_device_ctx);
+        // QSV: 强制 avcC 格式
+        if (new_codec_ctx->priv_data) {
+            av_opt_set(new_codec_ctx->priv_data, "h264_demuxer", "avc", 0);
+            LOG_INFO("[H264Encoder] Fallback QSV: set h264_demuxer=avc for avcC format");
+        }
     } else if (next_encoder_name == "libx264") {
         new_codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
         if (new_codec_ctx->priv_data) {
@@ -1102,8 +1329,19 @@ bool H264Encoder::switch_to_next_encoder() {
             av_opt_set(new_codec_ctx->priv_data, "x264-params", x264_params.c_str(), 0);
         }
     } else {
-        // NVENC, AMF 等硬件编码器
+        // NVENC, AMF 等硬件编码器：强制 avcC 格式
         new_codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        if (new_codec_ctx->priv_data) {
+            if (next_encoder_name.find("nvenc") != std::string::npos) {
+                av_opt_set(new_codec_ctx->priv_data, "h264_demuxer", "avc", 0);
+                av_opt_set(new_codec_ctx->priv_data, "delay", "0", 0);
+                av_opt_set(new_codec_ctx->priv_data, "tune", "ll", 0);
+                LOG_INFO("[H264Encoder] Fallback NVENC: set h264_demuxer=avc for avcC format");
+            } else if (next_encoder_name.find("amf") != std::string::npos) {
+                av_opt_set(new_codec_ctx->priv_data, "usage", "transcoding", 0);
+                LOG_INFO("[H264Encoder] Fallback AMF: set usage=transcoding for avcC format");
+            }
+        }
     }
 
     // 尝试打开新编码器

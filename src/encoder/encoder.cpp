@@ -1,9 +1,11 @@
+#define NOMINMAX
 #include "encoder/encoder.h"
 #include "encoder/encoder_factory.h"
 #include "encoder/audio_encoder.h"
 #include "encoder/video_encoder.h"
 #include "common/log.h"
 #include "common/error.h"
+#include <d3d11.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -273,6 +275,25 @@ ErrorCode Encoder::reset_video_encoder() {
 
 AudioEncoder* Encoder::get_audio_encoder() const {
     return audio_encoder_.get();
+}
+
+bool Encoder::is_gpu_texture_encode_available() const {
+    std::lock_guard<std::mutex> lk(video_mutex_);
+    if (!video_encoder_initialized_ || !video_encoder_) return false;
+    auto* h264 = dynamic_cast<H264Encoder*>(video_encoder_.get());
+    return h264 && h264->is_gpu_texture_encode_available();
+}
+
+ErrorCode Encoder::encode_video_gpu_texture(ID3D11Texture2D* nv12_texture, int64_t pts_ms,
+                                              std::vector<EncodedPacketPtr>& packets)
+{
+    std::lock_guard<std::mutex> lk(video_mutex_);
+    if (!video_encoder_initialized_ || !video_encoder_) {
+        return ErrorCode::INVALID_STATE;
+    }
+    auto* h264 = dynamic_cast<H264Encoder*>(video_encoder_.get());
+    if (!h264) return ErrorCode::INVALID_STATE;
+    return h264->encode_gpu_texture(nv12_texture, pts_ms, packets);
 }
 
 } // namespace live_assistant

@@ -1,4 +1,5 @@
 #include "scene_manager/compositor.h"
+#include "scene_manager/shared_d3d_device.h"
 #include "common/log.h"
 #include "scene_manager/render_utils.h"
 #include "video_engine/video_engine.h"  // For VideoFrame definition
@@ -74,6 +75,16 @@ void Compositor::updateLayerImage(QString source_id, QImage image) {
     update_layer_image(source_id.toStdString(), image);
 }
 
+// Phase 1: GPU 纹理直传（线程安全，存储 GpuTextureRef，供 Phase 2 GPU 合成器使用）
+void Compositor::update_layer_gpu_texture(const std::string& source_id, const GpuTextureRef& tex_ref) {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+    auto it = layers_.find(source_id);
+    if (it == layers_.end()) return;
+    it->second.gpu_texture_ref = tex_ref;
+    // 注意：此处不调用 update()（不触发 QPainter 重绘）
+    // Phase 2 的 GPU 合成器将直接读取 gpu_texture_ref，不通过 Qt 绘制事件
+}
+
 void Compositor::update_layer_video_frame(const std::string& source_id, std::shared_ptr<VideoFrame> frame) {
     std::lock_guard<std::mutex> lock(layers_mutex_);
 
@@ -99,9 +110,23 @@ void Compositor::update_layer_image(const std::string& source_id, const QImage& 
         return;
     }
 
-    // 直接赋值，不再深拷贝
-    // Qt信号槽跨线程传递时已经做了拷贝，这里再拷贝是多余的
     it->second.qimage = image;
+
+    // Phase 1b: 同步上传到 GPU，供 Phase 2 GPU 合成器使用
+    // 复用上次的纹理对象（尺寸不变时 Map_WRITE_DISCARD 不重分配）
+    auto& shared = SharedD3D11Device::instance();
+    if (shared.is_valid() && !image.isNull()) {
+        ID3D11Texture2D* reuse_tex = it->second.gpu_texture_ref.texture
+                                         ? it->second.gpu_texture_ref.texture.get()
+                                         : nullptr;
+        auto new_tex = shared.upload_image_to_texture(image, reuse_tex);
+        if (new_tex) {
+            it->second.gpu_texture_ref.texture = new_tex;
+            it->second.gpu_texture_ref.width   = static_cast<uint32_t>(image.width());
+            it->second.gpu_texture_ref.height  = static_cast<uint32_t>(image.height());
+            it->second.gpu_texture_ref.format  = DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
+    }
 
     update();  // Trigger repaint
 }
@@ -393,6 +418,16 @@ std::optional<CompositorLayer> Compositor::get_layer_state(const std::string& so
         return std::nullopt;
     }
     return it->second;
+}
+
+std::vector<CompositorLayer> Compositor::get_all_layers() const {
+    std::lock_guard<std::mutex> lock(layers_mutex_);
+    std::vector<CompositorLayer> result;
+    result.reserve(layers_.size());
+    for (const auto& [id, layer] : layers_) {
+        result.push_back(layer);
+    }
+    return result;
 }
 
 void Compositor::move_layer_up(const std::string& source_id) {

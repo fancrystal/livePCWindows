@@ -140,70 +140,50 @@ PushQueue::Stats PushQueue::get_stats() const {
 }
 
 void PushQueue::discard_low_priority() {
-    // 🔧 增强版丢弃策略：
-    // 1. 音频：永远保留
-    // 2. 视频：保留最新 I 帧及其后续所有帧，丢弃旧 GOP
+    // 快速丢弃策略：从队列中丢弃一个最旧的、可丢弃的包
+    // 只遍历一次，找到最旧的且非关键帧音频的包丢弃
     
-    std::priority_queue<EncodedPacketPtr, std::vector<EncodedPacketPtr>, PacketComparator> temp_queue;
-    
-    // 找到队列中最新关键帧的 PTS（需要转换为微秒统一比较）
-    int64_t newest_keyframe_pts_us = AV_NOPTS_VALUE;
-    
-    // 第一遍：找出最新关键帧的 PTS
+    // 将所有包取出，丢弃最旧的非关键帧视频包，其余放回
     std::vector<EncodedPacketPtr> all_packets;
     while (!queue_.empty()) {
-        auto packet = queue_.top();
+        all_packets.push_back(std::move(const_cast<EncodedPacketPtr&>(queue_.top())));
         queue_.pop();
-        
-        if (packet && packet->type == MediaType::VIDEO && packet->is_keyframe) {
-            int64_t pts_us = av_rescale_q(packet->pts, packet->encoder_time_base, AVRational{1, 1000000});
-            if (newest_keyframe_pts_us == AV_NOPTS_VALUE || pts_us > newest_keyframe_pts_us) {
-                newest_keyframe_pts_us = pts_us;
-            }
-        }
-        all_packets.push_back(std::move(packet));
     }
     
-    // 第二遍：根据策略决定保留或丢弃
-    for (auto& packet : all_packets) {
-        if (!packet) {
-            continue;
+    // 找到要丢弃的候选：最旧的非关键帧视频包（最后一个元素是PTS最小的）
+    int discard_idx = -1;
+    for (int i = static_cast<int>(all_packets.size()) - 1; i >= 0; --i) {
+        auto& pkt = all_packets[i];
+        if (pkt && pkt->type == MediaType::VIDEO && !pkt->is_keyframe) {
+            discard_idx = i;
+            break;  // 优先队列最后一个是最旧的，直接丢弃
         }
-        
-        // 1. 音频：永远保留
-        if (packet->type == MediaType::AUDIO) {
-            temp_queue.push(std::move(packet));
-            continue;
-        }
-        
-        // 2. 视频：检查是否应该保留
-        int64_t pts_us = av_rescale_q(packet->pts, packet->encoder_time_base, AVRational{1, 1000000});
-        
-        // 2.1 关键帧：永远保留
-        if (packet->is_keyframe) {
-            temp_queue.push(std::move(packet));
-            continue;
-        }
-        
-        // 2.2 非关键帧：只保留"最新 I 帧之后"的帧
-        // 如果没有找到 I 帧，则保留所有非关键帧（避免刚开始推流时丢帧）
-        if (newest_keyframe_pts_us == AV_NOPTS_VALUE || pts_us >= newest_keyframe_pts_us) {
-            // 在最新关键帧之后，保留
-            if (temp_queue.size() < max_size_) {
-                temp_queue.push(std::move(packet));
-            } else {
-                // 队列真的满了，统计丢弃
+    }
+    
+    if (discard_idx >= 0) {
+        discarded_packets_++;
+        video_packets_--;
+        all_packets.erase(all_packets.begin() + discard_idx);
+    }
+    // 如果全是音频和关键帧，丢弃最旧的非音频包
+    else if (!all_packets.empty()) {
+        // 找最旧的包丢弃
+        for (int i = static_cast<int>(all_packets.size()) - 1; i >= 0; --i) {
+            if (all_packets[i] && all_packets[i]->type == MediaType::VIDEO) {
                 discarded_packets_++;
                 video_packets_--;
+                all_packets.erase(all_packets.begin() + i);
+                break;
             }
-        } else {
-            // 旧 GOP（比最新 I 帧还老），丢弃
-            discarded_packets_++;
-            video_packets_--;
         }
     }
     
-    queue_.swap(temp_queue);
+    // 放回队列
+    for (auto& pkt : all_packets) {
+        if (pkt) {
+            queue_.push(std::move(pkt));
+        }
+    }
 }
 
 } // namespace live_assistant

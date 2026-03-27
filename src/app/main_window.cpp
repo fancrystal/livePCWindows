@@ -7,6 +7,7 @@
 #include "app/insert_video_widget.h"
 #include "app/insert_file_manager.h"
 #include "app/add_material_dialog.h"
+#include "app/share_settings_dialog.h"
 #include "customwebengineview.h"
 #include "http/network_manager.h"
 #include <QWebEngineSettings>
@@ -24,6 +25,8 @@
 #include "scene_manager/source_factory.h"
 #include "scene_manager/canvas.h"
 #include "scene_manager/compositor.h"
+#include "scene_manager/gpu_compositor.h"
+#include "scene_manager/gpu_color_converter.h"
 #include "scene_manager/compositor_encoder_bridge.h"
 #include "video_engine/video_engine.h"
 #include "audio_engine/audio_engine.h"
@@ -152,6 +155,20 @@ MainWindow::MainWindow(QWidget *parent) :
         suf.setItalic(true);
         suffix->setFont(suf);
         tlay->addWidget(suffix);
+
+        // 分隔符
+        QLabel* sep = new QLabel("|", titleContainer);
+        sep->setStyleSheet("color: #666666; font-size: 14px;");
+        tlay->addWidget(sep);
+
+        // 直播标题 label（动态更新）
+        live_title_label_ = new QLabel(titleContainer);
+        live_title_label_->setStyleSheet(
+            "QLabel { color: #cccccc; font-size: 13px; font-weight: normal; }"
+        );
+        live_title_label_->setMaximumWidth(300);
+        live_title_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        tlay->addWidget(live_title_label_);
 
         titleContainer->setLayout(tlay);
 
@@ -543,6 +560,13 @@ void MainWindow::on_scene_selected(int index) {
     // 切换场景
     scene_manager_->set_current_scene(scene_name.toStdString());
 
+    // 防御：切换后验证 get_current_scene 有效，避免 remove_scene 残留越界 index 导致崩溃
+    auto current = scene_manager_->get_current_scene();
+    if (!current) {
+        LOG_ERROR("[MainWindow] on_scene_selected: get_current_scene() returned null after set, index may be invalid");
+        return;
+    }
+
     // 同步到canvas_widget（更新预览画布）
     if (canvas_widget_) {
         canvas_widget_->set_current_scene(scene_name.toStdString());
@@ -550,7 +574,7 @@ void MainWindow::on_scene_selected(int index) {
 
     // 同步到video_engine
     if (video_engine_) {
-        video_engine_->set_current_scene(scene_manager_->get_current_scene());
+        video_engine_->set_current_scene(current);
     }
 
     // 重建场景项列表
@@ -1214,6 +1238,7 @@ void MainWindow::build_scene_list() {
             if (r <= 0) return;
             // 检查目标位置是否是摄像头项
             auto* target_item = listWidget_sceneItems_->item(r - 1);
+            if (!target_item) return;  // 防止 item 已被删除时的空指针崩溃
             QString target_sid = target_item->data(Qt::UserRole).toString();
             if (target_sid.startsWith("camera_")) {
                 return; // 不能移动到摄像头项上面
@@ -1331,6 +1356,16 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
 
     current_live_item_ = liveItem;
 
+    // 更新直播标题显示
+    if (live_title_label_) {
+        if (!liveItem.title.isEmpty()) {
+            live_title_label_->setText(liveItem.title);
+            live_title_label_->setToolTip(liveItem.title);  // 鼠标悬停显示完整标题
+        } else {
+            live_title_label_->setText(QString::fromUtf8("未知直播间"));
+        }
+    }
+
     LOG_INFO(QString("LiveItem set - liveId: %1, title: %2, status: %3")
         .arg(liveItem.liveId)
         .arg(liveItem.title)
@@ -1407,6 +1442,25 @@ void MainWindow::initialize_modules() {
 
     compositor_ = std::make_shared<Compositor>();
     encoder_bridge_ = std::make_shared<CompositorEncoderBridge>();
+
+    // GPU 路径初始化（Phase 2-4）
+    // 使用画布配置分辨率初始化，GpuCompositor 内部会用 SharedD3D11Device
+    gpu_compositor_ = std::make_shared<GpuCompositor>();
+    gpu_color_converter_ = std::make_shared<GpuColorConverter>();
+    const int canvas_w = canvas_config_.get_width();
+    const int canvas_h = canvas_config_.get_height();
+    if (gpu_compositor_->initialize(canvas_w, canvas_h)) {
+        if (gpu_color_converter_->initialize(canvas_w, canvas_h, canvas_w, canvas_h)) {
+            LOG_INFO("GPU pipeline (GpuCompositor + GpuColorConverter) initialized successfully");
+        } else {
+            LOG_WARNING("GpuColorConverter initialization failed, GPU path disabled");
+            gpu_color_converter_.reset();
+        }
+    } else {
+        LOG_WARNING("GpuCompositor initialization failed, GPU path disabled");
+        gpu_compositor_.reset();
+        gpu_color_converter_.reset();
+    }
 
     // 初始化场景选择器UI
     build_scene_selector();
@@ -1748,9 +1802,9 @@ void MainWindow::setup_ui_connections() {
                     if (live_duration_timer_) {
                         live_duration_timer_->start(200);
                     }
-                    // 系统监控（CPU/内存/GPU/码率/FPS）按 1 秒更新
+                    // 系统监控（CPU/内存/GPU/码率/FPS）按 2 秒更新，避免频繁 GPU 查询阻塞主线程
                     if (system_info_timer_) {
-                        system_info_timer_->start(1000);
+                        system_info_timer_->start(2000);
                     }
                     LOG_INFO("推流已启动: " + url.toStdString());
                 } else {
@@ -2392,13 +2446,9 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
     LOG_INFO("连接frameReady信号到Compositor的槽函数");
     // 使用信号槽连接替代回调，显式指定跨线程连接类型
     connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
-        auto cb_start = std::chrono::high_resolution_clock::now();
-        LOG_DEBUG("[DIAG] 收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
-
         // 更新compositor（用于推流）
         if (compositor_ && !frame.image.isNull()) {
             if (!compositor_->has_layer(source_id)) {
-                LOG_DEBUG("[DIAG] 图层不存在，创建新图层: " + source_id);
                 compositor_->add_layer(source_id);
 
                 // 同步正确的图层顺序和transform
@@ -2422,10 +2472,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                     }
                 }
             }
-            auto t0 = std::chrono::high_resolution_clock::now();
             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
-            auto t1 = std::chrono::high_resolution_clock::now();
-            LOG_DEBUG("[DIAG] updateLayerImage耗时=" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()) + "us");
         }
 
         // 更新对应的ScreenSource或CameraSource（用于预览显示）
@@ -2437,10 +2484,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                     // 尝试更新 ScreenSource（屏幕共享）
                     auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                     if (screenSrc) {
-                        auto t0 = std::chrono::high_resolution_clock::now();
                         screenSrc->push_frame(frame.image);
-                        auto t1 = std::chrono::high_resolution_clock::now();
-                        LOG_DEBUG("[DIAG] push_frame(ScreenSource)耗时=" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()) + "us");
                         // First-frame sizing: if no transform set, fit to quarter canvas preserving aspect ratio
                         if (scene_manager_ && scene_manager_->get_current_scene()) {
                             auto scene = scene_manager_->get_current_scene();
@@ -2479,10 +2523,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                     // 尝试更新 CameraSource（摄像头）
                     auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
                     if (cameraSrc) {
-                        auto t0 = std::chrono::high_resolution_clock::now();
                         cameraSrc->push_frame(frame.image);
-                        auto t1 = std::chrono::high_resolution_clock::now();
-                        LOG_DEBUG("[DIAG] push_frame(CameraSource)耗时=" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count()) + "us");
                         // If this is the first frame and the scene item has no size, fit it to 1/4 canvas preserving aspect ratio
                         if (scene_manager_ && scene_manager_->get_current_scene()) {
                             auto scene = scene_manager_->get_current_scene();
@@ -2813,7 +2854,6 @@ void MainWindow::show_screen_share_selector() {
                         // 更新compositor（用于推流）
                         if (compositor_ && !frame.image.isNull()) {
                             if (!compositor_->has_layer(source_id)) {
-                                LOG_DEBUG("[DIAG] 图层不存在，创建新图层: " + source_id);
                                 compositor_->add_layer(source_id);
 
                                 // 同步正确的图层顺序和transform
@@ -2837,7 +2877,6 @@ void MainWindow::show_screen_share_selector() {
                                     }
                                 }
                             }
-                            LOG_DEBUG("[DIAG] 更新Compositor图层图像: " + source_id);
                             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
                         }
 
@@ -2850,7 +2889,6 @@ void MainWindow::show_screen_share_selector() {
                                     // 尝试更新 ScreenSource（屏幕共享）
                                     auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                                     if (screenSrc) {
-                                        LOG_DEBUG("[DIAG] 更新ScreenSource图像: " + source_id);
                                         screenSrc->push_frame(frame.image);
                                         break;
                                     }
@@ -2858,7 +2896,6 @@ void MainWindow::show_screen_share_selector() {
                                     // 尝试更新 CameraSource（摄像头）
                                     auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
                                     if (cameraSrc) {
-                                        LOG_DEBUG("[DIAG] 更新CameraSource图像: " + source_id);
                                         cameraSrc->push_frame(frame.image);
                                         break;
                                     }
@@ -2989,10 +3026,16 @@ void MainWindow::setup_canvas_widget() {
     canvas_widget_->set_compositor(compositor_);
 
     encoder_bridge_->set_compositor(compositor_);
+    // GPU 路径（Phase 2-4）：若初始化成功，接入 GpuCompositor + GpuColorConverter
+    if (gpu_compositor_ && gpu_color_converter_) {
+        encoder_bridge_->set_gpu_compositor(gpu_compositor_);
+        encoder_bridge_->set_gpu_color_converter(gpu_color_converter_);
+        LOG_INFO("GPU pipeline wired to encoder bridge");
+    }
     // 设置 CanvasRenderer 作为回退方案（用于推流捕获）
     if (canvas_widget_->get_renderer() && scene_manager_->get_current_scene()) {
         encoder_bridge_->set_canvas_renderer(
-            std::shared_ptr<CanvasRenderer>(canvas_widget_->get_renderer()), 
+            std::shared_ptr<CanvasRenderer>(canvas_widget_->get_renderer()),
             scene_manager_->get_current_scene()
         );
     }
@@ -3510,8 +3553,49 @@ void MainWindow::show_scene_item_settings(int index) {
 
             LOG_INFO("Camera settings updated for source: " + source_id);
         }
+    }
+    // 检查是否是屏幕共享源（capture_ 开头）
+    else if (QString::fromStdString(source_id).startsWith("capture_")) {
+        LOG_INFO("Opening share settings for source: " + source_id);
+
+        // 打开共享设置对话框
+        ShareSettingsDialog dlg(this);
+
+        // 获取当前 capture_manager_ 中的源配置
+        if (capture_manager_) {
+            auto src = capture_manager_->get_source(source_id);
+            if (src) {
+                LOG_INFO("Found source in capture_manager, current config - cursor: " +
+                         std::string(src->get_config().capture_cursor ? "true" : "false") +
+                         ", border: " + std::string(src->get_config().capture_border ? "true" : "false"));
+                // 设置初始值为当前配置
+                const auto& cfg = src->get_config();
+                dlg.setInitialValues(cfg.capture_cursor, cfg.capture_border);
+            } else {
+                LOG_WARNING("Source not found in capture_manager: " + source_id);
+            }
+        } else {
+            LOG_WARNING("capture_manager_ is null");
+        }
+
+        if (dlg.exec() == QDialog::Accepted) {
+            bool capture_cursor = dlg.isCaptureCursor();
+            bool capture_border = dlg.isCaptureBorder();
+
+            LOG_INFO("Share settings dialog accepted - cursor: " + std::string(capture_cursor ? "true" : "false") +
+                     ", border: " + std::string(capture_border ? "true" : "false"));
+
+            // 更新 capture_manager_ 中的源的设置
+            if (capture_manager_) {
+                capture_manager_->update_share_settings(source_id, capture_cursor, capture_border);
+            }
+
+            QMessageBox::information(this, "提示", "共享设置已更新。");
+        } else {
+            LOG_INFO("Share settings dialog cancelled");
+        }
     } else {
-        // 非摄像头项，暂时显示开发中
+        // 其他类型的源，显示开发中
         QMessageBox::information(this, "提示", "设置功能开发中...");
     }
 }

@@ -997,8 +997,8 @@ void AudioEngine::pushFrameToQueue(
         queue.pop();
         static int drop_count = 0;
         drop_count++;
-        if (drop_count <= 10) {
-            LOG_WARNING("[AudioMixer] Queue full, dropping oldest frame (total dropped: " + 
+        if (drop_count <= 5 || drop_count % 500 == 0) {
+            LOG_WARNING("[AudioMixer] Queue full, dropping oldest frame (total dropped: " +
                       std::to_string(drop_count) + ")");
         }
     }

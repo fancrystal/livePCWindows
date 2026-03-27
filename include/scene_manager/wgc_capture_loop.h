@@ -2,6 +2,7 @@
 
 #include "scene_manager/icapture_source.h"
 #include "scene_manager/shared_d3d_device.h"
+#include "scene_manager/gpu_texture_ref.h"
 
 #include <atomic>
 #include <functional>
@@ -30,7 +31,9 @@ namespace live_assistant {
 // - Additionally reads back into QImage and dispatches callback
 class WGCCaptureLoop {
 public:
-    using ImageCallback = std::function<void(const QImage&)>;
+    using ImageCallback   = std::function<void(const QImage&)>;
+    // Phase 1: GPU 纹理直传回调（GPU→GPU CopyResource，无 CPU 回读）
+    using TextureCallback = std::function<void(const GpuTextureRef&)>;
 
     explicit WGCCaptureLoop(const CaptureConfig& cfg);
     ~WGCCaptureLoop();
@@ -38,7 +41,16 @@ public:
     bool start();
     void stop();
 
+    // 原有 CPU 图像回调（兼容保留）
     void set_frame_callback(ImageCallback cb);
+
+    // Phase 1: 设置 GPU 纹理回调
+    // 设置后，每帧将通过 GPU→GPU CopyResource 生成 DEFAULT 纹理并回调，
+    // 同时跳过 CPU 回读（copy_texture_to_qimage 不再执行）
+    void set_texture_callback(TextureCallback cb);
+
+    // 更新捕获设置（运行时生效，无需重启捕获）
+    void update_settings(bool capture_cursor, bool capture_border);
 
 private:
     void thread_proc();
@@ -56,6 +68,9 @@ private:
 
     QImage copy_texture_to_qimage(ID3D11Texture2D* src);
 
+    // Phase 1: GPU→GPU CopyResource 到 DEFAULT 纹理，返回 GpuTextureRef
+    GpuTextureRef create_gpu_frame_copy(ID3D11Texture2D* src);
+
     CaptureConfig cfg_;
 
     std::atomic<bool> running_{false};
@@ -64,6 +79,14 @@ private:
 
     std::mutex cb_mutex_;
     ImageCallback cb_;
+
+    // Phase 1: GPU 纹理回调及缓存
+    std::mutex tex_cb_mutex_;
+    TextureCallback tex_cb_;
+    winrt::com_ptr<ID3D11Texture2D> cached_gpu_frame_texture_;
+    uint32_t cached_gpu_frame_width_  = 0;
+    uint32_t cached_gpu_frame_height_ = 0;
+    uint64_t frame_id_counter_        = 0;
 
     // WinRT capture objects (owned by capture thread)
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{ nullptr };

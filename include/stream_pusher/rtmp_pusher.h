@@ -107,9 +107,33 @@ private:
     
     // Whether we've sent the first video keyframe yet
     bool have_sent_first_key_ = false;
-    
+
     // Whether this is the first video packet (for PTS adjustment)
     bool is_first_video_packet_ = true;
+
+    // send_packet 诊断计数（成员变量，重连时可重置）
+    int send_frame_count_ = 0;
+    int64_t diag_first_audio_pts_ = -1;
+    int64_t diag_first_video_pts_ = -1;
+    int64_t diag_first_audio_wallclock_ = -1;  // 第一帧音频的wallclock时间（毫秒）
+    int64_t diag_first_video_wallclock_ = -1;  // 第一帧视频的wallclock时间（毫秒）
+    int64_t av_sync_offset_ms_ = 0;            // 音视频同步偏移量（音频延迟）
+    int64_t video_pts_base_ = -1;              // 视频 PTS 归一化基准（修正 QSV 内部计数器偏移）
+    int audio_packet_count_ = 0;
+    int write_frame_count_ = 0;
+
+    // 第一帧关键帧等待状态
+    bool first_video_wait_initialized_ = false;
+    std::chrono::steady_clock::time_point first_video_wait_start_;
+
+    // 缓存的流参数，用于重连时自动重新注册流
+    AVCodecParameters* cached_audio_codecpar_ = nullptr;
+    AVCodecParameters* cached_video_codecpar_ = nullptr;
+    AVRational cached_audio_time_base_ = {1, 1000};
+    AVRational cached_video_time_base_ = {1, 1000};
+
+    // 重新注册缓存的流（断线重连时使用）
+    ErrorCode re_register_cached_streams();
 };
 
 } // namespace live_assistant

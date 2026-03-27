@@ -148,6 +148,12 @@ void WGCCaptureLoop::set_frame_callback(ImageCallback cb)
     cb_ = std::move(cb);
 }
 
+void WGCCaptureLoop::set_texture_callback(TextureCallback cb)
+{
+    std::lock_guard<std::mutex> lk(tex_cb_mutex_);
+    tex_cb_ = std::move(cb);
+}
+
 bool WGCCaptureLoop::start()
 {
     if (running_.exchange(true)) return true;
@@ -231,6 +237,24 @@ bool WGCCaptureLoop::init_capture_objects()
     return true;
 }
 
+void WGCCaptureLoop::update_settings(bool capture_cursor, bool capture_border) {
+    cfg_.capture_cursor = capture_cursor;
+    cfg_.capture_border = capture_border;
+
+    // 如果 session 已创建，更新设置
+    if (session_) {
+        try {
+            session_.IsCursorCaptureEnabled(capture_cursor);
+            session_.IsBorderRequired(capture_border);
+            LOG_INFO(QString("WGCCaptureLoop: Updated capture settings - cursor=%1, border=%2")
+                .arg(capture_cursor ? "true" : "false")
+                .arg(capture_border ? "true" : "false").toStdString());
+        } catch (const winrt::hresult_error& ex) {
+            LOG_ERROR("WGCCaptureLoop: Failed to update capture settings: " + winrt::to_string(ex.message()));
+        }
+    }
+}
+
 void WGCCaptureLoop::resize_swapchain()
 {
     try {
@@ -286,7 +310,22 @@ void WGCCaptureLoop::on_frame_arrived(
 
             surfaceTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
             SharedD3D11Device::instance().context()->CopyResource(backBuffer.get(), surfaceTexture.get());
-            
+
+            // Phase 1: GPU 纹理直传路径（在 frame.Close() 前拷贝，避免 WGC 缓冲区回收）
+            {
+                TextureCallback tex_cb;
+                {
+                    std::lock_guard<std::mutex> lk(tex_cb_mutex_);
+                    tex_cb = tex_cb_;
+                }
+                if (tex_cb) {
+                    GpuTextureRef tex_ref = create_gpu_frame_copy(surfaceTexture.get());
+                    if (tex_ref.is_valid()) {
+                        tex_cb(tex_ref);
+                    }
+                }
+            }
+
             // 显式关闭frame，尽早释放FramePool的buffer
             frame.Close();
         }
@@ -297,6 +336,15 @@ void WGCCaptureLoop::on_frame_arrived(
     if (resized) {
         frame_pool_.Recreate(SharedD3D11Device::instance().winrt_device(), pixel_format_, 2, last_size_);
         return;
+    }
+
+    // CPU 回读路径（当 GPU 纹理回调未设置时才执行，避免不必要的 GPU→CPU 回读）
+    {
+        std::lock_guard<std::mutex> lk(tex_cb_mutex_);
+        if (tex_cb_) {
+            // GPU 路径已处理，跳过 CPU 回读
+            return;
+        }
     }
 
     // Read back into QImage (additional step for Qt pipeline)
@@ -402,6 +450,53 @@ QImage WGCCaptureLoop::copy_texture_to_qimage(ID3D11Texture2D* src)
 
     d3d_context->Unmap(cached_staging_texture_.get(), 0);
     return img;
+}
+
+// Phase 1: GPU→GPU CopyResource 到 DEFAULT 纹理，供 GPU 合成器使用（无 CPU 回读）
+GpuTextureRef WGCCaptureLoop::create_gpu_frame_copy(ID3D11Texture2D* src)
+{
+    if (!src) return {};
+
+    D3D11_TEXTURE2D_DESC desc{};
+    src->GetDesc(&desc);
+    if (desc.Width == 0 || desc.Height == 0) return {};
+
+    auto& shared = SharedD3D11Device::instance();
+
+    // 按尺寸复用缓存纹理，避免每帧分配
+    if (!cached_gpu_frame_texture_ ||
+        cached_gpu_frame_width_  != desc.Width ||
+        cached_gpu_frame_height_ != desc.Height) {
+
+        cached_gpu_frame_texture_ = shared.create_texture_2d(
+            desc.Width, desc.Height,
+            desc.Format,
+            D3D11_USAGE_DEFAULT,
+            D3D11_BIND_SHADER_RESOURCE,   // 供合成器 SRV 使用
+            0, 0);
+
+        if (!cached_gpu_frame_texture_) {
+            LOG_ERROR("[WGC] create_gpu_frame_copy: failed to create DEFAULT texture");
+            return {};
+        }
+        cached_gpu_frame_width_  = desc.Width;
+        cached_gpu_frame_height_ = desc.Height;
+        LOG_INFO("[WGC] GPU frame cache texture created: " +
+                 std::to_string(desc.Width) + "x" + std::to_string(desc.Height));
+    }
+
+    // GPU→GPU 拷贝（约 <0.1ms，无 CPU 参与）
+    shared.context()->CopyResource(cached_gpu_frame_texture_.get(), src);
+
+    GpuTextureRef ref;
+    ref.texture      = cached_gpu_frame_texture_;
+    ref.width        = desc.Width;
+    ref.height       = desc.Height;
+    ref.format       = desc.Format;
+    ref.frame_id     = ++frame_id_counter_;
+    ref.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return ref;
 }
 
 void WGCCaptureLoop::thread_proc()

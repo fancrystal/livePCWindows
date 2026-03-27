@@ -1,4 +1,5 @@
 #include "scene_manager/capture_manager_iface.h"
+#include "scene_manager/wgc_capture_source.h"
 #include "common/log.h"
 
 namespace live_assistant {
@@ -76,6 +77,32 @@ std::vector<std::string> CaptureManagerIface::get_all_source_ids() const {
         ids.push_back(kv.first);
     }
     return ids;
+}
+
+std::shared_ptr<ICaptureSource> CaptureManagerIface::get_source(const std::string& source_id) const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    auto it = sources_.find(source_id);
+    if (it != sources_.end()) {
+        return it->second;
+    }
+    return nullptr;
+}
+
+void CaptureManagerIface::update_share_settings(const std::string& source_id, bool capture_cursor, bool capture_border) {
+    auto source = get_source(source_id);
+    if (!source) {
+        LOG_WARNING("CaptureManagerIface: source not found for settings update: " + source_id);
+        return;
+    }
+
+    // 尝试转换为 WGCaptureSourceAdapter
+    auto* wgc_adapter = dynamic_cast<WGCaptureSourceAdapter*>(source.get());
+    if (wgc_adapter) {
+        wgc_adapter->update_share_settings(capture_cursor, capture_border);
+        LOG_INFO("CaptureManagerIface: updated share settings for WGC source: " + source_id);
+    } else {
+        LOG_WARNING("CaptureManagerIface: source is not a WGC type, cannot update share settings: " + source_id);
+    }
 }
 
 } // namespace live_assistant

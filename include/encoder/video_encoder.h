@@ -14,6 +14,7 @@ struct AVCodec;
 struct AVCodecContext;
 struct AVFrame;
 struct SwsContext;
+struct ID3D11Texture2D;
 
 namespace live_assistant {
 struct VideoFrame;
@@ -70,6 +71,14 @@ public:
 
     ErrorCode flush(std::vector<EncodedPacketPtr>& packets);
 
+    // Phase 4: GPU texture 直接编码（跳过 CPU sws_scale + av_hwframe_transfer_data）
+    // nv12_texture 来自 GpuColorConverter::convert()，必须与 SharedD3D11Device 同设备
+    // 仅在 is_qsv_encoder_ 且 d3d11va_device_ctx_ 有效时可用
+    ErrorCode encode_gpu_texture(ID3D11Texture2D* nv12_texture, int64_t pts_ms,
+                                  std::vector<EncodedPacketPtr>& packets);
+
+    bool is_gpu_texture_encode_available() const { return is_qsv_encoder_ && d3d11va_device_ctx_ != nullptr; }
+
 private:
     // Switch to next encoder in the candidate list when current encoder fails
     bool switch_to_next_encoder();
@@ -77,6 +86,9 @@ private:
     ErrorCode send_frame_internal(const std::shared_ptr<VideoFrame>& frame);
     ErrorCode send_flush();
     ErrorCode receive_packets(std::vector<EncodedPacketPtr>& packets);
+
+    // Phase 4: 用 SharedD3D11Device 初始化 D3D11VA 设备上下文，供 QSV 派生使用
+    bool initialize_shared_d3d11va();
 
     VideoEncoderConfig config_;
     bool initialized_ = false;
@@ -105,6 +117,10 @@ private:
     AVFrame* sw_frame_ = nullptr;  // 软件帧（用于转换）
 
     bool is_qsv_encoder_ = false;  // 标记是否使用 QSV 编码器
+
+    // Phase 4: D3D11VA 设备/帧上下文（共享 SharedD3D11Device，供 GPU 纹理直编使用）
+    AVBufferRef* d3d11va_device_ctx_ = nullptr;  // D3D11VA 设备（包装 SharedD3D11Device）
+    AVBufferRef* d3d11va_frame_ctx_  = nullptr;  // D3D11VA 帧上下文（用于 av_hwframe_map 解包 QSV 帧）
 };
 
 } // namespace live_assistant

@@ -67,6 +67,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\settings_dialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\share_settings_dialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\circular_buffer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -83,6 +86,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\simple_av_sync.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\common\stream_session_config.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\common\system_monitor.cpp">
@@ -122,6 +128,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\ffmpeg_camera_capture_source.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_canvas_widget.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_color_converter.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_compositor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\opencv_camera_capture_source.cpp">
@@ -282,6 +297,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\settings_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\share_settings_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\circular_buffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -301,6 +319,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\simple_av_sync.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\common\stream_session_config.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\system_monitor.h">
@@ -340,6 +361,18 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\ffmpeg_camera_capture_source.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_canvas_widget.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_color_converter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_compositor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_texture_ref.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\icapture_source.h">

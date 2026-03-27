@@ -11,6 +11,7 @@
 
 struct AVCodecParameters;
 struct AVRational;
+struct ID3D11Texture2D;
 
 namespace live_assistant {
 
@@ -59,6 +60,12 @@ public:
     
     // Force the next video frame to be a keyframe (IDR)
     ErrorCode force_keyframe();
+
+    // Phase 4 GPU path: 直接编码 D3D11 NV12 纹理，跳过 sws_scale + av_hwframe_transfer_data
+    // 仅在 is_gpu_texture_encode_available() 返回 true 时有效
+    ErrorCode encode_video_gpu_texture(ID3D11Texture2D* nv12_texture, int64_t pts_ms,
+                                        std::vector<EncodedPacketPtr>& packets);
+    bool is_gpu_texture_encode_available() const;
 
     ErrorCode reset_audio_encoder();
     ErrorCode reset_video_encoder();

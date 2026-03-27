@@ -309,8 +309,8 @@ private:
     std::mutex media_mutex_;
     std::mutex speaker_mutex_;
 
-    // 队列大小限制：10 帧约 210ms，为混音线程提供足够缓冲避免爆音
-    static const size_t MAX_QUEUE_SIZE = 10;
+    // 队列大小限制：20帧约420ms，为混音线程提供足够缓冲避免爆音
+    static const size_t MAX_QUEUE_SIZE = 20;
 
     // 当前混音的源类型列表（用于音量控制）
     QList<AudioSourceType> sources_types_;

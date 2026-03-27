@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFrame>
 #include <QCloseEvent>
+#include <QKeyEvent>
 #include <QPointer>
 #include <QTimer>
 
@@ -270,6 +271,18 @@ void InsertVideoWidget::closeEvent(QCloseEvent *event)
 
     event->accept();
     // 不调用QDialog::closeEvent避免重复处理
+}
+
+void InsertVideoWidget::keyPressEvent(QKeyEvent *event) {
+    // 拦截回车键，防止在搜索框按回车时关闭对话框
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+        // 如果焦点在搜索框，刷新列表而不是关闭对话框
+        if (searchEdit_ && searchEdit_->hasFocus()) {
+            event->accept();
+            return; // 忽略回车键，让搜索框的搜索功能正常工作
+        }
+    }
+    QDialog::keyPressEvent(event);
 }
 
 void InsertVideoWidget::startVlcPrewarmMonitoring() {

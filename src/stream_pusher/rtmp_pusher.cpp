@@ -13,8 +13,121 @@ extern "C" {
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
+#include <vector>
+#include <cstring>
+
+#ifdef _WIN32
+#define NOMINMAX   // 防止 windows.h 的 min/max 宏污染 std::min/std::max
+#include <windows.h>
+#endif
 
 namespace live_assistant {
+
+// ─── Annex-B → avcC extradata 转换 ──────────────────────────────────────────
+// NVENC 等编码器即使设置了 AV_CODEC_FLAG_GLOBAL_HEADER，extradata 仍可能是
+// Annex-B（00 00 00 01 起始码）格式。FLV/RTMP 要求 avcC 格式（ISO 14496-15），
+// 否则 CDN 无法解析 SPS/PPS，导致花屏或流中断。
+static bool convert_annexb_to_avcc(AVCodecParameters* par)
+{
+    if (!par || par->extradata_size < 5) return false;
+    const uint8_t* d = par->extradata;
+    // 检测是否为 Annex-B（以 00 00 00 01 或 00 00 01 开头）
+    bool is_annexb = (d[0] == 0 && d[1] == 0 && d[2] == 0 && d[3] == 1) ||
+                     (d[0] == 0 && d[1] == 0 && d[2] == 1);
+    if (!is_annexb) return false;  // 已经是 avcC，无需转换
+
+    // 扫描所有 NAL unit，提取第一个 SPS(7) 和第一个 PPS(8)
+    std::vector<uint8_t> sps, pps;
+    int size = par->extradata_size;
+    int i = 0;
+    while (i < size) {
+        // 跳过起始码
+        int sc_len = 0;
+        if (i + 3 < size && d[i]==0 && d[i+1]==0 && d[i+2]==0 && d[i+3]==1) sc_len = 4;
+        else if (i + 2 < size && d[i]==0 && d[i+1]==0 && d[i+2]==1) sc_len = 3;
+        else { i++; continue; }
+
+        int nal_start = i + sc_len;
+        if (nal_start >= size) break;
+
+        // 找下一个起始码（NAL 的结尾）
+        int nal_end = size;
+        for (int j = nal_start + 1; j < size - 2; j++) {
+            if (d[j]==0 && d[j+1]==0 && (d[j+2]==1 ||
+                (j+3 < size && d[j+2]==0 && d[j+3]==1))) {
+                nal_end = j;
+                break;
+            }
+        }
+
+        int nal_type = d[nal_start] & 0x1F;
+        if (nal_type == 7 && sps.empty())
+            sps.assign(d + nal_start, d + nal_end);
+        else if (nal_type == 8 && pps.empty())
+            pps.assign(d + nal_start, d + nal_end);
+
+        i = nal_end;
+        if (!sps.empty() && !pps.empty()) break;
+    }
+
+    if (sps.size() < 4 || pps.empty()) return false;
+
+    // 组装 avcC（ISO 14496-15 Section 5.2.4.1）
+    std::vector<uint8_t> avcc;
+    avcc.reserve(11 + sps.size() + pps.size());
+    avcc.push_back(1);                              // configurationVersion
+    avcc.push_back(sps[1]);                         // AVCProfileIndication
+    avcc.push_back(sps[2]);                         // profile_compatibility
+    avcc.push_back(sps[3]);                         // AVCLevelIndication
+    avcc.push_back(0xFF);                           // lengthSizeMinusOne = 3 → 4字节长度前缀
+    avcc.push_back(0xE1);                           // numSPS = 1（高3位为保留位）
+    avcc.push_back(static_cast<uint8_t>(sps.size() >> 8));
+    avcc.push_back(static_cast<uint8_t>(sps.size() & 0xFF));
+    avcc.insert(avcc.end(), sps.begin(), sps.end());
+    avcc.push_back(1);                              // numPPS = 1
+    avcc.push_back(static_cast<uint8_t>(pps.size() >> 8));
+    avcc.push_back(static_cast<uint8_t>(pps.size() & 0xFF));
+    avcc.insert(avcc.end(), pps.begin(), pps.end());
+
+    // 替换 codecpar->extradata
+    av_free(par->extradata);
+    par->extradata = static_cast<uint8_t*>(av_malloc(avcc.size() + AV_INPUT_BUFFER_PADDING_SIZE));
+    if (!par->extradata) { par->extradata_size = 0; return false; }
+    memcpy(par->extradata, avcc.data(), avcc.size());
+    memset(par->extradata + avcc.size(), 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    par->extradata_size = static_cast<int>(avcc.size());
+    return true;
+}
+
+// ─── SEH 保护 wrapper ────────────────────────────────────────────────────────
+// av_interleaved_write_frame / av_write_frame 在服务端突然关闭 TCP 连接时，
+// 可能在 FFmpeg 内部触发 Access Violation（SEH）而不是返回错误码，
+// 从而直接崩溃整个进程。
+//
+// 使用单独的 free function（无 C++ 析构对象）包裹 write_frame，
+// 用 __try/__except 捕获 SEH 并转换为 AVERROR_UNKNOWN 返回值，
+// 使上层可以走正常的 free_resources + 重连路径，而不是进程崩溃。
+// ─────────────────────────────────────────────────────────────────────────────
+static int safe_write_frame(AVFormatContext* fmt_ctx, AVPacket* pkt, bool interleaved)
+{
+#ifdef _WIN32
+    __try {
+        int ret = interleaved
+            ? av_interleaved_write_frame(fmt_ctx, pkt)
+            : av_write_frame(fmt_ctx, pkt);
+        return ret;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        // SEH 捕获：FFmpeg 内部 Access Violation 等硬件异常
+        // 返回 AVERROR_UNKNOWN，让上层 free_resources() 并触发重连
+        return AVERROR_UNKNOWN;
+    }
+#else
+    return interleaved
+        ? av_interleaved_write_frame(fmt_ctx, pkt)
+        : av_write_frame(fmt_ctx, pkt);
+#endif
+}
 
 RTMPPusher::RTMPPusher() {
     avformat_network_init();
@@ -24,6 +137,12 @@ RTMPPusher::RTMPPusher() {
 RTMPPusher::~RTMPPusher() {
     disconnect();
     free_resources();
+    if (cached_audio_codecpar_) {
+        avcodec_parameters_free(&cached_audio_codecpar_);
+    }
+    if (cached_video_codecpar_) {
+        avcodec_parameters_free(&cached_video_codecpar_);
+    }
     avformat_network_deinit();
     LOG_INFO("RTMPPusher destructor");
 }
@@ -82,6 +201,16 @@ ErrorCode RTMPPusher::register_audio_stream(AVCodecParameters* codecpar, AVRatio
         return ErrorCode::INVALID_STATE;
     }
 
+    // 缓存参数，供断线重连时自动重注册
+    if (cached_audio_codecpar_) {
+        avcodec_parameters_free(&cached_audio_codecpar_);
+    }
+    cached_audio_codecpar_ = avcodec_parameters_alloc();
+    if (cached_audio_codecpar_) {
+        avcodec_parameters_copy(cached_audio_codecpar_, codecpar);
+    }
+    cached_audio_time_base_ = time_base;
+
     audio_stream_ = avformat_new_stream(format_ctx_, nullptr);
     if (!audio_stream_) {
         LOG_ERROR("Failed to create audio stream");
@@ -118,6 +247,18 @@ ErrorCode RTMPPusher::register_video_stream(AVCodecParameters* codecpar, AVRatio
         return ErrorCode::INVALID_STATE;
     }
 
+    // 缓存参数，供断线重连时自动重注册
+    if (cached_video_codecpar_) {
+        avcodec_parameters_free(&cached_video_codecpar_);
+    }
+    cached_video_codecpar_ = avcodec_parameters_alloc();
+    if (cached_video_codecpar_) {
+        avcodec_parameters_copy(cached_video_codecpar_, codecpar);
+        // 确保缓存的 extradata 也是 avcC 格式（断线重连时直接使用）
+        convert_annexb_to_avcc(cached_video_codecpar_);
+    }
+    cached_video_time_base_ = time_base;
+
     video_stream_ = avformat_new_stream(format_ctx_, nullptr);
     if (!video_stream_) {
         LOG_ERROR("Failed to create video stream");
@@ -127,6 +268,13 @@ ErrorCode RTMPPusher::register_video_stream(AVCodecParameters* codecpar, AVRatio
     if (avcodec_parameters_copy(video_stream_->codecpar, codecpar) < 0) {
         LOG_ERROR("Failed to copy video codec parameters");
         return ErrorCode::INIT_FAILED;
+    }
+
+    // FLV/RTMP 要求 H264 extradata 必须是 avcC 格式（ISO 14496-15）。
+    // NVENC 某些 Windows FFmpeg 版本即便设置了 AV_CODEC_FLAG_GLOBAL_HEADER 仍输出
+    // Annex-B 格式（以 00 00 00 01 起始），需要手动转换。
+    if (convert_annexb_to_avcc(video_stream_->codecpar)) {
+        LOG_INFO("[RTMP] Converted video extradata from Annex-B to avcC format");
     }
 
     // Validate/log H264 codecpar and extradata to ensure avcC is propagated.
@@ -194,13 +342,29 @@ ErrorCode RTMPPusher::open_output() {
 }
 
 ErrorCode RTMPPusher::connect_and_write_header() {
+    LOG_INFO("[RTMP] connect_and_write_header() called: connected=" + std::to_string(connected_) +
+             ", header_written=" + std::to_string(header_written_) +
+             ", audio_stream=" + (audio_stream_ ? "valid" : "null") +
+             ", video_stream=" + (video_stream_ ? "valid" : "null") +
+             ", format_ctx=" + (format_ctx_ ? "valid" : "null") +
+             ", cached_audio=" + (cached_audio_codecpar_ ? "valid" : "null") +
+             ", cached_video=" + (cached_video_codecpar_ ? "valid" : "null"));
+
     if (connected_ && header_written_) {
+        LOG_INFO("[RTMP] connect_and_write_header(): already connected, skipping");
         return ErrorCode::SUCCESS;
     }
 
+    // 重连场景：format_ctx_ 被 free_resources() 清空，需要重建并重注册流
     if (!audio_stream_ || !video_stream_) {
-        LOG_ERROR("Audio/video streams not registered before connect_and_write_header");
-        return ErrorCode::INVALID_STATE;
+        LOG_INFO("[RTMP] Streams missing, attempting re_register_cached_streams()");
+        ErrorCode re_result = re_register_cached_streams();
+        if (re_result != ErrorCode::SUCCESS) {
+            LOG_ERROR("[RTMP] re_register_cached_streams() failed: " + std::to_string(static_cast<int>(re_result)));
+            LOG_ERROR("Audio/video streams not registered and no cached params for reconnect");
+            return ErrorCode::INVALID_STATE;
+        }
+        LOG_INFO("[RTMP] re_register_cached_streams() succeeded");
     }
 
     ErrorCode result = open_output();
@@ -230,7 +394,18 @@ ErrorCode RTMPPusher::connect_and_write_header() {
 
     header_written_ = true;
     is_first_video_packet_ = true;
-    have_sent_first_key_ = false;  // 🔧 重置关键帧标志，确保新推流等待第一帧关键帧
+    have_sent_first_key_ = false;
+    // 重置 send_packet 诊断状态
+    send_frame_count_ = 0;
+    diag_first_audio_pts_ = -1;
+    diag_first_video_pts_ = -1;
+    diag_first_audio_wallclock_ = -1;
+    diag_first_video_wallclock_ = -1;
+    av_sync_offset_ms_ = 0;
+    video_pts_base_ = -1;  // 每次重连重置，重新校准 QSV 内部 PTS 偏移
+    audio_packet_count_ = 0;
+    write_frame_count_ = 0;
+    first_video_wait_initialized_ = false;
 
     // 初始化滑动窗口统计
     {
@@ -296,18 +471,17 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     AVPacket* avpkt = packet->pkt.get();
 
     // 调试日志：打印每一帧的 PTS（仅首帧和每50帧）
-    static int frame_count = 0;
-    frame_count++;
+    send_frame_count_++;
     if (packet->type == MediaType::AUDIO) {
-        if (frame_count <= 3) {
-            LOG_DEBUG("[RTMP] AUDIO frame #" + std::to_string(frame_count) + 
+        if (send_frame_count_ <= 3) {
+            LOG_DEBUG("[RTMP] AUDIO frame #" + std::to_string(send_frame_count_) +
                      ": pts=" + std::to_string(packet->pts) + "ms" +
                      ", dts=" + std::to_string(packet->dts) + "ms" +
                      ", duration=" + std::to_string(packet->duration) + "ms");
         }
     } else {
-        if (frame_count <= 3 || frame_count % 50 == 0) {
-            LOG_DEBUG("[RTMP] VIDEO frame #" + std::to_string(frame_count) + 
+        if (send_frame_count_ <= 3 || send_frame_count_ % 50 == 0) {
+            LOG_DEBUG("[RTMP] VIDEO frame #" + std::to_string(send_frame_count_) +
                      ": pts=" + std::to_string(packet->pts) + "ms" +
                      ", dts=" + std::to_string(packet->dts) + "ms" +
                      ", duration=" + std::to_string(packet->duration) + "ms" +
@@ -315,29 +489,34 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         }
     }
 
-    // 🔧 诊断第一帧 PTS 问题（仅前几帧）
-    static int64_t first_audio_pts = -1;
-    static int64_t first_video_pts = -1;
-    static int64_t first_audio_wallclock = -1;
-    static int64_t first_video_wallclock = -1;
-    static int first_frame_count = 0;
-    
-    if (packet->type == MediaType::AUDIO && first_audio_pts == -1) {
-        first_audio_pts = packet->pts;
-        first_audio_wallclock = packet->wallclock_us / 1000;
-        LOG_INFO("[RTMP] First AUDIO packet: pts=" + std::to_string(packet->pts) + 
-                 ", wallclock=" + std::to_string(first_audio_wallclock) + "ms");
-    } else if (packet->type == MediaType::VIDEO && first_video_pts == -1) {
-        first_video_pts = packet->pts;
-        first_video_wallclock = packet->wallclock_us / 1000;
-        LOG_INFO("[RTMP] First VIDEO packet: pts=" + std::to_string(packet->pts) + 
-                 ", wallclock=" + std::to_string(first_video_wallclock) + "ms");
+    // 诊断第一帧 PTS（每次重连后重新记录）
+    if (packet->type == MediaType::AUDIO && diag_first_audio_pts_ == -1) {
+        diag_first_audio_pts_ = packet->pts;
+        diag_first_audio_wallclock_ = packet->wallclock_us / 1000;
+        LOG_INFO("[RTMP] First AUDIO packet: pts=" + std::to_string(packet->pts) +
+                 ", wallclock=" + std::to_string(diag_first_audio_wallclock_) + "ms");
         
-        // 打印音视频第一帧的对比
-        if (first_audio_pts != -1) {
-            LOG_INFO("[RTMP] AV Sync Check: audio_pts=" + std::to_string(first_audio_pts) + 
-                     "ms, video_pts=" + std::to_string(first_video_pts) + "ms" +
-                     ", diff=" + std::to_string(first_video_pts - first_audio_pts) + "ms");
+        // 计算音视频同步偏移：用 PTS 差而不是 wallclock 差
+        // wallclock 是包抵达推流线程的墙钟时刻，受初始化延迟影响会远大于实际 PTS 差
+        // 正确做法：audio_pts - video_pts，才是真正需要补偿的偏移
+        if (diag_first_video_pts_ != -1) {
+            int64_t offset = diag_first_audio_pts_ - diag_first_video_pts_;
+            av_sync_offset_ms_ = (offset > 0) ? offset : 0;  // 只补偿音频落后于视频的情况
+            LOG_INFO("[RTMP] AV Sync Offset calculated: " + std::to_string(av_sync_offset_ms_) +
+                     "ms (audio_pts=" + std::to_string(diag_first_audio_pts_) +
+                     " - video_pts=" + std::to_string(diag_first_video_pts_) + ")");
+        }
+    } else if (packet->type == MediaType::VIDEO && diag_first_video_pts_ == -1) {
+        diag_first_video_pts_ = packet->pts;
+        diag_first_video_wallclock_ = packet->wallclock_us / 1000;
+        LOG_INFO("[RTMP] First VIDEO packet: pts=" + std::to_string(packet->pts) +
+                 ", wallclock=" + std::to_string(diag_first_video_wallclock_) + "ms");
+        if (diag_first_audio_pts_ != -1) {
+            int64_t offset = diag_first_audio_pts_ - diag_first_video_pts_;
+            av_sync_offset_ms_ = (offset > 0) ? offset : 0;
+            LOG_INFO("[RTMP] AV Sync Offset calculated: " + std::to_string(av_sync_offset_ms_) +
+                     "ms (audio_pts=" + std::to_string(diag_first_audio_pts_) +
+                     " - video_pts=" + std::to_string(diag_first_video_pts_) + ")");
         }
     }
 
@@ -382,11 +561,10 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         st = audio_stream_;
         
         // Log audio packet details for debugging (every 50 packets)
-    static int audio_packet_count = 0;
-    audio_packet_count++;
-    if (audio_packet_count % 50 == 0) {
-        LOG_DEBUG("[RTMP] Audio packet #" + std::to_string(audio_packet_count) + 
-                 ": pts=" + std::to_string(packet->pts) + 
+    audio_packet_count_++;
+    if (audio_packet_count_ % 50 == 0) {
+        LOG_DEBUG("[RTMP] Audio packet #" + std::to_string(audio_packet_count_) +
+                 ": pts=" + std::to_string(packet->pts) +
                  ", duration=" + std::to_string(packet->duration) +
                  ", size=" + std::to_string(packet->pkt ? packet->pkt->size : 0));
     }
@@ -420,19 +598,16 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         // 🔧 修复：确保第一帧视频是关键帧，但最多只等待150ms
         // 这样可以避免视频延迟，同时确保第一帧质量
         // 注意：libx264 可能会先输出一个非关键帧作为编码种子，需要等待真正的 IDR
-        static std::chrono::steady_clock::time_point first_video_wait_start;
-        static bool first_video_wait_initialized = false;
-
         if (packet->type == MediaType::VIDEO && !have_sent_first_key_) {
             if (!(avpkt->flags & AV_PKT_FLAG_KEY)) {
                 // 初始化等待计时器
-                if (!first_video_wait_initialized) {
-                    first_video_wait_start = std::chrono::steady_clock::now();
-                    first_video_wait_initialized = true;
+                if (!first_video_wait_initialized_) {
+                    first_video_wait_start_ = std::chrono::steady_clock::now();
+                    first_video_wait_initialized_ = true;
                 }
 
                 // 计算已等待时间
-                auto elapsed = std::chrono::steady_clock::now() - first_video_wait_start;
+                auto elapsed = std::chrono::steady_clock::now() - first_video_wait_start_;
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
                 // 最多等待150ms，超过则接受非关键帧（避免无限等待）
@@ -444,12 +619,12 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                     LOG_WARNING("[RTMP] Timeout waiting for keyframe, accepting non-key frame after " +
                                std::to_string(elapsed_ms) + "ms");
                     have_sent_first_key_ = true;
-                    first_video_wait_initialized = false;
+                    first_video_wait_initialized_ = false;
                 }
             } else {
                 LOG_INFO("[RTMP] First keyframe received, size=" + std::to_string(avpkt->size));
                 have_sent_first_key_ = true;
-                first_video_wait_initialized = false;
+                first_video_wait_initialized_ = false;
             }
         }
     }
@@ -475,100 +650,45 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         LOG_DEBUG("[RTMP] After rescale: pts " + std::to_string(old_pts) + " -> " + std::to_string(avpkt->pts));
     }
 
-    if (packet->type == MediaType::VIDEO && is_first_video_packet_) {
-        if (avpkt->pts > 0) {
-            LOG_INFO("[RTMP] Fixing first video PTS: " + std::to_string(avpkt->pts) + "ms -> 0ms");
-            avpkt->pts = 0;
-            avpkt->dts = 0;
+    // QSV 编码器使用内部帧计数器作为 PTS，不受 bridge 的归零影响。
+    // 例如预览阶段运行了 ~116 帧后开始推流，第一个输出包 PTS ≈ 116×33ms = 3859ms，
+    // 而音频 PTS 从 0 开始，导致视频比音频晚 ~3.7s，音画不同步（音频显"慢"）。
+    // 修正：记录第一个视频包的 PTS 作为基准，之后所有视频包减去该基准，使视频从 0 开始。
+    if (packet->type == MediaType::VIDEO) {
+        if (video_pts_base_ == -1) {
+            video_pts_base_ = avpkt->pts;
+            LOG_INFO("[RTMP] Video PTS baseline set: " + std::to_string(video_pts_base_) +
+                     "ms (QSV internal offset to be subtracted from all video PTS)");
         }
+        avpkt->pts -= video_pts_base_;
+        avpkt->dts -= video_pts_base_;
+        // 防止负值（理论上不应发生，保险起见）
+        if (avpkt->pts < 0) avpkt->pts = 0;
+        if (avpkt->dts < 0) avpkt->dts = 0;
+    }
+    if (packet->type == MediaType::VIDEO && is_first_video_packet_) {
         is_first_video_packet_ = false;
     }
-
-    // Note: Packet was already cloned at the beginning of this function
-    // write_pkt and pkt_to_free are already set
-
-    // For video packets, check if we need fragmentation (only for AVCC format).
-    // Disabled intentionally: rely on FFmpeg muxer to packetize H264.
-    // Manual fragmentation caused AnnexB/AVCC parsing ambiguities in production streams.
-    bool fragmented = false;
-    if (false && packet->type == MediaType::VIDEO && st->codecpar &&
-        st->codecpar->codec_id == AV_CODEC_ID_H264 &&
-        st->codecpar->extradata && st->codecpar->extradata_size >= 5 &&
-        write_pkt->size > 64 * 1024) { // Only fragment packets > 64KB
-
-        // Check nal_length_size (usually 4 for AVCC)
-        uint8_t nal_length_size = st->codecpar->extradata[4] & 0x03;
-        if (nal_length_size == 3) nal_length_size = 4; // 3 means 4 bytes
-
-        if (nal_length_size == 4) {
-            fragmented = true;
-            LOG_DEBUG("RTMPPusher::send_packet - fragmenting large AVCC packet, size=" + std::to_string(write_pkt->size));
-
-            // Fragment the packet
-            const uint8_t* data = write_pkt->data;
-            size_t remaining = write_pkt->size;
-            size_t offset = 0;
-
-            while (remaining >= 4) {
-                // Read NAL length (big-endian)
-                uint32_t nal_len = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
-                offset += 4;
-
-                if (nal_len == 0 || nal_len > remaining - 4) {
-                    LOG_WARNING("RTMPPusher::send_packet - invalid NAL length " + std::to_string(nal_len) + " at offset " + std::to_string(offset - 4));
-                    fragmented = false;
-                    break;
-                }
-
-                // Create fragment packet
-                AVPacket* frag_pkt = av_packet_alloc();
-                if (!frag_pkt) {
-                    LOG_ERROR("RTMPPusher::send_packet - failed to alloc fragment packet");
-                    fragmented = false;
-                    break;
-                }
-
-                // Copy packet metadata
-                av_packet_ref(frag_pkt, write_pkt);
-                frag_pkt->data = write_pkt->data + offset - 4; // Include length prefix
-                frag_pkt->size = nal_len + 4;
-                frag_pkt->stream_index = write_pkt->stream_index;
-
-                // 根据配置选择写入模式
-                int ret;
-                if (config_.use_interleaved_write) {
-                    ret = av_interleaved_write_frame(format_ctx_, frag_pkt);
-                } else {
-                    ret = av_write_frame(format_ctx_, frag_pkt);
-                }
-                av_packet_free(&frag_pkt);
-
-                if (ret < 0) {
-                    char errbuf[128] = {0};
-                    av_strerror(ret, errbuf, sizeof(errbuf));
-                    LOG_ERROR("RTMPPusher::send_packet - failed to send fragment: " + std::string(errbuf));
-                    fragmented = false;
-                    break;
-                }
-
-                offset += nal_len;
-                remaining -= (nal_len + 4);
-                stats_.bytes_sent += (nal_len + 4);
-                bytes_in_window_ += (nal_len + 4);
-            }
-
-            if (!fragmented) {
-                LOG_WARNING("RTMPPusher::send_packet - fragmentation failed, falling back to sending whole packet");
-            }
-        }
+    
+    // 音视频同步：如果音频延迟，调整音频时间戳
+    if (packet->type == MediaType::AUDIO && av_sync_offset_ms_ > 0) {
+        int64_t old_pts = avpkt->pts;
+        int64_t old_dts = avpkt->dts;
+        avpkt->pts -= av_sync_offset_ms_;
+        avpkt->dts -= av_sync_offset_ms_;
+        
+        // 确保不为负数
+        if (avpkt->pts < 0) avpkt->pts = 0;
+        if (avpkt->dts < 0) avpkt->dts = 0;
+        
+        LOG_INFO("[RTMP] AV Sync applied: Adjusted audio PTS by -" + 
+                 std::to_string(av_sync_offset_ms_) + "ms, " +
+                 std::to_string(old_pts) + "ms -> " + std::to_string(avpkt->pts) + "ms");
     }
 
-    // Send the original packet if not fragmented or fragmentation failed
-    if (!fragmented) {
-        // 🔧 增强调试日志：打印音视频packet的完整时间戳信息（仅首帧）
-    static int write_frame_count = 0;
-    write_frame_count++;
-    if (write_frame_count <= 3) {
+    // 增强调试日志：打印音视频packet的完整时间戳信息（仅首帧）
+    write_frame_count_++;
+    if (write_frame_count_ <= 3) {
         std::string media_type = (packet->type == MediaType::VIDEO) ? "VIDEO" : "AUDIO";
         LOG_DEBUG("[RTMP] Before write: " + media_type +
                  " pts=" + std::to_string(packet->pts) +
@@ -576,46 +696,47 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                  ", size=" + std::to_string(write_pkt->size));
     }
 
-    // 根据配置选择写入模式
-    int ret;
-    if (config_.use_interleaved_write) {
-        ret = av_interleaved_write_frame(format_ctx_, write_pkt);
-    } else {
-        ret = av_write_frame(format_ctx_, write_pkt);
-    }
-
-    // Save size before potential free
+    // 在 write 前保存 size：av_interleaved_write_frame 会消费 packet，调用后 size 归零
     int packet_size = write_pkt->size;
+
+    // 根据配置选择写入模式
+    LOG_DEBUG("[RTMP] About to write_frame: type=" + std::string(packet->type == MediaType::AUDIO ? "AUDIO" : "VIDEO") +
+              ", pts=" + std::to_string(write_pkt->pts) +
+              ", size=" + std::to_string(write_pkt->size) +
+              ", format_ctx=" + (format_ctx_ ? "valid" : "NULL") +
+              ", pb=" + (format_ctx_ && format_ctx_->pb ? "valid" : "NULL"));
+    // 通过 SEH wrapper 调用，防止 FFmpeg 内部 Access Violation 崩溃进程
+    int ret = safe_write_frame(format_ctx_, write_pkt, config_.use_interleaved_write);
+    LOG_DEBUG("[RTMP] write_frame returned: " + std::to_string(ret));
 
         if (ret < 0) {
             char errbuf[128] = {0};
             av_strerror(ret, errbuf, sizeof(errbuf));
 
-            // Log detailed debug info for audio packets (errors only)
-            if (packet->type == MediaType::AUDIO) {
-                LOG_ERROR("[RTMP] Audio send failed: ret=" + std::to_string(ret) + " (" + errbuf + ")");
-            }
+            // AVERROR_UNKNOWN 是 SEH 捕获后的特殊值，说明 FFmpeg 内部 crash 被拦截
+            bool seh_caught = (ret == AVERROR_UNKNOWN);
+            LOG_ERROR("[RTMP] write_frame FAILED: ret=" + std::to_string(ret) +
+                      " (" + errbuf + ")" +
+                      (seh_caught ? " [SEH caught - FFmpeg internal crash intercepted]" : "") +
+                      ", type=" + std::string(packet->type == MediaType::AUDIO ? "AUDIO" : "VIDEO") +
+                      ", pts=" + std::to_string(packet->pts) +
+                      ", format_ctx=" + (format_ctx_ ? "valid" : "NULL") +
+                      ", pb=" + (format_ctx_ && format_ctx_->pb ? "valid" : "NULL"));
 
-            LOG_ERROR(std::string("Failed to send packet, av_interleaved_write_frame returned ") + std::to_string(ret) + ": " + errbuf);
             if (pkt_to_free) av_packet_free(&pkt_to_free);
 
-            // -10053 (WSAECONNABORTED) 等网络错误意味着服务器已主动断开连接。
-            // 此时 muxer 内部状态已被污染，继续发送后续包会产生 INT64_MIN 空包。
-            // 必须重置 muxer 状态并返回 NOT_CONNECTED，触发 push_loop 的重连逻辑。
-            if (ret == -10053 || ret == -10054 || ret == AVERROR_EOF) {
-                LOG_ERROR("[RTMP] Network error indicates connection lost, resetting muxer state");
-                free_resources();
-                return ErrorCode::NOT_CONNECTED;
-            }
-
-            return ErrorCode::SEND_FAILED;
+            // av_interleaved_write_frame 返回任何负数（含 SEH 捕获），muxer 状态均不可恢复。
+            // 统一 free_resources() 并返回 NOT_CONNECTED，由 push_loop 的重连逻辑处理。
+            LOG_ERROR("[RTMP] Write failure (ret=" + std::to_string(ret) +
+                      "), freeing muxer state and triggering reconnect");
+            free_resources();
+            return ErrorCode::NOT_CONNECTED;
         }
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.bytes_sent += packet_size;
             bytes_in_window_ += packet_size;
         }
-    }
 
     if (pkt_to_free) {
         av_packet_free(&pkt_to_free);
@@ -691,16 +812,76 @@ void RTMPPusher::reset_stats() {
 }
 
 void RTMPPusher::free_resources() {
+    LOG_INFO("[RTMP] free_resources() called: connected=" + std::to_string(connected_) +
+             ", header_written=" + std::to_string(header_written_) +
+             ", format_ctx=" + (format_ctx_ ? "valid" : "null") +
+             ", audio_stream=" + (audio_stream_ ? "valid" : "null") +
+             ", video_stream=" + (video_stream_ ? "valid" : "null"));
     if (format_ctx_) {
         audio_stream_ = nullptr;
         video_stream_ = nullptr;
         avformat_free_context(format_ctx_);
         format_ctx_ = nullptr;
+        LOG_INFO("[RTMP] free_resources(): format_ctx freed");
     }
-    
+
     connected_ = false;
     header_written_ = false;
     stats_.connected = false;
+    LOG_INFO("[RTMP] free_resources() done");
+}
+
+ErrorCode RTMPPusher::re_register_cached_streams() {
+    LOG_INFO("[RTMP] re_register_cached_streams(): cached_audio=" +
+             std::string(cached_audio_codecpar_ ? "valid" : "NULL") +
+             ", cached_video=" + std::string(cached_video_codecpar_ ? "valid" : "NULL") +
+             ", format_ctx=" + std::string(format_ctx_ ? "valid" : "NULL"));
+
+    if (!cached_audio_codecpar_ || !cached_video_codecpar_) {
+        LOG_ERROR("[RTMP] No cached stream params for reconnect");
+        return ErrorCode::INVALID_STATE;
+    }
+
+    // 重建 format context
+    LOG_INFO("[RTMP] re_register: calling init_format_context()");
+    ErrorCode result = init_format_context();
+    if (result != ErrorCode::SUCCESS) {
+        LOG_ERROR("[RTMP] Failed to re-init format context for reconnect: " +
+                  std::to_string(static_cast<int>(result)));
+        return result;
+    }
+    LOG_INFO("[RTMP] re_register: format_ctx re-initialized, registering audio stream");
+
+    // 重新注册音频流
+    audio_stream_ = avformat_new_stream(format_ctx_, nullptr);
+    if (!audio_stream_) {
+        LOG_ERROR("[RTMP] avformat_new_stream for audio returned null");
+        return ErrorCode::INIT_FAILED;
+    }
+    if (avcodec_parameters_copy(audio_stream_->codecpar, cached_audio_codecpar_) < 0) {
+        LOG_ERROR("[RTMP] avcodec_parameters_copy for audio failed");
+        return ErrorCode::INIT_FAILED;
+    }
+    audio_stream_->time_base = cached_audio_time_base_;
+    LOG_INFO("[RTMP] re_register: audio stream registered (index=" +
+             std::to_string(audio_stream_->index) + "), registering video stream");
+
+    // 重新注册视频流
+    video_stream_ = avformat_new_stream(format_ctx_, nullptr);
+    if (!video_stream_) {
+        LOG_ERROR("[RTMP] avformat_new_stream for video returned null");
+        return ErrorCode::INIT_FAILED;
+    }
+    if (avcodec_parameters_copy(video_stream_->codecpar, cached_video_codecpar_) < 0) {
+        LOG_ERROR("[RTMP] avcodec_parameters_copy for video failed");
+        return ErrorCode::INIT_FAILED;
+    }
+    video_stream_->time_base = cached_video_time_base_;
+
+    LOG_INFO("[RTMP] Streams re-registered from cache for reconnect (audio_idx=" +
+             std::to_string(audio_stream_->index) +
+             ", video_idx=" + std::to_string(video_stream_->index) + ")");
+    return ErrorCode::SUCCESS;
 }
 
 } // namespace live_assistant
