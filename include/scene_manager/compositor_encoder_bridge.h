@@ -268,9 +268,19 @@ private:
     // ═══════════════════════════════════════════════════════════════
     std::unique_ptr<VideoFrameSynchronizer> insert_video_synchronizer_;
 
-    // 🔧 GPU 路径：capture_compositor_frame() → capture_and_queue_frame() 传递 NV12 纹理引用
+    // GPU 路径：capture_compositor_frame() → capture_and_queue_frame() 传递 NV12 纹理引用
     // 只在捕获线程访问，无需加锁
     GpuTextureRef pending_gpu_nv12_ref_;
+
+    // GPU NV12 快照纹理：USAGE_DEFAULT + BindFlags=0，用于 GPU→GPU 拷贝（无 staging detile 崩溃）
+    // GpuColorConverter 输出（BIND_RENDER_TARGET）→ 快照（DEFAULT）→ QSV 编码纹理
+    winrt::com_ptr<ID3D11Texture2D> nv12_snapshot_;
+
+    // GPU 编码回退用黑帧（GPU 路径失败时 CPU 回退用，仅分配一次）
+    std::shared_ptr<VideoFrame> black_frame_cache_;
+
+    // 确保快照纹理存在且尺寸匹配，返回 false 表示创建失败
+    bool ensure_nv12_snapshot(int w, int h);
 
     // 线程安全：保护状态变量的互斥锁
     mutable std::mutex state_mutex_;

@@ -12,6 +12,7 @@ namespace live_assistant {
 
 LogLevel Log::current_level_ = LogLevel::INFO;
 std::string Log::log_file_path_;
+constexpr int Log::LOG_RETENTION_DAYS;
 
 std::string Log::level_to_string(LogLevel level) {
     switch (level) {
@@ -72,6 +73,45 @@ std::string Log::generate_log_filename() {
         << ".log";
 
     return oss.str();
+}
+
+void Log::cleanup_old_logs() {
+    namespace fs = std::filesystem;
+    const std::string log_dir = "applogs";
+
+    if (!fs::exists(log_dir) || !fs::is_directory(log_dir)) return;
+
+    auto now = std::chrono::system_clock::now();
+    int deleted = 0;
+
+    for (const auto& entry : fs::directory_iterator(log_dir)) {
+        if (!entry.is_regular_file()) continue;
+
+        std::string ext = entry.path().extension().string();
+        if (ext != ".log" && ext != ".zip") continue;
+
+        auto mtime = entry.last_write_time();
+        auto mtime_sys = std::chrono::system_clock::time_point(
+            std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                mtime.time_since_epoch()));
+        auto age_hours = std::chrono::duration_cast<std::chrono::hours>(
+            now - mtime_sys).count();
+        auto age_days = age_hours / 24;
+
+        if (age_days < LOG_RETENTION_DAYS) continue;
+
+        std::error_code ec;
+        if (fs::remove(entry.path(), ec) && !ec) {
+            std::cout << "[Log cleanup] Deleted: " << entry.path().filename().string()
+                      << " (" << age_days << " days old)" << std::endl;
+            ++deleted;
+        }
+    }
+
+    if (deleted > 0) {
+        std::cout << "[Log cleanup] Removed " << deleted
+                  << " file(s) older than " << LOG_RETENTION_DAYS << " days." << std::endl;
+    }
 }
 
 void Log::log(LogLevel level, const std::string& message, const char* function, const char* file, int line) {

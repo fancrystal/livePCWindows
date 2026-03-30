@@ -114,8 +114,10 @@ void Compositor::update_layer_image(const std::string& source_id, const QImage& 
 
     // Phase 1b: 同步上传到 GPU，供 Phase 2 GPU 合成器使用
     // 复用上次的纹理对象（尺寸不变时 Map_WRITE_DISCARD 不重分配）
+    // 注意：使用 device()（而非 is_valid()）确保设备未初始化时能触发初始化，
+    // 避免早期帧上传被跳过导致 gpu_texture_ref 空置、GPU 合成路径退化为 CPU 路径
     auto& shared = SharedD3D11Device::instance();
-    if (shared.is_valid() && !image.isNull()) {
+    if (shared.device() && !image.isNull()) {
         ID3D11Texture2D* reuse_tex = it->second.gpu_texture_ref.texture
                                          ? it->second.gpu_texture_ref.texture.get()
                                          : nullptr;

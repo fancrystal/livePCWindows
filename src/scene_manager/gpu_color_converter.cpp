@@ -155,8 +155,14 @@ bool GpuColorConverter::create_nv12_texture(int w, int h)
     desc.Format         = DXGI_FORMAT_NV12;
     desc.SampleDesc     = { 1, 0 };
     desc.Usage          = D3D11_USAGE_DEFAULT;
-    // VideoProcessor 输出需要 D3D11_BIND_RENDER_TARGET；
-    // Phase 4 FFmpeg D3D11VA 引用需要 D3D11_BIND_DECODER（可选）
+    // Intel iGPU 驱动兼容性说明：
+    // - BIND_RENDER_TARGET | BIND_DECODER：此 Intel 驱动 CreateTexture2D 返回 E_INVALIDARG。
+    // - BIND_DECODER 单独使用：CreateTexture2D 成功，但 CreateVideoProcessorOutputView 返回
+    //   E_INVALIDARG（此 Intel 驱动要求输出纹理必须有 BIND_RENDER_TARGET）。
+    // - BIND_RENDER_TARGET 单独使用：CreateTexture2D 和 CreateVideoProcessorOutputView 均成功。
+    //   VideoProcessorBlt 写入后纹理可能产生 RC/CCS（Render Compressed）格式。
+    //   但 compositor_encoder_bridge 已改用 CopySubresourceRegion 按 NV12 平面分别拷贝，
+    //   可绕过 RC/CCS 导致的 CopyResource 崩溃。因此 BIND_RENDER_TARGET 是目前唯一可行选项。
     desc.BindFlags      = D3D11_BIND_RENDER_TARGET;
     desc.CPUAccessFlags = 0;
 

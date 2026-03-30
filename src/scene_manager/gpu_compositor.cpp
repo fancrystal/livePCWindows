@@ -68,8 +68,10 @@ bool GpuCompositor::initialize(int canvas_width, int canvas_height)
     if (initialized_) return true;
 
     auto& shared = SharedD3D11Device::instance();
-    if (!shared.is_valid()) {
-        LOG_ERROR("[GpuCompositor] SharedD3D11Device not ready");
+    // device() 会触发 SharedD3D11Device::init()（懒初始化），is_valid() 不触发初始化
+    // 若在 D3D 设备创建前调用 initialize()，is_valid() 会错误地返回 false 导致 GPU 路径被禁用
+    if (!shared.device()) {
+        LOG_ERROR("[GpuCompositor] SharedD3D11Device initialization failed");
         return false;
     }
 

@@ -27,12 +27,52 @@ bool SharedD3D11Device::init()
 {
     if (d3d_device_) return true;
 
+    // 优先选择 Intel 集显适配器：
+    // Intel QSV 编码器只能运行在 Intel GPU 上。若 SharedD3D11Device 与 QSV 共享
+    // 同一 D3D11 设备，则合成后的 NV12 纹理可通过 GPU 内部 CopySubresourceRegion
+    // 直接送入 QSV 编码器，彻底消除 Nvidia→CPU→Intel 的跨 GPU 总线拷贝。
+    // 若系统没有 Intel GPU，则回退到默认硬件设备（维持原有行为）。
+    winrt::com_ptr<IDXGIAdapter1> preferred_adapter;
+    {
+        winrt::com_ptr<IDXGIFactory1> factory;
+        HRESULT hr_f = CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                          reinterpret_cast<void**>(factory.put()));
+        if (SUCCEEDED(hr_f)) {
+            winrt::com_ptr<IDXGIAdapter1> adapter;
+            for (UINT i = 0;
+                 factory->EnumAdapters1(i, adapter.put()) != DXGI_ERROR_NOT_FOUND;
+                 ++i, adapter = nullptr) {
+                DXGI_ADAPTER_DESC1 desc{};
+                adapter->GetDesc1(&desc);
+                std::wstring wname(desc.Description);
+                if (wname.find(L"Intel") != std::wstring::npos) {
+                    // wchar_t 转 UTF-8 用于日志
+                    int len = WideCharToMultiByte(CP_UTF8, 0,
+                                                  desc.Description, -1,
+                                                  nullptr, 0, nullptr, nullptr);
+                    std::string name_utf8(static_cast<size_t>(len > 0 ? len - 1 : 0), '\0');
+                    WideCharToMultiByte(CP_UTF8, 0,
+                                        desc.Description, -1,
+                                        &name_utf8[0], len, nullptr, nullptr);
+                    LOG_INFO("SharedD3D11Device: found Intel adapter: " + name_utf8 +
+                             " (selected for QSV compatibility)");
+                    preferred_adapter = adapter;
+                    break;
+                }
+            }
+            if (!preferred_adapter) {
+                LOG_INFO("SharedD3D11Device: no Intel adapter found, using default GPU");
+            }
+        }
+    }
+
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     D3D_FEATURE_LEVEL fl;
 
+    // 若指定了 Intel 适配器，必须用 D3D_DRIVER_TYPE_UNKNOWN（adapter 非 null 时不能用 HARDWARE）
     HRESULT hr = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
+        preferred_adapter.get(),
+        preferred_adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
         flags,
         nullptr,
@@ -43,8 +83,24 @@ bool SharedD3D11Device::init()
         d3d_context_.put());
 
     if (FAILED(hr)) {
-        LOG_ERROR("SharedD3D11Device: D3D11CreateDevice failed");
-        return false;
+        if (preferred_adapter) {
+            // Intel 适配器失败（驱动异常等），回退到默认 GPU
+            LOG_WARNING("SharedD3D11Device: Intel D3D11 device creation failed (hr=0x" +
+                        std::to_string(static_cast<uint32_t>(hr)) +
+                        "), falling back to default GPU");
+            d3d_device_ = nullptr;
+            d3d_context_ = nullptr;
+            hr = D3D11CreateDevice(
+                nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+                nullptr, 0, D3D11_SDK_VERSION,
+                d3d_device_.put(), &fl, d3d_context_.put());
+        }
+        if (FAILED(hr)) {
+            LOG_ERROR("SharedD3D11Device: D3D11CreateDevice failed (hr=0x" +
+                      std::to_string(static_cast<uint32_t>(hr)) + ")");
+            return false;
+        }
+        LOG_INFO("SharedD3D11Device: initialized with default GPU (Intel unavailable)");
     }
 
     // Create WinRT wrapped device

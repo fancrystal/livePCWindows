@@ -1025,11 +1025,13 @@ ErrorCode H264Encoder::encode_gpu_texture(ID3D11Texture2D* nv12_texture, int64_t
     if (!mapped) return ErrorCode::ENCODING_ERROR;
 
     mapped->format = AV_PIX_FMT_D3D11;
+    // hw_frames_ctx 必须在 av_hwframe_map 之前设置，否则 FFmpeg QSV→D3D11 映射
+    // 无法确定目标帧上下文，导致 data[0]/data[1] 未正确填充
+    mapped->hw_frames_ctx = av_buffer_ref(d3d11va_frame_ctx_);
 
     ret = av_hwframe_map(mapped, hw_frame_,
                          AV_HWFRAME_MAP_WRITE | AV_HWFRAME_MAP_OVERWRITE);
     if (ret < 0) {
-        // av_hwframe_map 不支持时，记录一次 warning 并拒绝 GPU 路径
         char errbuf[128]; av_strerror(ret, errbuf, sizeof(errbuf));
         LOG_ERROR("[H264Encoder] av_hwframe_map(QSV→D3D11) failed: " + std::string(errbuf) +
                   " — encode_gpu_texture unavailable (QSV may not be derived from D3D11VA)");
@@ -1038,15 +1040,22 @@ ErrorCode H264Encoder::encode_gpu_texture(ID3D11Texture2D* nv12_texture, int64_t
     }
 
     // mapped->data[0] = ID3D11Texture2D*（QSV 帧的 D3D11 后备纹理）
-    // mapped->data[1] = (uint8_t*)(uintptr_t) array_index
-    auto* dst_tex   = reinterpret_cast<ID3D11Texture2D*>(mapped->data[0]);
-    auto  dst_idx   = static_cast<UINT>(reinterpret_cast<uintptr_t>(mapped->data[1]));
+    // mapped->data[1] = (uint8_t*)(uintptr_t) array_index（纹理数组切片下标）
+    auto* dst_tex = reinterpret_cast<ID3D11Texture2D*>(mapped->data[0]);
+    auto  dst_idx = static_cast<UINT>(reinterpret_cast<uintptr_t>(mapped->data[1]));
 
-    // ── 4. GPU Copy：GpuColorConverter NV12 → QSV D3D11 纹理 ────────────────
+    // ── 4. GPU Copy：快照 NV12 → QSV D3D11 纹理（Y + UV 两平面）──────────────
+    // NV12 纹理数组 subresource 布局：Y[0..N-1], UV[N..2N-1]，N = ArraySize
+    D3D11_TEXTURE2D_DESC dst_desc{};
+    dst_tex->GetDesc(&dst_desc);
+    const UINT uv_dst = dst_desc.ArraySize + dst_idx;
+
     auto& shared = SharedD3D11Device::instance();
-    shared.context()->CopySubresourceRegion(
-        dst_tex,       dst_idx,      0, 0, 0,  // 目标：QSV 帧的纹理（可能是数组切片）
-        nv12_texture,  0,            nullptr);  // 源：GpuColorConverter 输出，单纹理
+    auto* ctx    = shared.context();
+    // Y 平面
+    ctx->CopySubresourceRegion(dst_tex, dst_idx, 0, 0, 0, nv12_texture, 0, nullptr);
+    // UV 平面（NV12 快照 subresource 1 → QSV 纹理数组 UV subresource）
+    ctx->CopySubresourceRegion(dst_tex, uv_dst,  0, 0, 0, nv12_texture, 1, nullptr);
 
     av_frame_unref(mapped);   // 解映射（必须在 CopySubresourceRegion 后）
     av_frame_free(&mapped);

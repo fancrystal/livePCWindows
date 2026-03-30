@@ -8,6 +8,7 @@
 #include "media_pipeline/media_file_source.h"
 #include "scene_manager/gpu_compositor.h"
 #include "scene_manager/gpu_color_converter.h"
+#include "scene_manager/shared_d3d_device.h"
 #include <d3d11.h>
 
 #include <QImage>
@@ -527,55 +528,29 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
 std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() {
     // ═══════════════════════════════════════════════════════════════════
     // GPU 路径（Phase 2-4）：GpuCompositor → GpuColorConverter → NV12 纹理
-    // 仅当 gpu_compositor_ 和 gpu_color_converter_ 都已设置时使用
+    //
+    // ── Intel RC/CCS 兼容性問題（当前已禁用）──────────────────────────
+    // 此系统为 Intel iGPU（UHD Graphics）。VideoProcessorBlt 写入后，所有
+    // BIND_RENDER_TARGET 纹理会被 Intel 驱动标记为 RC/CCS（Render Compressed）。
+    // 从 RC 纹理 CopyResource/CopySubresourceRegion 会在 d3d11.dll 内部崩溃。
+    // 此外，compose()+convert() 调用设置的 D3D11 管线状态（RTV、VP 流）会
+    // 污染 QSV 编码器共享的 D3D11 设备上下文，导致后续帧编码时崩溃。
+    //
+    // 正确的 GPU 修复方案（TODO：实现 GpuNv12Copier）：
+    //   1. 为 NV12 纹理添加 BIND_SHADER_RESOURCE，创建 R8/R8G8 平面 SRV
+    //   2. CS 从 SRV 读取 Y/UV 平面并写入 UAV 目标纹理（非 RC）
+    //   3. 再从非 RC 的 UAV 目标 CopySubresourceRegion 到 QSV 纹理
+    //   4. 同时在 compose()/convert() 后清理 D3D11 上下文状态
+    //
+    // 当前：完全跳过 GPU 路径，使用下方的 CPU 合成路径，避免任何 D3D11 崩溃。
     // ═══════════════════════════════════════════════════════════════════
-    if (gpu_compositor_ && gpu_color_converter_ && compositor_) {
-        // 从 CPU Compositor 获取所有图层快照（包含 GpuTextureRef）
-        std::vector<CompositorLayer> cpu_layers = compositor_->get_all_layers();
-
-        // 构建 GPU 合成器图层列表
-        std::vector<GpuCompositorLayer> gpu_layers;
-        gpu_layers.reserve(cpu_layers.size());
-        for (const auto& layer : cpu_layers) {
-            if (!layer.visible) continue;
-            // 只处理有 GPU 纹理的图层
-            if (!layer.gpu_texture_ref.is_valid()) continue;
-            GpuCompositorLayer gl;
-            gl.source_id = layer.source_id;
-            gl.texture   = layer.gpu_texture_ref.texture.get();
-            gl.dest_x    = static_cast<float>(layer.dest_rect.x());
-            gl.dest_y    = static_cast<float>(layer.dest_rect.y());
-            gl.dest_w    = static_cast<float>(layer.dest_rect.width());
-            gl.dest_h    = static_cast<float>(layer.dest_rect.height());
-            gl.opacity   = layer.opacity;
-            gl.z_order   = layer.z_order;
-            gpu_layers.push_back(std::move(gl));
-        }
-
-        if (!gpu_layers.empty()) {
-            // GPU 合成：输出 BGRA 纹理
-            GpuTextureRef bgra_ref = gpu_compositor_->compose(gpu_layers);
-            if (bgra_ref.is_valid()) {
-                // 颜色转换：BGRA → NV12
-                GpuTextureRef nv12_ref = gpu_color_converter_->convert(bgra_ref.texture.get());
-                if (nv12_ref.is_valid()) {
-                    // GPU 路径成功：返回一个最小 VideoFrame 占位，
-                    // 真正的纹理通过 pre_frame.gpu_nv12_ref 传递
-                    // 注意：调用方 capture_and_queue_frame 需要处理 gpu_nv12_ref
-                    // 此处将 NV12 ref 缓存到成员变量，供 capture_and_queue_frame 读取
-                    pending_gpu_nv12_ref_ = nv12_ref;
-                    // 返回空帧作为占位（表示 GPU 路径成功）
-                    auto frame = std::make_shared<VideoFrame>();
-                    frame->format = VideoFrame::PixelFormat::NV12;
-                    frame->width = width_;
-                    frame->height = height_;
-                    return frame;  // 调用方检查 pending_gpu_nv12_ref_.is_valid()
-                }
-            }
-        }
-        // GPU 路径失败，回退到 CPU 路径
-        pending_gpu_nv12_ref_ = GpuTextureRef{};
+    static bool gpu_disabled_logged = false;
+    if (!gpu_disabled_logged && gpu_compositor_ && gpu_color_converter_) {
+        LOG_WARNING("[BRIDGE] Intel RC/CCS: entire GPU pipeline disabled to prevent d3d11 crashes. "
+                    "Using CPU compositor path. TODO: implement GpuNv12Copier (CS) to restore GPU path.");
+        gpu_disabled_logged = true;
     }
+    pending_gpu_nv12_ref_ = GpuTextureRef{};
 
     // ═══════════════════════════════════════════════════════════════════
     // 优先使用 Compositor（如果所有源都正确更新了帧到 Compositor）
@@ -1177,5 +1152,46 @@ bool CompositorEncoderBridge::push_insert_video_frame(std::shared_ptr<VideoFrame
     if (!frame || !frame->data) return false;
     return insert_video_synchronizer_->push_frame(frame, pts_ms);
 }
+
+// ---------------------------------------------------------------------------
+// 确保 nv12_snapshot_ 存在且尺寸匹配（USAGE_DEFAULT, BindFlags=0）。
+// 用于 GPU→GPU 快照拷贝（不走 STAGING，避免 Intel detile 崩溃）。
+// ---------------------------------------------------------------------------
+bool CompositorEncoderBridge::ensure_nv12_snapshot(int w, int h)
+{
+    if (nv12_snapshot_) {
+        D3D11_TEXTURE2D_DESC existing{};
+        nv12_snapshot_->GetDesc(&existing);
+        if (static_cast<int>(existing.Width) == w && static_cast<int>(existing.Height) == h)
+            return true;
+        nv12_snapshot_ = nullptr;
+    }
+
+    auto& shared = SharedD3D11Device::instance();
+    ID3D11Device* device = shared.device();
+    if (!device) return false;
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width          = static_cast<UINT>(w);
+    desc.Height         = static_cast<UINT>(h);
+    desc.MipLevels      = 1;
+    desc.ArraySize      = 1;
+    desc.Format         = DXGI_FORMAT_NV12;
+    desc.SampleDesc     = { 1, 0 };
+    desc.Usage          = D3D11_USAGE_DEFAULT;
+    desc.BindFlags      = 0;   // 无绑定标志：纯 GPU 中间缓冲，避免 tiled 格式
+    desc.CPUAccessFlags = 0;
+    desc.MiscFlags      = 0;
+
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, nv12_snapshot_.put());
+    if (FAILED(hr)) {
+        LOG_ERROR("[BRIDGE] ensure_nv12_snapshot: CreateTexture2D failed hr=0x" +
+                  std::to_string(static_cast<uint32_t>(hr)));
+        return false;
+    }
+    LOG_INFO("[BRIDGE] NV12 snapshot texture created: " + std::to_string(w) + "x" + std::to_string(h));
+    return true;
+}
+
 
 } // namespace live_assistant

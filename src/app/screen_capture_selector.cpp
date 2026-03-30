@@ -196,15 +196,19 @@ void ScreenCaptureSelector::enumerate_screens() {
         CaptureTarget target;
         target.type = CaptureTarget::Type::SCREEN;
         // Use Win32 device path (\\.\DISPLAY1, \\.\DISPLAY2) as id so WGC can bind the
-        // correct monitor. QScreen::name() is often EDID/model text and was ignored by
-        // WGC which always captured the primary display.
-        HMONITOR hm = reinterpret_cast<HMONITOR>(screen->handle());
+        // correct monitor. QScreen::name() is often EDID/model text (e.g. "G2412WHI")
+        // and cannot be matched by WGC. screen->handle() is QPlatformScreen*, NOT HMONITOR,
+        // so we use MonitorFromPoint with the screen's center to get a valid HMONITOR.
+        QPoint center = screen->geometry().center();
+        HMONITOR hm = MonitorFromPoint(POINT{center.x(), center.y()}, MONITOR_DEFAULTTONEAREST);
         MONITORINFOEXW mi{};
         mi.cbSize = sizeof(mi);
         if (hm && GetMonitorInfoW(hm, reinterpret_cast<LPMONITORINFO>(&mi))) {
             target.id = QString::fromWCharArray(mi.szDevice).toStdString();
         } else {
             target.id = screen->name().toStdString();
+            LOG_WARNING("[ScreenCaptureSelector] Failed to get Win32 device name for screen: " +
+                        target.name + ", using fallback id: " + target.id);
         }
         target.name = screen->name().toStdString();
         target.size = screen->size();

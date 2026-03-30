@@ -17,7 +17,9 @@
 #include <mmdeviceapi.h>
 #include <endpointvolume.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <mmsystem.h>     // timeBeginPeriod / timeEndPeriod
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "winmm.lib")
 #endif
 
 namespace live_assistant {
@@ -870,7 +872,21 @@ AudioFrame& AudioFrame::operator=(AudioFrame&& other) noexcept {
 //=============================================================================
 
 void AudioEngine::mixThreadFunc() {
-    LOG_INFO("[AudioMixer] Mix thread started");
+    // 将 Windows 多媒体计时器精度提升到 1ms，避免 sleep_for(21ms) 实际休眠 ~31ms
+    // （Windows 默认计时器分辨率 15.625ms，会导致混音线程从 47fps 降至 ~32fps，
+    //  造成麦克风队列以 ~15帧/s 的速率溢出）
+#ifdef _WIN32
+    timeBeginPeriod(1);
+#endif
+    LOG_INFO("[AudioMixer] Mix thread started (timer resolution set to 1ms)");
+
+    // 漂移补偿：记录线程启动时间和已产出帧数。
+    // 问题根因：sleep_for(21ms) 在 Windows 上实际睡眠 ~21.5ms（+0.5ms 调度开销），
+    // 导致每帧耗时 21.5ms 而非所需的 21.333ms (1024/48000)，10s 内累积 -82ms 漂移。
+    // 补偿方案：每帧产出后计算"下一帧应在何时产出"（基于帧计数×帧周期），
+    // 而非每次都固定睡眠 21ms。若已落后则立即执行下一帧（不睡眠），保持整体速率准确。
+    auto thread_epoch = std::chrono::steady_clock::now();
+    int64_t frames_produced = 0;
 
     while (mix_thread_running_.load()) {
         auto start_time = std::chrono::steady_clock::now();
@@ -953,16 +969,36 @@ void AudioEngine::mixThreadFunc() {
             emit audio_data_ready(data, mixed_frame->timestamp_ms);
         }
 
-        // 计算休眠时间
-        auto end_time = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+        frames_produced++;
 
-        if (elapsed < MIX_THREAD_INTERVAL_MS) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(MIX_THREAD_INTERVAL_MS - elapsed));
+        // 漂移补偿睡眠：计算下一帧的目标时刻，决定睡眠多久。
+        // 目标时刻 = 线程启动时间 + 帧计数 × 帧周期
+        // 帧周期 = frame_samples_ / sample_rate_ = 1024 / 48000 ≈ 21333 us
+        // 与固定 sleep_for(21ms) 的区别：
+        //   固定睡眠：每帧 ~21.5ms（含调度开销），10s 内欠产 ~3840 samples = -80ms 漂移。
+        //   动态睡眠：若本帧偏晚（sleep_us < 0），立即执行下一帧补回；
+        //             若偏早（sleep_us > 0），精确等待到目标时刻。
+        {
+            constexpr int64_t FRAME_PERIOD_US =
+                (int64_t(1024) * 1000000LL) / 48000LL;  // = 21333 us (严格按 1024/48kHz)
+
+            auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - thread_epoch).count();
+            int64_t next_target_us = frames_produced * FRAME_PERIOD_US;
+            int64_t sleep_us = next_target_us - now_us;
+
+            if (sleep_us > 1000) {
+                // 超前超过 1ms：精确睡眠到目标时刻
+                std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+            }
+            // sleep_us <= 1000（含负值）：已落后或刚好，立即执行下一帧追赶
         }
     }
 
     LOG_INFO("[AudioMixer] Mix thread stopped");
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
 }
 
 std::shared_ptr<AudioFrame> AudioEngine::getFrameFromQueue(

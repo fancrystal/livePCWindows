@@ -142,10 +142,6 @@ inline PixelFormat string_to_pixel_format(const std::string& str) {
 
 inline std::string capture_mode_to_string(CaptureMode mode) {
     return mode == CaptureMode::FFMPEG ? "FFMPEG" : "OPENCV";
-}
-
-inline CaptureMode string_to_capture_mode(const std::string& str) {
+}inline CaptureMode string_to_capture_mode(const std::string& str) {
     return str == "OPENCV" ? CaptureMode::OPENCV : CaptureMode::FFMPEG;
-}
-
-} // namespace live_assistant
+}} // namespace live_assistant

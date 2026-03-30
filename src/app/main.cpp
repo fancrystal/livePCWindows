@@ -123,6 +123,10 @@ int main(int argc, char *argv[]) {
     // 加载配置（包括日志级别）
     ConfigManager::instance().loadConfig();
     ConfigManager::instance().applyLogLevel();
+
+    // 清理超过保留天数的旧日志文件
+    live_assistant::Log::cleanup_old_logs();
+
     LOG_INFO("Starting LiveAssistant...");
 
     // Create login window

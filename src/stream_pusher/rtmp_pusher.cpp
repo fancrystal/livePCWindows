@@ -495,16 +495,19 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         diag_first_audio_wallclock_ = packet->wallclock_us / 1000;
         LOG_INFO("[RTMP] First AUDIO packet: pts=" + std::to_string(packet->pts) +
                  ", wallclock=" + std::to_string(diag_first_audio_wallclock_) + "ms");
-        
-        // 计算音视频同步偏移：用 PTS 差而不是 wallclock 差
-        // wallclock 是包抵达推流线程的墙钟时刻，受初始化延迟影响会远大于实际 PTS 差
-        // 正确做法：audio_pts - video_pts，才是真正需要补偿的偏移
+
+        // AV sync offset 计算说明：
+        // 视频 PTS 经过 video_pts_base_ 修正后始终从 0 开始（video_pts_base_ == diag_first_video_pts_）。
+        // 因此，要让音频同样从 0 开始对齐，只需减去第一个音频包的 raw PTS（diag_first_audio_pts_）。
+        // 旧公式 offset = audio_pts - video_pts_raw 是错误的——video_pts_raw（QSV 内部偏移，如 2336ms）
+        // 并非实际播放起始点，会导致 offset 算成负数而被截断为 0（无修正）；
+        // 重连时会导致将 ~300s 的 audio_pts 减去 ~300s 的 video_pts_raw 得到小的正值（如 143ms），
+        // 并对所有音频突然施加 143ms 偏移，造成音画跳变。
         if (diag_first_video_pts_ != -1) {
-            int64_t offset = diag_first_audio_pts_ - diag_first_video_pts_;
-            av_sync_offset_ms_ = (offset > 0) ? offset : 0;  // 只补偿音频落后于视频的情况
+            av_sync_offset_ms_ = (diag_first_audio_pts_ > 0) ? diag_first_audio_pts_ : 0;
             LOG_INFO("[RTMP] AV Sync Offset calculated: " + std::to_string(av_sync_offset_ms_) +
-                     "ms (audio_pts=" + std::to_string(diag_first_audio_pts_) +
-                     " - video_pts=" + std::to_string(diag_first_video_pts_) + ")");
+                     "ms (first_audio_pts=" + std::to_string(diag_first_audio_pts_) +
+                     ", video will be 0-based after baseline correction)");
         }
     } else if (packet->type == MediaType::VIDEO && diag_first_video_pts_ == -1) {
         diag_first_video_pts_ = packet->pts;
@@ -512,11 +515,10 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         LOG_INFO("[RTMP] First VIDEO packet: pts=" + std::to_string(packet->pts) +
                  ", wallclock=" + std::to_string(diag_first_video_wallclock_) + "ms");
         if (diag_first_audio_pts_ != -1) {
-            int64_t offset = diag_first_audio_pts_ - diag_first_video_pts_;
-            av_sync_offset_ms_ = (offset > 0) ? offset : 0;
+            av_sync_offset_ms_ = (diag_first_audio_pts_ > 0) ? diag_first_audio_pts_ : 0;
             LOG_INFO("[RTMP] AV Sync Offset calculated: " + std::to_string(av_sync_offset_ms_) +
-                     "ms (audio_pts=" + std::to_string(diag_first_audio_pts_) +
-                     " - video_pts=" + std::to_string(diag_first_video_pts_) + ")");
+                     "ms (first_audio_pts=" + std::to_string(diag_first_audio_pts_) +
+                     ", video will be 0-based after baseline correction)");
         }
     }
 

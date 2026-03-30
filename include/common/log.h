@@ -22,16 +22,18 @@ public:
 
     static void set_level(LogLevel level);
 
-    // 获取当前日志文件路径
     static std::string get_log_file_path();
+
+    static void cleanup_old_logs();
 
 private:
     static LogLevel current_level_;
-    static std::string log_file_path_;  // 当前日志文件路径
+    static std::string log_file_path_;
+    static constexpr int LOG_RETENTION_DAYS = 5;
 
     static void log(LogLevel level, const std::string& message, const char* function, const char* file, int line);
     static std::string level_to_string(LogLevel level);
-    static std::string generate_log_filename();  // 生成带时间戳的日志文件名
+    static std::string generate_log_filename();
 };
 
 // Macro definitions for easy logging
