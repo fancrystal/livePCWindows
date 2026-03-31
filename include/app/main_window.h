@@ -190,6 +190,16 @@ private:
     // 全局配置数据源（启动时从 QSettings 加载，所有子系统从此读取）
     AppSettings app_settings_;
 
+    // 将 AppSettings 变更路由到各子系统的内嵌观察者
+    class SettingsApplier : public ISettingsObserver {
+    public:
+        explicit SettingsApplier(MainWindow* owner) : owner_(owner) {}
+        void on_settings_changed(const AppSettings& settings, SettingsSection changed) override;
+    private:
+        MainWindow* owner_;
+    };
+    std::unique_ptr<SettingsApplier> settings_applier_;
+
     // Canvas configuration
     CanvasConfig canvas_config_ = CanvasConfig::get_default();
     bool is_portrait_mode_ = false;  // 当前是否为竖屏模式

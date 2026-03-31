@@ -93,6 +93,10 @@ MainWindow::MainWindow(QWidget *parent) :
     canvas_config_ = app_settings_.canvas;
     is_portrait_mode_ = (canvas_config_.get_width() < canvas_config_.get_height());
 
+    // 注册设置观察者
+    settings_applier_ = std::make_unique<SettingsApplier>(this);
+    app_settings_.add_observer(settings_applier_.get());
+
     // 加载QSS样式文件（仅应用于主窗口）
     QFile qssFile(":/resources/live_companion_style.qss");
     if (qssFile.open(QFile::ReadOnly | QFile::Text)) {
@@ -3598,101 +3602,119 @@ void MainWindow::show_scene_item_settings(int index) {
     }
 }
 
-void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
-    // Apply video settings
-    auto new_v = dlg.get_video_config();
+void MainWindow::SettingsApplier::on_settings_changed(const AppSettings& s, SettingsSection changed) {
+    MainWindow* w = owner_;
 
-    // 同步更新画布配置（分辨率改变时）
-    if (canvas_config_.get_width() != new_v.width || canvas_config_.get_height() != new_v.height) {
-        LOG_INFO(QString("分辨率改变: %1x%2 -> %3x%4")
-            .arg(canvas_config_.get_width()).arg(canvas_config_.get_height())
-            .arg(new_v.width).arg(new_v.height).toStdString());
-
-        // 更新画布配置
-        if (new_v.width > new_v.height) {
-            // 横屏模式
-            canvas_config_ = CanvasConfig(CanvasConfig::DisplayMode::LANDSCAPE_16_9);
-        } else {
-            // 竖屏模式
-            canvas_config_ = CanvasConfig(CanvasConfig::DisplayMode::PORTRAIT_9_16);
+    if (has_section(changed, SettingsSection::Video)) {
+        VideoEncoderConfig video_config = MainWindow::build_video_config_from_settings(s);
+        if (w->encoder_) {
+            w->encoder_->reinitialize_video_encoder(video_config);
         }
-        // 手动设置为用户选择的分辨率
-        // 注意：CanvasConfig 会根据 aspect ratio 自动计算，这里我们直接设置
-        is_portrait_mode_ = (new_v.width < new_v.height);
-
-        // 更新画布 widget
-        if (canvas_widget_) {
-            canvas_widget_->set_canvas_config(canvas_config_);
+        if (w->encoder_bridge_) {
+            w->encoder_bridge_->set_resolution(video_config.width, video_config.height);
+            w->encoder_bridge_->set_fps(video_config.fps);
         }
     }
 
-    // Apply audio settings
-    auto new_a = dlg.get_audio_config();
-    // 保留音频码率配置，允许用户在设置面板中修改
-    // new_a.bitrate 从设置面板获取，使用用户设置的值
-
-    const std::string mic_id = dlg.get_selected_microphone_id();
-    const std::string speaker_id = dlg.get_selected_speaker_id();
-    float mic_volume = dlg.get_microphone_volume();
-    float speaker_volume = dlg.get_speaker_volume();
-
-    // Apply camera mirror setting
-    bool mirror = dlg.is_camera_mirror();
-    if (video_engine_) {
-        video_engine_->set_camera_mirror(mirror);
-    }
-
-    // Update camera SceneItem's Transform mirror setting
-    if (scene_manager_ && scene_manager_->get_current_scene()) {
-        auto scene = scene_manager_->get_current_scene();
-        auto items = scene->get_all_scene_items();
-        for (auto& item : items) {
-            if (item && item->get_source() &&
-                QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
-                // Update the Transform with new mirror setting
-                Transform tr = item->get_transform();
-                tr.mirror = mirror;
-                scene->set_transform(item, tr);
-                break; // Only update the first camera item
+    if (has_section(changed, SettingsSection::Canvas)) {
+        w->canvas_config_ = s.canvas;
+        w->is_portrait_mode_ = (s.canvas.get_width() < s.canvas.get_height());
+        if (w->canvas_widget_) {
+            w->canvas_widget_->set_canvas_config(s.canvas);
+        }
+        // 分辨率变更也需要重新初始化视频编码器
+        if (!has_section(changed, SettingsSection::Video)) {
+            VideoEncoderConfig video_config = MainWindow::build_video_config_from_settings(s);
+            if (w->encoder_) {
+                w->encoder_->reinitialize_video_encoder(video_config);
+            }
+            if (w->encoder_bridge_) {
+                w->encoder_bridge_->set_resolution(video_config.width, video_config.height);
             }
         }
     }
 
-    // Reinit audio engine/encoder
-    audio_engine_->initialize(new_a.sample_rate, new_a.channels);
-    audio_engine_->set_microphone_volume(mic_volume);
-    audio_engine_->set_speaker_volume(speaker_volume);
-    encoder_->reinitialize_audio_encoder(new_a);
-
-    // 保存编码方式偏好
-    {
-        QSettings s("LiveAssistant", "Settings");
-        s.setValue("preferHwEncoder", new_v.prefer_hw);
+    if (has_section(changed, SettingsSection::Audio)) {
+        const auto& a = s.audio;
+        if (w->audio_engine_) {
+            w->audio_engine_->initialize(a.encoder_config.sample_rate, a.encoder_config.channels);
+            w->audio_engine_->set_microphone_volume(a.mic_volume);
+            w->audio_engine_->set_speaker_volume(a.speaker_volume);
+            if (!a.microphone_device_id.empty()) {
+                w->audio_engine_->select_microphone(a.microphone_device_id);
+            }
+            if (!a.speaker_device_id.empty()) {
+                w->audio_engine_->select_speaker(a.speaker_device_id);
+            }
+        }
+        if (w->encoder_) {
+            w->encoder_->reinitialize_audio_encoder(a.encoder_config);
+        }
     }
 
-    // Reinit video encoder + bridge settings
-    encoder_->reinitialize_video_encoder(new_v);
-    if (encoder_bridge_) {
-        encoder_bridge_->set_resolution(new_v.width, new_v.height);
-        encoder_bridge_->set_fps(new_v.fps);
+    if (has_section(changed, SettingsSection::Camera)) {
+        if (w->video_engine_) {
+            w->video_engine_->set_camera_mirror(s.camera.mirror);
+        }
+        // 更新 Scene 中摄像头 SceneItem 的 Transform.mirror
+        if (w->scene_manager_ && w->scene_manager_->get_current_scene()) {
+            auto scene = w->scene_manager_->get_current_scene();
+            for (auto& item : scene->get_all_scene_items()) {
+                if (item && item->get_source() &&
+                    QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
+                    Transform tr = item->get_transform();
+                    tr.mirror = s.camera.mirror;
+                    scene->set_transform(item, tr);
+                    break;
+                }
+            }
+        }
     }
 
-    // Select microphone
-    if (!mic_id.empty()) {
-        audio_engine_->select_microphone(mic_id);
+    if (has_section(changed, SettingsSection::UIState)) {
+        w->exit_preference_ = s.ui_state.exit_preference;
+    }
+}
+
+void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
+    SettingsSection changed = SettingsSection::None;
+
+    // --- 视频分区 ---
+    app_settings_.video = dlg.get_video_config();
+    changed |= SettingsSection::Video;
+
+    // --- 画布分区（分辨率改变时） ---
+    const auto new_v = app_settings_.video;
+    if (canvas_config_.get_width() != new_v.width || canvas_config_.get_height() != new_v.height) {
+        LOG_INFO(QString("分辨率改变: %1x%2 -> %3x%4")
+            .arg(canvas_config_.get_width()).arg(canvas_config_.get_height())
+            .arg(new_v.width).arg(new_v.height).toStdString());
+        app_settings_.canvas = (new_v.width >= new_v.height)
+            ? CanvasConfig(CanvasConfig::DisplayMode::LANDSCAPE_16_9)
+            : CanvasConfig(CanvasConfig::DisplayMode::PORTRAIT_9_16);
+        changed |= SettingsSection::Canvas;
     }
 
-    // Select speaker
-    if (!speaker_id.empty()) {
-        audio_engine_->select_speaker(speaker_id);
-    }
+    // --- 音频分区 ---
+    app_settings_.audio.encoder_config      = dlg.get_audio_config();
+    app_settings_.audio.mic_volume          = dlg.get_microphone_volume();
+    app_settings_.audio.speaker_volume      = dlg.get_speaker_volume();
+    app_settings_.audio.microphone_device_id = dlg.get_selected_microphone_id();
+    app_settings_.audio.speaker_device_id   = dlg.get_selected_speaker_id();
+    changed |= SettingsSection::Audio;
 
-    // If pushing, require restart to keep header/codecpar consistent
+    // --- 摄像头分区 ---
+    app_settings_.camera.mirror = dlg.is_camera_mirror();
+    changed |= SettingsSection::Camera;
+
+    // 持久化并通知观察者
+    app_settings_.save(changed);
+    app_settings_.notify(changed);
+
+    // 推流中则提示重启（UI 逻辑留在 MainWindow）
     if (stream_pusher_ && stream_pusher_->is_pushing()) {
         QMessageBox::information(this, "提示", "参数已修改，将重启推流使其生效");
-        if (encoder_bridge_) {
-            encoder_bridge_->stop();
-        }
+        if (encoder_bridge_) encoder_bridge_->stop();
         stream_pusher_->stop();
         streams_registered_ = false;
     }
@@ -4761,25 +4783,24 @@ void MainWindow::handleExit() {
 }
 
 void MainWindow::loadExitPreference() {
-    QSettings settings("LiveAssistant", "Settings");
-    exit_preference_ = settings.value("exitPreference", 0).toInt();
+    exit_preference_ = app_settings_.ui_state.exit_preference;
     LOG_INFO("Loaded exit preference: " + std::to_string(exit_preference_));
 }
 
 void MainWindow::saveExitPreference(int preference) {
     exit_preference_ = preference;
-    QSettings settings("LiveAssistant", "Settings");
-    settings.setValue("exitPreference", preference);
+    app_settings_.ui_state.exit_preference = preference;
+    app_settings_.save(SettingsSection::UIState);
     LOG_INFO("Saved exit preference: " + std::to_string(preference));
 }
 
 void MainWindow::saveAudioVolumeSettings() {
-    QSettings settings("LiveAssistant", "Settings");
     if (audio_engine_) {
-        settings.setValue("microphoneVolume", audio_engine_->get_microphone_volume());
-        settings.setValue("speakerVolume", audio_engine_->get_speaker_volume());
-        settings.setValue("microphoneEnabled", microphone_enabled_);
-        settings.setValue("speakerEnabled", speaker_enabled_);
+        app_settings_.audio.mic_volume     = audio_engine_->get_microphone_volume();
+        app_settings_.audio.speaker_volume = audio_engine_->get_speaker_volume();
+        app_settings_.audio.mic_enabled    = microphone_enabled_;
+        app_settings_.audio.speaker_enabled = speaker_enabled_;
+        app_settings_.save(SettingsSection::Audio);
         LOG_INFO("Saved audio volume settings");
     }
 }
@@ -4787,36 +4808,34 @@ void MainWindow::saveAudioVolumeSettings() {
 void MainWindow::loadAudioVolumeSettings() {
     QSettings settings("LiveAssistant", "Settings");
 
-    // 检查是否有保存的音量配置
-    bool hasSavedMicVolume = settings.contains("microphoneVolume");
-    bool hasSavedSpeakerVolume = settings.contains("speakerVolume");
-
     float micVolume;
     float speakerVolume;
 
-    if (hasSavedMicVolume || hasSavedSpeakerVolume) {
-        // 有保存的配置，使用保存的值
-        micVolume = settings.value("microphoneVolume", 0.4f).toFloat();
-        speakerVolume = settings.value("speakerVolume", 0.4f).toFloat();
-        LOG_INFO("Using saved volume settings");
-    } else {
-        // 没有保存的配置，使用系统当前的音量设置
+    // 首次启动没有保存的值时，使用系统当前音量作为初始值
+    if (!settings.contains("audio/micVolume")) {
         if (audio_engine_) {
-            micVolume = audio_engine_->get_microphone_volume();
+            micVolume    = audio_engine_->get_microphone_volume();
             speakerVolume = audio_engine_->get_speaker_volume();
         } else {
-            // 默认40%
-            micVolume = 0.4f;
+            micVolume    = 0.4f;
             speakerVolume = 0.4f;
         }
         LOG_INFO("No saved volume settings, using system current volume");
+    } else {
+        micVolume    = app_settings_.audio.mic_volume;
+        speakerVolume = app_settings_.audio.speaker_volume;
+        LOG_INFO("Using saved volume settings");
     }
 
-    // 加载静音状态（默认开启）
-    microphone_enabled_ = settings.value("microphoneEnabled", true).toBool();
-    speaker_enabled_ = settings.value("speakerEnabled", true).toBool();
+    microphone_enabled_ = app_settings_.audio.mic_enabled;
+    speaker_enabled_    = app_settings_.audio.speaker_enabled;
 
-    // 应用到音频引擎
+    // 同步回 app_settings_（首次启动时写入系统音量）
+    app_settings_.audio.mic_volume      = micVolume;
+    app_settings_.audio.speaker_volume  = speakerVolume;
+    app_settings_.audio.mic_enabled     = microphone_enabled_;
+    app_settings_.audio.speaker_enabled = speaker_enabled_;
+
     if (audio_engine_) {
         audio_engine_->set_microphone_volume(micVolume);
         audio_engine_->set_speaker_volume(speakerVolume);
