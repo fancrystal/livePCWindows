@@ -20,7 +20,6 @@ signals:
     void login_failed(const QString& errorMessage);
     void login_status_changed(const QString& status);
     void local_stream_success(const QString& rtmp_url);
-    void cache_clear_finished(const QString& message);
 
 public:
     // QML调用方法
@@ -43,8 +42,8 @@ public:
     const QString& getLocalStreamUrl() const { return local_stream_url_; }
     bool isLocalStreamMode() const { return is_local_stream_mode_; }
 
-    // 清理缓存：AppSettings + 日志文件 + 插播视频缓存
-    Q_INVOKABLE void qmlClearCache();
+    // 清理缓存：AppSettings + 日志文件 + 插播视频缓存，返回结果描述
+    Q_INVOKABLE QString qmlClearCache();
 
 private slots:
     void onLoginSuccess(const QString& userId, const QString& token, const QString& loginKey);

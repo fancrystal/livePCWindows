@@ -200,7 +200,7 @@ void LoginWindow::qmlStartLocalStream(const QString& rtmpUrl) {
     emit local_stream_success(rtmpUrl);
 }
 
-void LoginWindow::qmlClearCache() {
+QString LoginWindow::qmlClearCache() {
     LOG_INFO("qmlClearCache: start");
     int total = 0;
 
@@ -240,7 +240,7 @@ void LoginWindow::qmlClearCache() {
     removeFiles(appConfigDir, {"scenes_*.json"});
 
     LOG_INFO("qmlClearCache: done, total files removed = " + std::to_string(total));
-    emit cache_clear_finished(QString("清理完成，共删除 %1 个文件").arg(total));
+    return QString("清理完成，共删除 %1 个文件").arg(total);
 }
 
 void LoginWindow::qmlSetStatus(const QString& status) {

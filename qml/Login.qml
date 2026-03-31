@@ -319,7 +319,9 @@ Rectangle {
 
                 onClicked: {
                     if (typeof loginWindow !== 'undefined' && loginWindow.qmlClearCache) {
-                        loginWindow.qmlClearCache()
+                        var result = loginWindow.qmlClearCache()
+                        cacheResultPopup.message = result
+                        cacheResultPopup.visible = true
                     }
                 }
             }
@@ -554,10 +556,6 @@ Rectangle {
             statusText.color = "#4aa6ff"
         }
 
-        function onCacheClearFinished(message) {
-            cacheResultPopup.message = message
-            cacheResultPopup.visible = true
-        }
     }
 
     // 清理缓存结果弹窗
