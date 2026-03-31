@@ -88,6 +88,11 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow) {
     ui->setupUi(this);
 
+    // 最早加载持久化配置，后续所有初始化都从 app_settings_ 读取
+    app_settings_.load();
+    canvas_config_ = app_settings_.canvas;
+    is_portrait_mode_ = (canvas_config_.get_width() < canvas_config_.get_height());
+
     // 加载QSS样式文件（仅应用于主窗口）
     QFile qssFile(":/resources/live_companion_style.qss");
     if (qssFile.open(QFile::ReadOnly | QFile::Text)) {
@@ -1492,18 +1497,7 @@ void MainWindow::initialize_modules() {
 
     video_engine_->set_current_scene(scene_manager_->get_current_scene());
 
-    VideoEncoderConfig video_config;
-    // 使用当前画布配置的分辨率初始化编码器
-    video_config.width = canvas_config_.get_width();
-    video_config.height = canvas_config_.get_height();
-    video_config.fps = 30;
-    video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏适当降低码率
-    video_config.gop = 60; // Reduce GOP size for faster keyframe interval (2 seconds at 30fps)
-    video_config.b_frames_enabled = false;
-    {
-        QSettings s("LiveAssistant", "Settings");
-        video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
-    }
+    VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
     LOG_INFO(QString("Initializing video encoder: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
     encoder_->initialize_video_encoder(video_config);
 
@@ -4133,25 +4127,13 @@ void MainWindow::set_canvas_config(const CanvasConfig& config) {
     // 更新编码器配置（仅在非初始化阶段，即canvas_widget_已存在时）
     // 避免在setup_canvas_widget中重复初始化编码器
     if (encoder_ && encoder_bridge_ && canvasContainer_) {
-        int width = config.get_width();
-        int height = config.get_height();
-        LOG_INFO(QString("Reinitializing encoder with resolution: %1x%2").arg(width).arg(height).toStdString());
+        LOG_INFO(QString("Reinitializing encoder with resolution: %1x%2")
+                 .arg(config.get_width()).arg(config.get_height()).toStdString());
 
-        // 重新初始化视频编码器
-        VideoEncoderConfig video_config;
-        video_config.width = width;
-        video_config.height = height;
-        video_config.fps = 30;
-        video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;
-        video_config.gop = 60;
-        video_config.b_frames_enabled = false;
-        {
-            QSettings s("LiveAssistant", "Settings");
-            video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
-        }
-
+        app_settings_.canvas = config;
+        VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
         encoder_->reinitialize_video_encoder(video_config);
-        encoder_bridge_->set_resolution(width, height);
+        encoder_bridge_->set_resolution(config.get_width(), config.get_height());
     } else {
         LOG_INFO("Skipping encoder reinitialization (initialization phase)");
     }
@@ -4319,18 +4301,8 @@ void MainWindow::apply_canvas_config_change() {
     // 更新编码器配置（如果不在推流中）
     if (encoder_ && encoder_bridge_ && !encoder_bridge_->is_streaming()) {
         LOG_INFO("Reinitializing video encoder");
-        VideoEncoderConfig video_config;
-        video_config.width = width;
-        video_config.height = height;
-        video_config.fps = 30;
-        video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏可以适当降低码率
-        video_config.gop = 60;
-        video_config.b_frames_enabled = false;
-        {
-            QSettings s("LiveAssistant", "Settings");
-            video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
-        }
-
+        app_settings_.canvas = canvas_config_;
+        VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
         encoder_->reinitialize_video_encoder(video_config);
         LOG_INFO("Video encoder reinitialized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
                  " mode: " + std::to_string(width) + "x" + std::to_string(height));
@@ -4858,6 +4830,21 @@ void MainWindow::loadAudioVolumeSettings() {
 
 void MainWindow::playVolumeFeedbackSound() {
     // 静音处理，不再播放音量反馈声音
+}
+
+// static
+VideoEncoderConfig MainWindow::build_video_config_from_settings(const AppSettings& s) {
+    VideoEncoderConfig cfg = s.video;
+    // canvas 是分辨率的权威来源，覆盖 video 里的 width/height
+    cfg.width  = s.canvas.get_width();
+    cfg.height = s.canvas.get_height();
+    // 竖屏时码率上限 2Mbps
+    if (cfg.height > cfg.width && cfg.bitrate > 2000000) {
+        cfg.bitrate = 2000000;
+    }
+    cfg.gop = cfg.fps * 2;
+    cfg.b_frames_enabled = false;
+    return cfg;
 }
 
 } // namespace live_assistant

@@ -16,6 +16,7 @@
 #include "common/media_clock.h"
 #include "common/config_manager.h"
 #include "common/system_monitor.h"
+#include "app/app_settings.h"
 #include "http/live_item.h"
 #include "media_pipeline/media_file_source.h"
 #include "scene_manager/icapture_source.h"
@@ -186,6 +187,9 @@ private:
     // Media clock for timestamp synchronization
     MediaClock media_clock_;
 
+    // 全局配置数据源（启动时从 QSettings 加载，所有子系统从此读取）
+    AppSettings app_settings_;
+
     // Canvas configuration
     CanvasConfig canvas_config_ = CanvasConfig::get_default();
     bool is_portrait_mode_ = false;  // 当前是否为竖屏模式
@@ -310,6 +314,9 @@ private:
 
     // Apply SettingsPanel changes helper
     void applySettingsPanelChanges(SettingsPanel& dlg);
+
+    // 从 AppSettings 构造 VideoEncoderConfig（canvas 为分辨率权威来源）
+    static VideoEncoderConfig build_video_config_from_settings(const AppSettings& s);
 
     // Audio control methods
     void toggle_microphone();
