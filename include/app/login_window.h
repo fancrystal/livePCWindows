@@ -42,6 +42,9 @@ public:
     const QString& getLocalStreamUrl() const { return local_stream_url_; }
     bool isLocalStreamMode() const { return is_local_stream_mode_; }
 
+    // 清理缓存：AppSettings + 日志文件 + 插播视频缓存
+    Q_INVOKABLE void qmlClearCache();
+
 private slots:
     void onLoginSuccess(const QString& userId, const QString& token, const QString& loginKey);
     void onLoginFailed(const QString& errorMessage);

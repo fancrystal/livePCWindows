@@ -293,6 +293,36 @@ Rectangle {
                     localStreamExpanded = !localStreamExpanded
                 }
             }
+
+            // 清理缓存按钮
+            Button {
+                id: clearCacheBtn
+                height: 32
+                Layout.preferredWidth: parent.width * 0.9
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 4
+
+                background: Rectangle {
+                    radius: 4
+                    color: Qt.rgba(1,1,1,0.08)
+                    border.width: 1
+                    border.color: Qt.rgba(1,1,1,0.15)
+                }
+
+                contentItem: Text {
+                    text: "清理缓存"
+                    color: Qt.rgba(1,1,1,0.7)
+                    font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                onClicked: {
+                    if (typeof loginWindow !== 'undefined' && loginWindow.qmlClearCache) {
+                        loginWindow.qmlClearCache()
+                    }
+                }
+            }
         }
     }
 
