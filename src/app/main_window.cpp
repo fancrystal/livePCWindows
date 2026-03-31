@@ -1500,6 +1500,10 @@ void MainWindow::initialize_modules() {
     video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏适当降低码率
     video_config.gop = 60; // Reduce GOP size for faster keyframe interval (2 seconds at 30fps)
     video_config.b_frames_enabled = false;
+    {
+        QSettings s("LiveAssistant", "Settings");
+        video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
+    }
     LOG_INFO(QString("Initializing video encoder: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
     encoder_->initialize_video_encoder(video_config);
 
@@ -3666,6 +3670,12 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     audio_engine_->set_speaker_volume(speaker_volume);
     encoder_->reinitialize_audio_encoder(new_a);
 
+    // 保存编码方式偏好
+    {
+        QSettings s("LiveAssistant", "Settings");
+        s.setValue("preferHwEncoder", new_v.prefer_hw);
+    }
+
     // Reinit video encoder + bridge settings
     encoder_->reinitialize_video_encoder(new_v);
     if (encoder_bridge_) {
@@ -4135,6 +4145,10 @@ void MainWindow::set_canvas_config(const CanvasConfig& config) {
         video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;
         video_config.gop = 60;
         video_config.b_frames_enabled = false;
+        {
+            QSettings s("LiveAssistant", "Settings");
+            video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
+        }
 
         encoder_->reinitialize_video_encoder(video_config);
         encoder_bridge_->set_resolution(width, height);
@@ -4312,6 +4326,10 @@ void MainWindow::apply_canvas_config_change() {
         video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏可以适当降低码率
         video_config.gop = 60;
         video_config.b_frames_enabled = false;
+        {
+            QSettings s("LiveAssistant", "Settings");
+            video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
+        }
 
         encoder_->reinitialize_video_encoder(video_config);
         LOG_INFO("Video encoder reinitialized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +

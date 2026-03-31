@@ -23,6 +23,7 @@ SettingsPanel::SettingsPanel(QWidget *parent, SettingsTab defaultTab)
     // 初始化视频选项
     ui->comboBox_video->addItems({"1920x1080", "1280x720", "640x360"});
     ui->comboBox_fps->addItems({"15", "20", "25", "30", "60"});
+    ui->comboBox_encoder->addItems({"自动（优先硬件编码）", "仅软件编码（libx264）"});
     
     // 初始化背景类型
     ui->comboBox_bgType->addItems({"无", "绿幕", "图片", "视频"});
@@ -160,8 +161,10 @@ void SettingsPanel::set_video_config(const VideoEncoderConfig& config) {
     
     idx = ui->comboBox_fps->findText(QString::number(config.fps));
     if (idx >= 0) ui->comboBox_fps->setCurrentIndex(idx);
-    
+
     ui->spinBox_bitrate->setValue(config.bitrate / 1000);
+
+    ui->comboBox_encoder->setCurrentIndex(config.prefer_hw ? 0 : 1);
 }
 
 VideoEncoderConfig SettingsPanel::get_video_config() const {
@@ -176,7 +179,8 @@ VideoEncoderConfig SettingsPanel::get_video_config() const {
     
     cfg.fps = ui->comboBox_fps->currentText().toInt();
     cfg.bitrate = ui->spinBox_bitrate->value() * 1000;
-    
+    cfg.prefer_hw = (ui->comboBox_encoder->currentIndex() == 0);
+
     return cfg;
 }
 

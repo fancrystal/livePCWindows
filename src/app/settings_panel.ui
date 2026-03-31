@@ -258,6 +258,29 @@ QPushButton:checked { background-color: #4a6ef0; border-color: #4a6ef0; }
 											</item>
 										</layout>
 									</item>
+									<item>
+										<layout class="QHBoxLayout" name="horizontalLayout_encoder">
+											<property name="spacing">
+												<number>12</number>
+											</property>
+											<item>
+												<widget class="QLabel" name="label_encoder">
+													<property name="text">
+														<string>编码方式</string>
+													</property>
+													<property name="minimumSize">
+														<size>
+															<width>70</width>
+															<height>0</height>
+														</size>
+													</property>
+												</widget>
+											</item>
+											<item>
+												<widget class="QComboBox" name="comboBox_encoder"/>
+											</item>
+										</layout>
+									</item>
 								</layout>
 							</widget>
 						</item>
