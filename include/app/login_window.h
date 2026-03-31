@@ -20,6 +20,7 @@ signals:
     void login_failed(const QString& errorMessage);
     void login_status_changed(const QString& status);
     void local_stream_success(const QString& rtmp_url);
+    void cache_clear_finished(const QString& message);
 
 public:
     // QML调用方法

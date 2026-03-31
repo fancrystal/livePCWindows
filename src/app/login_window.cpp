@@ -204,41 +204,43 @@ void LoginWindow::qmlClearCache() {
     LOG_INFO("qmlClearCache: start");
     int total = 0;
 
+    // 辅助 lambda：删除目录下匹配的文件，返回删除数量
+    auto removeFiles = [&](const QString& dirPath, const QStringList& filters) {
+        QDir dir(dirPath);
+        if (!dir.exists()) return;
+        const auto files = dir.entryInfoList(filters, QDir::Files);
+        for (const QFileInfo& fi : files) {
+            if (QFile::remove(fi.absoluteFilePath())) {
+                ++total;
+            }
+        }
+        LOG_INFO("qmlClearCache: removed " + std::to_string(files.size()) +
+                 " file(s) from " + dirPath.toStdString());
+    };
+
     // 1. 清理 AppSettings（推流/编码/音频/摄像头等持久化配置）
     QSettings appSettings("LiveAssistant", "Settings");
     appSettings.clear();
     LOG_INFO("qmlClearCache: AppSettings cleared");
 
-    // 2. 清理日志文件（可执行文件旁的 applogs/ 目录）
-    QString appDir = QApplication::applicationDirPath();
-    QDir logDir(appDir + "/applogs");
-    if (logDir.exists()) {
-        const auto logFiles = logDir.entryInfoList(QStringList() << "*.log", QDir::Files);
-        for (const QFileInfo& fi : logFiles) {
-            if (QFile::remove(fi.absoluteFilePath())) {
-                ++total;
-            }
-        }
-        LOG_INFO("qmlClearCache: removed " + std::to_string(logFiles.size()) + " log file(s)");
-    }
+    // 2. 清理日志文件
+    // 日志使用相对路径 "applogs/"，基准是进程工作目录（开发时为 build_vs2019/，发布时为 exe 目录）
+    // 两个路径都尝试，确保开发和生产环境都能命中
+    removeFiles(QDir::currentPath() + "/applogs",        {"*.log"});
+    removeFiles(QApplication::applicationDirPath() + "/applogs", {"*.log"});
 
     // 3. 清理插播视频缓存（QStandardPaths::CacheLocation）
     QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    QDir cacheDir(cacheRoot);
-    if (cacheDir.exists()) {
-        const auto videoFiles = cacheDir.entryInfoList(
-            QStringList() << "*.mp4" << "*.flv" << "*.ts" << "*.m3u8",
-            QDir::Files);
-        for (const QFileInfo& fi : videoFiles) {
-            if (QFile::remove(fi.absoluteFilePath())) {
-                ++total;
-            }
-        }
-        LOG_INFO("qmlClearCache: removed " + std::to_string(videoFiles.size()) + " video cache file(s) from " + cacheRoot.toStdString());
-    }
+    removeFiles(cacheRoot, {"*.mp4", "*.flv", "*.ts", "*.m3u8"});
+
+    // 4. 清理场景配置（scenes_*.json），视频源布局存在这里
+    QString localDataDir  = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QString appConfigDir  = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    removeFiles(localDataDir, {"scenes_*.json"});
+    removeFiles(appConfigDir, {"scenes_*.json"});
 
     LOG_INFO("qmlClearCache: done, total files removed = " + std::to_string(total));
-    emit login_status_changed(QString("缓存已清理（共删除 %1 个文件）").arg(total));
+    emit cache_clear_finished(QString("清理完成，共删除 %1 个文件").arg(total));
 }
 
 void LoginWindow::qmlSetStatus(const QString& status) {
