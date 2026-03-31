@@ -10,8 +10,27 @@ namespace live_assistant {
 // 持久化
 // ============================================================
 
+// 将旧版本（无分组前缀）的 QSettings key 迁移到新格式，迁移后删除旧 key
+static void migrate_legacy_settings(QSettings& s) {
+    struct { const char* old_key; const char* new_key; } migrations[] = {
+        { "microphoneVolume",  "audio/micVolume"       },
+        { "speakerVolume",     "audio/speakerVolume"   },
+        { "microphoneEnabled", "audio/micEnabled"      },
+        { "speakerEnabled",    "audio/speakerEnabled"  },
+        { "exitPreference",    "ui/exitPreference"     },
+        { "preferHwEncoder",   "video/preferHw"        },
+    };
+    for (const auto& m : migrations) {
+        if (s.contains(m.old_key) && !s.contains(m.new_key)) {
+            s.setValue(m.new_key, s.value(m.old_key));
+            s.remove(m.old_key);
+        }
+    }
+}
+
 void AppSettings::load() {
     QSettings s("LiveAssistant", "Settings");
+    migrate_legacy_settings(s);
 
     // --- 视频编码 ---
     video.prefer_hw = s.value("video/preferHw", true).toBool();
