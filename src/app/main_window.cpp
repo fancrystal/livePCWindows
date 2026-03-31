@@ -1575,50 +1575,37 @@ void MainWindow::setup_ui_connections() {
         }
 
         SettingsPanel dlg(this, defaultTab);
-        
-        // 设置视频配置
-        dlg.set_video_config(encoder_->get_video_config());
-        
-        // 设置音频配置
-        dlg.set_audio_config(encoder_->get_audio_config());
-        
-        // 设置麦克风列表
-        dlg.set_available_microphones(audio_engine_->get_available_microphones(), 
-                                       audio_engine_->get_selected_microphone_id());
-        
+
+        // 从 app_settings_ 填充视频配置（canvas 为分辨率权威来源）
+        dlg.set_video_config(build_video_config_from_settings(app_settings_));
+
+        // 从 app_settings_ 填充音频配置（合并 encoder_config 与实际音量）
+        {
+            AudioEncoderConfig audio_for_dlg = app_settings_.audio.encoder_config;
+            audio_for_dlg.mic_volume     = app_settings_.audio.mic_volume;
+            audio_for_dlg.speaker_volume = app_settings_.audio.speaker_volume;
+            dlg.set_audio_config(audio_for_dlg);
+        }
+
+        // 设置麦克风列表（设备枚举仍从引擎获取，selected 以 app_settings_ 为准）
+        dlg.set_available_microphones(audio_engine_->get_available_microphones(),
+                                       app_settings_.audio.microphone_device_id);
+
         // 设置扬声器列表
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
-                                    audio_engine_->get_selected_speaker_id());
-        
+                                    app_settings_.audio.speaker_device_id);
+
         // 设置摄像头列表
         if (video_engine_) {
             dlg.set_available_cameras(video_engine_->get_available_camera_choices());
             dlg.set_video_engine(video_engine_);
 
-            // 获取当前摄像头配置
-            std::string current_camera_device_id;  // 原始设备ID
-            std::string current_resolution = video_engine_->get_camera_resolution();
-            int current_fps = video_engine_->get_camera_fps();
-            bool current_mirror = video_engine_->get_camera_mirror();
+            // 摄像头实际分辨率/帧率从引擎读（可能被外部改变），mirror 从 app_settings_ 读
+            std::string current_camera_device_id = app_settings_.camera.device_id;
+            std::string current_resolution       = video_engine_->get_camera_resolution();
+            int         current_fps              = video_engine_->get_camera_fps();
+            bool        current_mirror           = app_settings_.camera.mirror;
 
-            // 从当前场景中获取摄像头信息
-            if (scene_manager_ && scene_manager_->get_current_scene()) {
-                auto scene = scene_manager_->get_current_scene();
-                auto items = scene->get_all_scene_items();
-                for (const auto& item : items) {
-                    if (item && item->get_source() &&
-                        QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
-                        // 获取原始设备ID（用于匹配下拉框）
-                        current_camera_device_id = item->get_device_id();
-                        // 从 SceneItem 的 Transform 中获取镜像状态
-                        auto transform = item->get_transform();
-                        current_mirror = transform.mirror;
-                        break;
-                    }
-                }
-            }
-
-            // 设置当前摄像头配置
             dlg.set_camera_config(current_camera_device_id, current_resolution, current_fps, current_mirror);
         }
 
@@ -3490,35 +3477,38 @@ void MainWindow::show_scene_item_settings(int index) {
 
         SettingsPanel dlg(this, SettingsTab::Camera);
 
-        // 设置视频配置
-        dlg.set_video_config(encoder_->get_video_config());
+        // 从 app_settings_ 填充视频配置
+        dlg.set_video_config(build_video_config_from_settings(app_settings_));
 
-        // 设置音频配置
-        dlg.set_audio_config(encoder_->get_audio_config());
+        // 从 app_settings_ 填充音频配置
+        {
+            AudioEncoderConfig audio_for_dlg = app_settings_.audio.encoder_config;
+            audio_for_dlg.mic_volume     = app_settings_.audio.mic_volume;
+            audio_for_dlg.speaker_volume = app_settings_.audio.speaker_volume;
+            dlg.set_audio_config(audio_for_dlg);
+        }
 
         // 设置麦克风列表
         dlg.set_available_microphones(audio_engine_->get_available_microphones(),
-                                       audio_engine_->get_selected_microphone_id());
+                                       app_settings_.audio.microphone_device_id);
 
         // 设置扬声器列表
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
-                                    audio_engine_->get_selected_speaker_id());
+                                    app_settings_.audio.speaker_device_id);
 
         // 设置摄像头列表
-        auto camera_choices = video_engine_->get_available_camera_choices();
-        dlg.set_available_cameras(camera_choices);
+        dlg.set_available_cameras(video_engine_->get_available_camera_choices());
 
-        // 获取当前摄像头配置
+        // 摄像头分辨率/帧率从引擎读，mirror 和 device_id 从 app_settings_ 读
         std::string current_resolution = video_engine_->get_camera_resolution();
-        int current_fps = video_engine_->get_camera_fps();
-        bool current_mirror = video_engine_->get_camera_mirror();
+        int         current_fps        = video_engine_->get_camera_fps();
+        bool        current_mirror     = app_settings_.camera.mirror;
+        std::string current_device_id  = app_settings_.camera.device_id;
+        if (current_device_id.empty()) {
+            current_device_id = item->get_device_id();
+        }
 
-        // 从 SceneItem 的 Transform 中读取镜像状态，以及获取原始设备ID
-        auto current_transform = item->get_transform();
-        current_mirror = current_transform.mirror;
-        std::string current_device_id = item->get_device_id();  // 原始设备ID
-
-        // 设置摄像头配置（使用当前的实际配置）
+        // 设置摄像头配置
         dlg.set_camera_config(current_device_id, current_resolution, current_fps, current_mirror);
 
         if (dlg.exec() == QDialog::Accepted) {
@@ -3704,7 +3694,10 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     changed |= SettingsSection::Audio;
 
     // --- 摄像头分区 ---
-    app_settings_.camera.mirror = dlg.is_camera_mirror();
+    app_settings_.camera.mirror     = dlg.is_camera_mirror();
+    app_settings_.camera.device_id  = dlg.get_selected_camera_id();
+    app_settings_.camera.resolution = dlg.get_camera_resolution();
+    app_settings_.camera.fps        = dlg.get_camera_fps();
     changed |= SettingsSection::Camera;
 
     // 持久化并通知观察者
