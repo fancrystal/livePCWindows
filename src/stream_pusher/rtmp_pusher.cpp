@@ -393,14 +393,8 @@ ErrorCode RTMPPusher::connect_and_write_header() {
     }
 
     header_written_ = true;
-    is_first_video_packet_ = true;
     have_sent_first_key_ = false;
-    // 重置 send_packet 诊断状态
     send_frame_count_ = 0;
-    diag_first_audio_pts_ = -1;
-    diag_first_video_pts_ = -1;
-    diag_first_audio_wallclock_ = -1;
-    diag_first_video_wallclock_ = -1;
     av_sync_offset_ms_ = 0;
     video_pts_base_ = -1;  // 每次重连重置，重新校准 QSV 内部 PTS 偏移
     audio_packet_count_ = 0;
@@ -489,37 +483,10 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         }
     }
 
-    // 诊断第一帧 PTS（每次重连后重新记录）
-    if (packet->type == MediaType::AUDIO && diag_first_audio_pts_ == -1) {
-        diag_first_audio_pts_ = packet->pts;
-        diag_first_audio_wallclock_ = packet->wallclock_us / 1000;
-        LOG_INFO("[RTMP] First AUDIO packet: pts=" + std::to_string(packet->pts) +
-                 ", wallclock=" + std::to_string(diag_first_audio_wallclock_) + "ms");
-
-        // AV sync offset 计算说明：
-        // 视频 PTS 经过 video_pts_base_ 修正后始终从 0 开始（video_pts_base_ == diag_first_video_pts_）。
-        // 因此，要让音频同样从 0 开始对齐，只需减去第一个音频包的 raw PTS（diag_first_audio_pts_）。
-        // 旧公式 offset = audio_pts - video_pts_raw 是错误的——video_pts_raw（QSV 内部偏移，如 2336ms）
-        // 并非实际播放起始点，会导致 offset 算成负数而被截断为 0（无修正）；
-        // 重连时会导致将 ~300s 的 audio_pts 减去 ~300s 的 video_pts_raw 得到小的正值（如 143ms），
-        // 并对所有音频突然施加 143ms 偏移，造成音画跳变。
-        if (diag_first_video_pts_ != -1) {
-            av_sync_offset_ms_ = (diag_first_audio_pts_ > 0) ? diag_first_audio_pts_ : 0;
-            LOG_INFO("[RTMP] AV Sync Offset calculated: " + std::to_string(av_sync_offset_ms_) +
-                     "ms (first_audio_pts=" + std::to_string(diag_first_audio_pts_) +
-                     ", video will be 0-based after baseline correction)");
-        }
-    } else if (packet->type == MediaType::VIDEO && diag_first_video_pts_ == -1) {
-        diag_first_video_pts_ = packet->pts;
-        diag_first_video_wallclock_ = packet->wallclock_us / 1000;
-        LOG_INFO("[RTMP] First VIDEO packet: pts=" + std::to_string(packet->pts) +
-                 ", wallclock=" + std::to_string(diag_first_video_wallclock_) + "ms");
-        if (diag_first_audio_pts_ != -1) {
-            av_sync_offset_ms_ = (diag_first_audio_pts_ > 0) ? diag_first_audio_pts_ : 0;
-            LOG_INFO("[RTMP] AV Sync Offset calculated: " + std::to_string(av_sync_offset_ms_) +
-                     "ms (first_audio_pts=" + std::to_string(diag_first_audio_pts_) +
-                     ", video will be 0-based after baseline correction)");
-        }
+    // 诊断第一帧 PTS（每次重连后重新记录，仅用于日志）
+    if (packet->type == MediaType::AUDIO && av_sync_offset_ms_ == 0) {
+        LOG_DEBUG("[RTMP] First AUDIO packet (pre-drop check): pts=" + std::to_string(packet->pts) +
+                 ", wallclock=" + std::to_string(packet->wallclock_us / 1000) + "ms");
     }
 
     // CRITICAL: Log the packet state BEFORE any operation
@@ -553,6 +520,15 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
 
     // Now use the cloned packet for all operations
     avpkt = cloned_pkt;
+
+    // 在第一帧视频 IDR 到来前丢弃所有音频包。
+    // 防止音频超前于视频：若音频先于视频 IDR 进入 RTMP 流，音频会积累若干秒内容
+    // （IDR 等待期间），而视频 IDR 到来后双方同归 0ms，音频已超前视频 N ms
+    // （N = IDR 等待时长），播放器 A/V 同步时表现为画面滞后声音约 N ms（1-2 秒）。
+    if (packet->type == MediaType::AUDIO && !have_sent_first_key_) {
+        av_packet_free(&pkt_to_free);
+        return ErrorCode::SUCCESS;
+    }
 
     // Determine target stream and its time_base
     AVStream* st = nullptr;
@@ -592,39 +568,27 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             avpkt->flags |= AV_PKT_FLAG_KEY;
         }
 
-        // If we were requested to force next keyframe, mark it
-        if (force_next_keyframe_.exchange(false)) {
-            avpkt->flags |= AV_PKT_FLAG_KEY;
-        }
-
-        // 🔧 修复：确保第一帧视频是关键帧，但最多只等待150ms
-        // 这样可以避免视频延迟，同时确保第一帧质量
-        // 注意：libx264 可能会先输出一个非关键帧作为编码种子，需要等待真正的 IDR
+        // 确保推流的第一帧视频是 IDR 关键帧。
+        // 注意：不能设超时接受非关键帧——预览阶段 QSV 编码器已运行很长时间，
+        // 推流开始时 clear_queue() 与编码线程存在竞态，可能有 PTS 极大的陈旧包残留。
+        // 若以该陈旧包设置 video_pts_base_（如 14493ms），所有新帧 pts 均被 clamp 到 0，
+        // 导致视频 PTS 比音频 PTS 快 ~14s，即音频慢 7-8 秒的音画不同步问题。
         if (packet->type == MediaType::VIDEO && !have_sent_first_key_) {
             if (!(avpkt->flags & AV_PKT_FLAG_KEY)) {
-                // 初始化等待计时器
+                // 初始化等待计时器（仅用于日志）
                 if (!first_video_wait_initialized_) {
                     first_video_wait_start_ = std::chrono::steady_clock::now();
                     first_video_wait_initialized_ = true;
                 }
-
-                // 计算已等待时间
-                auto elapsed = std::chrono::steady_clock::now() - first_video_wait_start_;
-                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-
-                // 最多等待150ms，超过则接受非关键帧（避免无限等待）
-                if (elapsed_ms < 150) {
-                    LOG_WARNING("[RTMP] Dropping non-key video packet, waiting for keyframe (" +
-                               std::to_string(elapsed_ms) + "ms elapsed)");
-                    return ErrorCode::SUCCESS;
-                } else {
-                    LOG_WARNING("[RTMP] Timeout waiting for keyframe, accepting non-key frame after " +
-                               std::to_string(elapsed_ms) + "ms");
-                    have_sent_first_key_ = true;
-                    first_video_wait_initialized_ = false;
-                }
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - first_video_wait_start_).count();
+                LOG_WARNING("[RTMP] Dropping non-key video packet, waiting for IDR keyframe (" +
+                           std::to_string(elapsed_ms) + "ms elapsed)");
+                // 释放克隆包，避免内存泄漏
+                av_packet_free(&pkt_to_free);
+                return ErrorCode::SUCCESS;
             } else {
-                LOG_INFO("[RTMP] First keyframe received, size=" + std::to_string(avpkt->size));
+                LOG_INFO("[RTMP] First IDR keyframe received, size=" + std::to_string(avpkt->size));
                 have_sent_first_key_ = true;
                 first_video_wait_initialized_ = false;
             }
@@ -652,15 +616,12 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         LOG_DEBUG("[RTMP] After rescale: pts " + std::to_string(old_pts) + " -> " + std::to_string(avpkt->pts));
     }
 
-    // QSV 编码器使用内部帧计数器作为 PTS，不受 bridge 的归零影响。
-    // 例如预览阶段运行了 ~116 帧后开始推流，第一个输出包 PTS ≈ 116×33ms = 3859ms，
-    // 而音频 PTS 从 0 开始，导致视频比音频晚 ~3.7s，音画不同步（音频显"慢"）。
-    // 修正：记录第一个视频包的 PTS 作为基准，之后所有视频包减去该基准，使视频从 0 开始。
+    // 记录第一个视频包（必为 IDR）的 PTS 作为基准，之后所有视频包减去该基准使视频从 0 开始。
+    // 上方关键帧过滤确保到达这里的第一个视频包一定是 IDR，video_pts_base_ 值即为 IDR 的 PTS。
     if (packet->type == MediaType::VIDEO) {
         if (video_pts_base_ == -1) {
             video_pts_base_ = avpkt->pts;
-            LOG_INFO("[RTMP] Video PTS baseline set: " + std::to_string(video_pts_base_) +
-                     "ms (QSV internal offset to be subtracted from all video PTS)");
+            LOG_INFO("[RTMP] Video PTS baseline set from IDR: " + std::to_string(video_pts_base_) + "ms");
         }
         avpkt->pts -= video_pts_base_;
         avpkt->dts -= video_pts_base_;
@@ -668,10 +629,17 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         if (avpkt->pts < 0) avpkt->pts = 0;
         if (avpkt->dts < 0) avpkt->dts = 0;
     }
-    if (packet->type == MediaType::VIDEO && is_first_video_packet_) {
-        is_first_video_packet_ = false;
+    // 以第一个实际发出的音频包（IDR 之后）的 PTS 作为同步基准。
+    // IDR 之前的音频已被丢弃，故此时 avpkt->pts ≈ video_pts_base_ + 一帧（~21ms），
+    // 减去自身 PTS 后音频从 0ms 开始，与视频 IDR（也是 0ms）精确对齐。
+    // 对重连场景同样有效：audio 在 IDR 后首次发出时 pts 约为 301600ms，
+    // offset=301600ms，音视频均归零，消除 ~1730ms 的偏移。
+    if (packet->type == MediaType::AUDIO && av_sync_offset_ms_ == 0 && avpkt->pts > 0) {
+        av_sync_offset_ms_ = avpkt->pts;
+        LOG_INFO("[RTMP] AV Sync Offset set from first sent audio: " +
+                 std::to_string(av_sync_offset_ms_) + "ms");
     }
-    
+
     // 音视频同步：如果音频延迟，调整音频时间戳
     if (packet->type == MediaType::AUDIO && av_sync_offset_ms_ > 0) {
         int64_t old_pts = avpkt->pts;
@@ -683,7 +651,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
         if (avpkt->pts < 0) avpkt->pts = 0;
         if (avpkt->dts < 0) avpkt->dts = 0;
         
-        LOG_INFO("[RTMP] AV Sync applied: Adjusted audio PTS by -" + 
+        LOG_DEBUG("[RTMP] AV Sync applied: Adjusted audio PTS by -" +
                  std::to_string(av_sync_offset_ms_) + "ms, " +
                  std::to_string(old_pts) + "ms -> " + std::to_string(avpkt->pts) + "ms");
     }

@@ -828,19 +828,24 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
     }
     std::memcpy(pkt->data, data, size);
 
+    // 修正 AAC 帧 duration：使用 double 避免整数除法截断
+    // 正确值：1024 / 48000 = 0.0213333s = 21.3333ms
+    // 旧公式 (1024 * 1000) / 48000 = 21 导致每帧少 0.333ms，30秒累积 ~10ms 漂移
+    constexpr double AAC_DURATION_MS = 1024.0 * 1000.0 / 48000.0;  // 21.3333...ms
+
     // ✅ 使用修正后的时间戳（确保音视频同步且避免负数）
     pkt->pts = adjusted_timestamp;
     pkt->dts = adjusted_timestamp;
-    // ✅ AAC 帧 duration：1024采样 @ 48kHz ≈ 21.33ms
-    pkt->duration = (1024 * 1000) / 48000;
+    // ✅ AAC 帧 duration：1024采样 @ 48kHz ≈ 21.33ms（使用 double 避免截断）
+    pkt->duration = static_cast<int64_t>(AAC_DURATION_MS);
 
     // 创建编码数据包
     auto packet = std::make_shared<EncodedPacket>();
     packet->type = MediaType::AUDIO;
     packet->pts = adjusted_timestamp;  // ✅ 使用修正后的时间戳（避免负数）
     packet->dts = adjusted_timestamp;
-    // ✅ AAC 帧 duration：1024采样 @ 48kHz ≈ 21.33ms
-    packet->duration = (1024 * 1000) / 48000;
+    // ✅ AAC 帧 duration：1024采样 @ 48kHz ≈ 21.33ms（使用 double 避免截断）
+    packet->duration = static_cast<int64_t>(AAC_DURATION_MS);
     packet->pkt = AVPacketPtr(pkt);
     // ✅ 使用毫秒作为 time_base，与 FLV 容器一致
     packet->encoder_time_base = {1, 1000};

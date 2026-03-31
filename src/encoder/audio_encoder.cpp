@@ -260,9 +260,11 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
 
     // 🔧 初始化帧持续时间（微秒精度，避免整数截断）
     // 每帧 1024 采样 @ 48kHz = 21333.33...us ≈ 21.333ms
-    // 旧代码: 1024 * 1000 / 48000 = 21（丢失 0.333ms，15小时累积约14分钟漂移）
+    // 旧代码: 1024 * 1000 / 48000 = 21（丢失 0.333ms，30秒累积约10ms漂移）
     frame_samples_ = codec_ctx_->frame_size > 0 ? codec_ctx_->frame_size : 1024;
     frame_duration_us_ = static_cast<int64_t>(frame_samples_) * 1000000LL / codec_ctx_->sample_rate;
+    // ⚠️ frame_duration_ms_ 用整数除法，在 fallback pts_to_emit 路径中会有 ~0.333ms/帧累积误差
+    // 正确值应为 frame_duration_us_ / 1000.0 ≈ 21.3333
     frame_duration_ms_ = frame_duration_us_ / 1000;
     LOG_INFO("  - frame_duration_us: " + std::to_string(frame_duration_us_) +
              " (" + std::to_string(frame_duration_us_ / 1000.0) + "ms)");

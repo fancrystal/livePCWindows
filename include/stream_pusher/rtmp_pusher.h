@@ -102,22 +102,12 @@ private:
     // Allow stopping reconnect loops if destructor runs
     std::atomic<bool> stop_reconnect_{false};
     
-    // Force next video packet to be treated as a keyframe (used after header write)
-    std::atomic<bool> force_next_keyframe_{false};
-    
     // Whether we've sent the first video keyframe yet
     bool have_sent_first_key_ = false;
 
-    // Whether this is the first video packet (for PTS adjustment)
-    bool is_first_video_packet_ = true;
-
     // send_packet 诊断计数（成员变量，重连时可重置）
     int send_frame_count_ = 0;
-    int64_t diag_first_audio_pts_ = -1;
-    int64_t diag_first_video_pts_ = -1;
-    int64_t diag_first_audio_wallclock_ = -1;  // 第一帧音频的wallclock时间（毫秒）
-    int64_t diag_first_video_wallclock_ = -1;  // 第一帧视频的wallclock时间（毫秒）
-    int64_t av_sync_offset_ms_ = 0;            // 音视频同步偏移量（音频延迟）
+    int64_t av_sync_offset_ms_ = 0;            // 音视频同步偏移量：第一个实际发出的音频包 PTS
     int64_t video_pts_base_ = -1;              // 视频 PTS 归一化基准（修正 QSV 内部计数器偏移）
     int audio_packet_count_ = 0;
     int write_frame_count_ = 0;
