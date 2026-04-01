@@ -689,7 +689,16 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                       " (" + errbuf + ")" +
                       (seh_caught ? " [SEH caught - FFmpeg internal crash intercepted]" : "") +
                       ", type=" + std::string(packet->type == MediaType::AUDIO ? "AUDIO" : "VIDEO") +
-                      ", pts=" + std::to_string(packet->pts) +
+                      ", orig_pts=" + std::to_string(packet->pts) +
+                      ", orig_dts=" + std::to_string(packet->dts) +
+                      ", mux_pts=" + std::to_string(write_pkt ? write_pkt->pts : AV_NOPTS_VALUE) +
+                      ", mux_dts=" + std::to_string(write_pkt ? write_pkt->dts : AV_NOPTS_VALUE) +
+                      ", duration=" + std::to_string(write_pkt ? write_pkt->duration : 0) +
+                      ", flags=0x" + [&]() {
+                          std::ostringstream oss;
+                          oss << std::hex << (write_pkt ? write_pkt->flags : 0);
+                          return oss.str();
+                      }() +
                       ", format_ctx=" + (format_ctx_ ? "valid" : "NULL") +
                       ", pb=" + (format_ctx_ && format_ctx_->pb ? "valid" : "NULL"));
 

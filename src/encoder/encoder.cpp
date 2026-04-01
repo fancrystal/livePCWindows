@@ -22,9 +22,7 @@ Encoder::~Encoder() {
     LOG_INFO("Encoder destructor called");
 }
 
-ErrorCode Encoder::initialize_video_encoder(const VideoEncoderConfig& config) {
-    LOG_INFO("Initializing video encoder with configuration");
-    
+ErrorCode Encoder::create_video_encoder_locked(const VideoEncoderConfig& config) {
     video_encoder_ = EncoderFactory::create_video_encoder(config);
     if (!video_encoder_) {
         LOG_ERROR("Failed to create video encoder");
@@ -68,6 +66,20 @@ ErrorCode Encoder::initialize_video_encoder(const VideoEncoderConfig& config) {
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode Encoder::initialize_video_encoder(const VideoEncoderConfig& config) {
+    std::lock_guard<std::mutex> lock(video_mutex_);
+    LOG_INFO("Initializing video encoder with configuration");
+
+    if (video_encoder_initialized_ && video_encoder_) {
+        LOG_WARNING("initialize_video_encoder called while video encoder is active, recreating it");
+        video_encoder_->shutdown();
+        video_encoder_.reset();
+        video_encoder_initialized_ = false;
+    }
+
+    return create_video_encoder_locked(config);
+}
+
 ErrorCode Encoder::initialize_audio_encoder(const AudioEncoderConfig& config) {
     LOG_INFO("Initializing audio encoder with configuration");
     
@@ -88,13 +100,19 @@ ErrorCode Encoder::reinitialize_video_encoder(const VideoEncoderConfig& config) 
     LOG_INFO("Reinitializing video encoder with new configuration");
 
     std::lock_guard<std::mutex> lock(video_mutex_);
-    
-    if (video_encoder_initialized_ && video_encoder_) {
-        video_encoder_->shutdown();
-        video_encoder_.reset();
+
+    video_config_ = config;
+
+    if (!video_encoder_initialized_ || !video_encoder_) {
+        LOG_INFO("Video encoder not active, stored configuration for deferred initialization");
+        return ErrorCode::SUCCESS;
     }
-    
-    return initialize_video_encoder(config);
+
+    video_encoder_->shutdown();
+    video_encoder_.reset();
+    video_encoder_initialized_ = false;
+
+    return create_video_encoder_locked(config);
 }
 
 ErrorCode Encoder::reinitialize_audio_encoder(const AudioEncoderConfig& config) {
@@ -132,6 +150,31 @@ ErrorCode Encoder::shutdown() {
     }
     
     LOG_INFO("Encoder shutdown successfully");
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode Encoder::ensure_video_encoder_initialized() {
+    std::lock_guard<std::mutex> lock(video_mutex_);
+
+    if (video_encoder_initialized_ && video_encoder_) {
+        return ErrorCode::SUCCESS;
+    }
+
+    LOG_INFO("Creating deferred video encoder for active streaming session");
+    return create_video_encoder_locked(video_config_);
+}
+
+ErrorCode Encoder::shutdown_video_encoder() {
+    std::lock_guard<std::mutex> lock(video_mutex_);
+
+    if (!video_encoder_initialized_ || !video_encoder_) {
+        return ErrorCode::SUCCESS;
+    }
+
+    LOG_INFO("Shutting down video encoder");
+    video_encoder_->shutdown();
+    video_encoder_.reset();
+    video_encoder_initialized_ = false;
     return ErrorCode::SUCCESS;
 }
 

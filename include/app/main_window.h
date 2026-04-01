@@ -338,6 +338,7 @@ private:
     void set_speaker_volume(float volume);
     void update_speaker_ui();
     void show_speaker_menu(const QPoint& pos);
+    void update_audio_mix_mode();
 
     // Audio volume settings persistence
     void saveAudioVolumeSettings();

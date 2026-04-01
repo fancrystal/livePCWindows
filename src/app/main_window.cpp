@@ -1502,8 +1502,8 @@ void MainWindow::initialize_modules() {
     video_engine_->set_current_scene(scene_manager_->get_current_scene());
 
     VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
-    LOG_INFO(QString("Initializing video encoder: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
-    encoder_->initialize_video_encoder(video_config);
+    LOG_INFO(QString("Preparing deferred video encoder config: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
+    encoder_->reinitialize_video_encoder(video_config);
 
     // 使用音频引擎的实际采样率和声道数（设备原生格式）
     AudioEncoderConfig audio_config;
@@ -2124,13 +2124,10 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
             insert_video_timer_->start(33);  // ~30fps
             LOG_INFO("[INSERT_VIDEO] Frame sync timer started at 30fps");
 
-            // 设置混音模式：麦克风 + 插播音频
             if (audio_engine_) {
-                audio_engine_->setMixMode(AudioMixMode::MIC_MEDIA);
                 audio_engine_->set_media_volume(0.7f);  // 默认插播音量为70%
-
-                LOG_INFO("Audio mix mode set to MIC_MEDIA");
             }
+            update_audio_mix_mode();
 
             LOG_INFO("Insert video playback started: " + fileItem->fileName.toStdString());
 
@@ -2204,16 +2201,14 @@ void MainWindow::stopInsertVideoPlayback() {
     current_insert_video_file_id_.clear();
     is_insert_video_playing_ = false;
 
-    // 恢复混音模式：只用麦克风
     if (audio_engine_) {
-        audio_engine_->setMixMode(AudioMixMode::MIC_ONLY);
         // 注销插播音频源回调
         if (!current_insert_video_file_id_.isEmpty()) {
             QString callbackId = QString("insert_video_%1").arg(current_insert_video_file_id_);
             audio_engine_->unregisterAudioSource(callbackId);
         }
-        LOG_INFO("Audio mix mode restored to MIC_ONLY");
     }
+    update_audio_mix_mode();
 
     // 更新UI
     sync_scene_to_compositor();
@@ -3895,6 +3890,7 @@ void MainWindow::toggle_microphone() {
     if (audio_engine_) {
         audio_engine_->set_microphone_mute(!microphone_enabled_);
     }
+    update_audio_mix_mode();
     update_microphone_ui();
     saveAudioVolumeSettings();
     LOG_INFO(std::string("Microphone ") + (microphone_enabled_ ? "enabled" : "disabled"));
@@ -3973,6 +3969,7 @@ void MainWindow::toggle_speaker() {
         // 控制扬声器采集开关（而不是静音）
         audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
     }
+    update_audio_mix_mode();
     update_speaker_ui();
     saveAudioVolumeSettings();
     LOG_INFO(std::string("Speaker capture ") + (speaker_enabled_ ? "enabled" : "disabled"));
@@ -4012,6 +4009,41 @@ void MainWindow::update_speaker_ui() {
             ui->label_speakerLevel->setText(QString::number(volume) + "%");
         }
     }
+}
+
+void MainWindow::update_audio_mix_mode() {
+    if (!audio_engine_) {
+        return;
+    }
+
+    const bool include_mic = microphone_enabled_;
+    const bool include_speaker =
+        speaker_enabled_ &&
+        audio_engine_->get_audio_capturer() &&
+        audio_engine_->get_audio_capturer()->is_speaker_capture_enabled();
+    const bool include_media = is_insert_video_playing_;
+
+    AudioMixMode mode = AudioMixMode::MIC_ONLY;
+    if (include_mic && include_speaker && include_media) {
+        mode = AudioMixMode::MIC_SPEAKER_MEDIA;
+    } else if (include_mic && include_speaker) {
+        mode = AudioMixMode::MIC_SPEAKER;
+    } else if (include_mic && include_media) {
+        mode = AudioMixMode::MIC_MEDIA;
+    } else if (include_speaker && include_media) {
+        mode = AudioMixMode::SPEAKER_MEDIA;
+    } else if (include_speaker) {
+        mode = AudioMixMode::SPEAKER_ONLY;
+    } else if (include_media) {
+        mode = AudioMixMode::MEDIA_ONLY;
+    }
+
+    audio_engine_->setMixMode(mode);
+    LOG_INFO("[MainWindow] Audio mix mode updated: mic=" +
+             std::string(include_mic ? "on" : "off") +
+             ", speaker=" + std::string(include_speaker ? "on" : "off") +
+             ", media=" + std::string(include_media ? "on" : "off") +
+             ", mode=" + std::to_string(static_cast<int>(mode)));
 }
 
 void MainWindow::show_speaker_menu(const QPoint& pos) {
@@ -4834,7 +4866,12 @@ void MainWindow::loadAudioVolumeSettings() {
         audio_engine_->set_speaker_volume(speakerVolume);
         audio_engine_->set_microphone_mute(!microphone_enabled_);
         audio_engine_->set_speaker_mute(!speaker_enabled_);
+        if (audio_engine_->get_audio_capturer()) {
+            audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
+        }
     }
+
+    update_audio_mix_mode();
 
     LOG_INFO("Loaded audio volume settings: mic=" + std::to_string(static_cast<int>(micVolume * 100)) +
              "%, speaker=" + std::to_string(static_cast<int>(speakerVolume * 100)) + "%");
