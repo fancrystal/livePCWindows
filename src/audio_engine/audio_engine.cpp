@@ -872,36 +872,23 @@ AudioFrame& AudioFrame::operator=(AudioFrame&& other) noexcept {
 //=============================================================================
 
 void AudioEngine::mixThreadFunc() {
-    // 将 Windows 多媒体计时器精度提升到 1ms，避免 sleep_for(21ms) 实际休眠 ~31ms
-    // （Windows 默认计时器分辨率 15.625ms，会导致混音线程从 47fps 降至 ~32fps，
-    //  造成麦克风队列以 ~15帧/s 的速率溢出）
 #ifdef _WIN32
     timeBeginPeriod(1);
 #endif
     LOG_INFO("[AudioMixer] Mix thread started (timer resolution set to 1ms)");
 
-    // 漂移补偿：记录线程启动时间和已产出帧数。
-    // 问题根因：sleep_for(21ms) 在 Windows 上实际睡眠 ~21.5ms（+0.5ms 调度开销），
-    // 导致每帧耗时 21.5ms 而非所需的 21.333ms (1024/48000)，10s 内累积 -82ms 漂移。
-    // 补偿方案：每帧产出后计算"下一帧应在何时产出"（基于帧计数×帧周期），
-    // 而非每次都固定睡眠 21ms。若已落后则立即执行下一帧（不睡眠），保持整体速率准确。
+    // WASAPI currently delivers ~10 ms chunks (480 samples at 48 kHz). If we
+    // always pace the mixer as if it emitted 1024-sample blocks, the source
+    // queues grow forever and start dropping frames.
     auto thread_epoch = std::chrono::steady_clock::now();
-    int64_t frames_produced = 0;
+    int64_t next_target_us = 0;
 
     while (mix_thread_running_.load()) {
-        auto start_time = std::chrono::steady_clock::now();
-
-        // 获取当前混音模式
         AudioMixMode current_mode = getMixMode();
-
-        // 根据混音模式获取需要混音的源
         QList<AudioSourceType> active_sources = getActiveSourcesByMode(current_mode);
-
-        // 准备混音源列表
         QList<std::shared_ptr<AudioFrame>> sources;
-        sources_types_.clear();  // 清空之前的源类型列表
+        sources_types_.clear();
 
-        // 🔧 诊断：打印混音模式和活动源
         static int mix_debug_count = 0;
         if (mix_debug_count < 10) {
             LOG_INFO("[AudioMixer] Mix mode: " + std::to_string(static_cast<int>(current_mode)) +
@@ -909,7 +896,6 @@ void AudioEngine::mixThreadFunc() {
             mix_debug_count++;
         }
 
-        // 获取各源的音频帧
         for (AudioSourceType type : active_sources) {
             std::shared_ptr<AudioFrame> frame = nullptr;
 
@@ -928,70 +914,68 @@ void AudioEngine::mixThreadFunc() {
             }
 
             if (frame) {
-                // 为帧添加来源类型标记（通过混音模式推断）
-                // 这里我们直接使用 type 来确定音量
                 sources.append(frame);
                 sources_types_.append(type);
             } else {
-                // 🔧 诊断：打印获取帧失败
                 static int get_frame_fail_count = 0;
                 if (get_frame_fail_count < 10) {
-                    LOG_INFO("[AudioMixer] Failed to get frame for source type: " + 
+                    LOG_INFO("[AudioMixer] Failed to get frame for source type: " +
                              std::to_string(static_cast<int>(type)));
                     get_frame_fail_count++;
                 }
             }
         }
 
-        // 执行混音
         std::shared_ptr<AudioFrame> mixed_frame = nullptr;
+        int emitted_samples = 0;
         if (!sources.isEmpty()) {
             mixed_frame = mixMultipleSources(sources, sources_types_);
+            if (mixed_frame) {
+                emitted_samples = mixed_frame->samples;
+            }
         } else {
-            // 🔧 修复：所有源都为空，生成静音帧（带时间戳）
-            mixed_frame = std::make_shared<AudioFrame>(48000, 2, 1024);
+            int fallback_sample_rate = sample_rate_ > 0 ? sample_rate_ : 48000;
+            int fallback_channels = channels_ > 0 ? channels_ : 2;
+            int fallback_samples = fallback_sample_rate / 100;  // ~10 ms
+            if (fallback_samples <= 0) {
+                fallback_samples = 480;
+            }
+
+            mixed_frame = std::make_shared<AudioFrame>(
+                fallback_sample_rate, fallback_channels, fallback_samples);
             if (mixed_frame && mixed_frame->data) {
-                std::fill_n(mixed_frame->data, 1024 * 2, 0.0f);
-                // 🔧 时间戳对齐：使用系统时间
+                std::fill_n(
+                    mixed_frame->data,
+                    mixed_frame->samples * mixed_frame->channels,
+                    0.0f);
                 int64_t current_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
                 mixed_frame->timestamp_ms = current_time_ms;
+                emitted_samples = mixed_frame->samples;
             }
         }
 
-        // 发送混音结果
         if (mixed_frame && mixed_frame->data) {
-            // 转换为 QByteArray
             int data_size = mixed_frame->samples * mixed_frame->channels * sizeof(float);
             QByteArray data(reinterpret_cast<const char*>(mixed_frame->data), data_size);
-
-            // 发送信号
             emit audio_data_ready(data, mixed_frame->timestamp_ms);
         }
 
-        frames_produced++;
+        int pacing_sample_rate = sample_rate_ > 0 ? sample_rate_ : 48000;
+        if (emitted_samples <= 0) {
+            emitted_samples = pacing_sample_rate / 100;  // ~10 ms
+        }
+        if (emitted_samples <= 0) {
+            emitted_samples = 480;
+        }
 
-        // 漂移补偿睡眠：计算下一帧的目标时刻，决定睡眠多久。
-        // 目标时刻 = 线程启动时间 + 帧计数 × 帧周期
-        // 帧周期 = frame_samples_ / sample_rate_ = 1024 / 48000 ≈ 21333 us
-        // 与固定 sleep_for(21ms) 的区别：
-        //   固定睡眠：每帧 ~21.5ms（含调度开销），10s 内欠产 ~3840 samples = -80ms 漂移。
-        //   动态睡眠：若本帧偏晚（sleep_us < 0），立即执行下一帧补回；
-        //             若偏早（sleep_us > 0），精确等待到目标时刻。
-        {
-            constexpr int64_t FRAME_PERIOD_US =
-                (int64_t(1024) * 1000000LL) / 48000LL;  // = 21333 us (严格按 1024/48kHz)
+        next_target_us += (static_cast<int64_t>(emitted_samples) * 1000000LL) / pacing_sample_rate;
 
-            auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - thread_epoch).count();
-            int64_t next_target_us = frames_produced * FRAME_PERIOD_US;
-            int64_t sleep_us = next_target_us - now_us;
-
-            if (sleep_us > 1000) {
-                // 超前超过 1ms：精确睡眠到目标时刻
-                std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
-            }
-            // sleep_us <= 1000（含负值）：已落后或刚好，立即执行下一帧追赶
+        auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - thread_epoch).count();
+        int64_t sleep_us = next_target_us - now_us;
+        if (sleep_us > 1000) {
+            std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
         }
     }
 

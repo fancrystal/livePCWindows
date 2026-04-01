@@ -33,6 +33,8 @@ public:
     // 使用新配置重新初始化编码器
     ErrorCode reinitialize_video_encoder(const VideoEncoderConfig& config);
     ErrorCode reinitialize_audio_encoder(const AudioEncoderConfig& config);
+    ErrorCode ensure_video_encoder_initialized();
+    ErrorCode shutdown_video_encoder();
     
     ErrorCode shutdown();
     
@@ -74,6 +76,8 @@ public:
     AudioEncoder* get_audio_encoder() const;
 
 private:
+    ErrorCode create_video_encoder_locked(const VideoEncoderConfig& config);
+
     // Protect encoder reinit vs encode on background threads.
     // Without this, fast resolution switches can reinitialize while encoder threads
     // are encoding, causing use-after-free inside avcodec.

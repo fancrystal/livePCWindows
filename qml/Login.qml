@@ -293,6 +293,38 @@ Rectangle {
                     localStreamExpanded = !localStreamExpanded
                 }
             }
+
+            // 清理缓存按钮
+            Button {
+                id: clearCacheBtn
+                height: 32
+                Layout.preferredWidth: parent.width * 0.9
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 4
+
+                background: Rectangle {
+                    radius: 4
+                    color: Qt.rgba(1,1,1,0.08)
+                    border.width: 1
+                    border.color: Qt.rgba(1,1,1,0.15)
+                }
+
+                contentItem: Text {
+                    text: "清理缓存"
+                    color: Qt.rgba(1,1,1,0.7)
+                    font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                onClicked: {
+                    if (typeof loginWindow !== 'undefined' && loginWindow.qmlClearCache) {
+                        var result = loginWindow.qmlClearCache()
+                        cacheResultPopup.message = result
+                        cacheResultPopup.visible = true
+                    }
+                }
+            }
         }
     }
 
@@ -522,6 +554,62 @@ Rectangle {
             loginStatus = "正在进入推流..."
             statusText.text = "正在进入推流..."
             statusText.color = "#4aa6ff"
+        }
+
+    }
+
+    // 清理缓存结果弹窗
+    Rectangle {
+        id: cacheResultPopup
+        property string message: ""
+
+        visible: false
+        anchors.centerIn: parent
+        width: 280
+        height: 120
+        radius: 12
+        color: Qt.rgba(0.06, 0.02, 0.04, 0.96)
+        border.width: 1
+        border.color: Qt.rgba(1, 1, 1, 0.15)
+        z: 100
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 16
+
+            Text {
+                text: cacheResultPopup.message
+                color: "white"
+                font.pixelSize: 13
+                Layout.alignment: Qt.AlignHCenter
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Button {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 80
+                height: 30
+
+                background: Rectangle {
+                    radius: 4
+                    color: Qt.rgba(1, 1, 1, 0.12)
+                    border.width: 1
+                    border.color: Qt.rgba(1, 1, 1, 0.2)
+                }
+
+                contentItem: Text {
+                    text: "确定"
+                    color: "white"
+                    font.pixelSize: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                onClicked: cacheResultPopup.visible = false
+            }
         }
     }
 

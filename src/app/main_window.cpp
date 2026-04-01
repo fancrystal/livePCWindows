@@ -88,6 +88,15 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow) {
     ui->setupUi(this);
 
+    // 最早加载持久化配置，后续所有初始化都从 app_settings_ 读取
+    app_settings_.load();
+    canvas_config_ = app_settings_.canvas;
+    is_portrait_mode_ = (canvas_config_.get_width() < canvas_config_.get_height());
+
+    // 注册设置观察者
+    settings_applier_ = std::make_unique<SettingsApplier>(this);
+    app_settings_.add_observer(settings_applier_.get());
+
     // 加载QSS样式文件（仅应用于主窗口）
     QFile qssFile(":/resources/live_companion_style.qss");
     if (qssFile.open(QFile::ReadOnly | QFile::Text)) {
@@ -1492,20 +1501,9 @@ void MainWindow::initialize_modules() {
 
     video_engine_->set_current_scene(scene_manager_->get_current_scene());
 
-    VideoEncoderConfig video_config;
-    // 使用当前画布配置的分辨率初始化编码器
-    video_config.width = canvas_config_.get_width();
-    video_config.height = canvas_config_.get_height();
-    video_config.fps = 30;
-    video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏适当降低码率
-    video_config.gop = 60; // Reduce GOP size for faster keyframe interval (2 seconds at 30fps)
-    video_config.b_frames_enabled = false;
-    {
-        QSettings s("LiveAssistant", "Settings");
-        video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
-    }
-    LOG_INFO(QString("Initializing video encoder: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
-    encoder_->initialize_video_encoder(video_config);
+    VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
+    LOG_INFO(QString("Preparing deferred video encoder config: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
+    encoder_->reinitialize_video_encoder(video_config);
 
     // 使用音频引擎的实际采样率和声道数（设备原生格式）
     AudioEncoderConfig audio_config;
@@ -1577,50 +1575,37 @@ void MainWindow::setup_ui_connections() {
         }
 
         SettingsPanel dlg(this, defaultTab);
-        
-        // 设置视频配置
-        dlg.set_video_config(encoder_->get_video_config());
-        
-        // 设置音频配置
-        dlg.set_audio_config(encoder_->get_audio_config());
-        
-        // 设置麦克风列表
-        dlg.set_available_microphones(audio_engine_->get_available_microphones(), 
-                                       audio_engine_->get_selected_microphone_id());
-        
+
+        // 从 app_settings_ 填充视频配置（canvas 为分辨率权威来源）
+        dlg.set_video_config(build_video_config_from_settings(app_settings_));
+
+        // 从 app_settings_ 填充音频配置（合并 encoder_config 与实际音量）
+        {
+            AudioEncoderConfig audio_for_dlg = app_settings_.audio.encoder_config;
+            audio_for_dlg.mic_volume     = app_settings_.audio.mic_volume;
+            audio_for_dlg.speaker_volume = app_settings_.audio.speaker_volume;
+            dlg.set_audio_config(audio_for_dlg);
+        }
+
+        // 设置麦克风列表（设备枚举仍从引擎获取，selected 以 app_settings_ 为准）
+        dlg.set_available_microphones(audio_engine_->get_available_microphones(),
+                                       app_settings_.audio.microphone_device_id);
+
         // 设置扬声器列表
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
-                                    audio_engine_->get_selected_speaker_id());
-        
+                                    app_settings_.audio.speaker_device_id);
+
         // 设置摄像头列表
         if (video_engine_) {
             dlg.set_available_cameras(video_engine_->get_available_camera_choices());
             dlg.set_video_engine(video_engine_);
 
-            // 获取当前摄像头配置
-            std::string current_camera_device_id;  // 原始设备ID
-            std::string current_resolution = video_engine_->get_camera_resolution();
-            int current_fps = video_engine_->get_camera_fps();
-            bool current_mirror = video_engine_->get_camera_mirror();
+            // 摄像头实际分辨率/帧率从引擎读（可能被外部改变），mirror 从 app_settings_ 读
+            std::string current_camera_device_id = app_settings_.camera.device_id;
+            std::string current_resolution       = video_engine_->get_camera_resolution();
+            int         current_fps              = video_engine_->get_camera_fps();
+            bool        current_mirror           = app_settings_.camera.mirror;
 
-            // 从当前场景中获取摄像头信息
-            if (scene_manager_ && scene_manager_->get_current_scene()) {
-                auto scene = scene_manager_->get_current_scene();
-                auto items = scene->get_all_scene_items();
-                for (const auto& item : items) {
-                    if (item && item->get_source() &&
-                        QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
-                        // 获取原始设备ID（用于匹配下拉框）
-                        current_camera_device_id = item->get_device_id();
-                        // 从 SceneItem 的 Transform 中获取镜像状态
-                        auto transform = item->get_transform();
-                        current_mirror = transform.mirror;
-                        break;
-                    }
-                }
-            }
-
-            // 设置当前摄像头配置
             dlg.set_camera_config(current_camera_device_id, current_resolution, current_fps, current_mirror);
         }
 
@@ -2139,13 +2124,10 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
             insert_video_timer_->start(33);  // ~30fps
             LOG_INFO("[INSERT_VIDEO] Frame sync timer started at 30fps");
 
-            // 设置混音模式：麦克风 + 插播音频
             if (audio_engine_) {
-                audio_engine_->setMixMode(AudioMixMode::MIC_MEDIA);
                 audio_engine_->set_media_volume(0.7f);  // 默认插播音量为70%
-
-                LOG_INFO("Audio mix mode set to MIC_MEDIA");
             }
+            update_audio_mix_mode();
 
             LOG_INFO("Insert video playback started: " + fileItem->fileName.toStdString());
 
@@ -2219,16 +2201,14 @@ void MainWindow::stopInsertVideoPlayback() {
     current_insert_video_file_id_.clear();
     is_insert_video_playing_ = false;
 
-    // 恢复混音模式：只用麦克风
     if (audio_engine_) {
-        audio_engine_->setMixMode(AudioMixMode::MIC_ONLY);
         // 注销插播音频源回调
         if (!current_insert_video_file_id_.isEmpty()) {
             QString callbackId = QString("insert_video_%1").arg(current_insert_video_file_id_);
             audio_engine_->unregisterAudioSource(callbackId);
         }
-        LOG_INFO("Audio mix mode restored to MIC_ONLY");
     }
+    update_audio_mix_mode();
 
     // 更新UI
     sync_scene_to_compositor();
@@ -3492,35 +3472,38 @@ void MainWindow::show_scene_item_settings(int index) {
 
         SettingsPanel dlg(this, SettingsTab::Camera);
 
-        // 设置视频配置
-        dlg.set_video_config(encoder_->get_video_config());
+        // 从 app_settings_ 填充视频配置
+        dlg.set_video_config(build_video_config_from_settings(app_settings_));
 
-        // 设置音频配置
-        dlg.set_audio_config(encoder_->get_audio_config());
+        // 从 app_settings_ 填充音频配置
+        {
+            AudioEncoderConfig audio_for_dlg = app_settings_.audio.encoder_config;
+            audio_for_dlg.mic_volume     = app_settings_.audio.mic_volume;
+            audio_for_dlg.speaker_volume = app_settings_.audio.speaker_volume;
+            dlg.set_audio_config(audio_for_dlg);
+        }
 
         // 设置麦克风列表
         dlg.set_available_microphones(audio_engine_->get_available_microphones(),
-                                       audio_engine_->get_selected_microphone_id());
+                                       app_settings_.audio.microphone_device_id);
 
         // 设置扬声器列表
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
-                                    audio_engine_->get_selected_speaker_id());
+                                    app_settings_.audio.speaker_device_id);
 
         // 设置摄像头列表
-        auto camera_choices = video_engine_->get_available_camera_choices();
-        dlg.set_available_cameras(camera_choices);
+        dlg.set_available_cameras(video_engine_->get_available_camera_choices());
 
-        // 获取当前摄像头配置
+        // 摄像头分辨率/帧率从引擎读，mirror 和 device_id 从 app_settings_ 读
         std::string current_resolution = video_engine_->get_camera_resolution();
-        int current_fps = video_engine_->get_camera_fps();
-        bool current_mirror = video_engine_->get_camera_mirror();
+        int         current_fps        = video_engine_->get_camera_fps();
+        bool        current_mirror     = app_settings_.camera.mirror;
+        std::string current_device_id  = app_settings_.camera.device_id;
+        if (current_device_id.empty()) {
+            current_device_id = item->get_device_id();
+        }
 
-        // 从 SceneItem 的 Transform 中读取镜像状态，以及获取原始设备ID
-        auto current_transform = item->get_transform();
-        current_mirror = current_transform.mirror;
-        std::string current_device_id = item->get_device_id();  // 原始设备ID
-
-        // 设置摄像头配置（使用当前的实际配置）
+        // 设置摄像头配置
         dlg.set_camera_config(current_device_id, current_resolution, current_fps, current_mirror);
 
         if (dlg.exec() == QDialog::Accepted) {
@@ -3604,101 +3587,122 @@ void MainWindow::show_scene_item_settings(int index) {
     }
 }
 
-void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
-    // Apply video settings
-    auto new_v = dlg.get_video_config();
+void MainWindow::SettingsApplier::on_settings_changed(const AppSettings& s, SettingsSection changed) {
+    MainWindow* w = owner_;
 
-    // 同步更新画布配置（分辨率改变时）
-    if (canvas_config_.get_width() != new_v.width || canvas_config_.get_height() != new_v.height) {
-        LOG_INFO(QString("分辨率改变: %1x%2 -> %3x%4")
-            .arg(canvas_config_.get_width()).arg(canvas_config_.get_height())
-            .arg(new_v.width).arg(new_v.height).toStdString());
-
-        // 更新画布配置
-        if (new_v.width > new_v.height) {
-            // 横屏模式
-            canvas_config_ = CanvasConfig(CanvasConfig::DisplayMode::LANDSCAPE_16_9);
-        } else {
-            // 竖屏模式
-            canvas_config_ = CanvasConfig(CanvasConfig::DisplayMode::PORTRAIT_9_16);
+    if (has_section(changed, SettingsSection::Video)) {
+        VideoEncoderConfig video_config = MainWindow::build_video_config_from_settings(s);
+        if (w->encoder_) {
+            w->encoder_->reinitialize_video_encoder(video_config);
         }
-        // 手动设置为用户选择的分辨率
-        // 注意：CanvasConfig 会根据 aspect ratio 自动计算，这里我们直接设置
-        is_portrait_mode_ = (new_v.width < new_v.height);
-
-        // 更新画布 widget
-        if (canvas_widget_) {
-            canvas_widget_->set_canvas_config(canvas_config_);
+        if (w->encoder_bridge_) {
+            w->encoder_bridge_->set_resolution(video_config.width, video_config.height);
+            w->encoder_bridge_->set_fps(video_config.fps);
         }
     }
 
-    // Apply audio settings
-    auto new_a = dlg.get_audio_config();
-    // 保留音频码率配置，允许用户在设置面板中修改
-    // new_a.bitrate 从设置面板获取，使用用户设置的值
-
-    const std::string mic_id = dlg.get_selected_microphone_id();
-    const std::string speaker_id = dlg.get_selected_speaker_id();
-    float mic_volume = dlg.get_microphone_volume();
-    float speaker_volume = dlg.get_speaker_volume();
-
-    // Apply camera mirror setting
-    bool mirror = dlg.is_camera_mirror();
-    if (video_engine_) {
-        video_engine_->set_camera_mirror(mirror);
-    }
-
-    // Update camera SceneItem's Transform mirror setting
-    if (scene_manager_ && scene_manager_->get_current_scene()) {
-        auto scene = scene_manager_->get_current_scene();
-        auto items = scene->get_all_scene_items();
-        for (auto& item : items) {
-            if (item && item->get_source() &&
-                QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
-                // Update the Transform with new mirror setting
-                Transform tr = item->get_transform();
-                tr.mirror = mirror;
-                scene->set_transform(item, tr);
-                break; // Only update the first camera item
+    if (has_section(changed, SettingsSection::Canvas)) {
+        w->canvas_config_ = s.canvas;
+        w->is_portrait_mode_ = (s.canvas.get_width() < s.canvas.get_height());
+        if (w->canvas_widget_) {
+            w->canvas_widget_->set_canvas_config(s.canvas);
+        }
+        // 分辨率变更也需要重新初始化视频编码器
+        if (!has_section(changed, SettingsSection::Video)) {
+            VideoEncoderConfig video_config = MainWindow::build_video_config_from_settings(s);
+            if (w->encoder_) {
+                w->encoder_->reinitialize_video_encoder(video_config);
+            }
+            if (w->encoder_bridge_) {
+                w->encoder_bridge_->set_resolution(video_config.width, video_config.height);
             }
         }
     }
 
-    // Reinit audio engine/encoder
-    audio_engine_->initialize(new_a.sample_rate, new_a.channels);
-    audio_engine_->set_microphone_volume(mic_volume);
-    audio_engine_->set_speaker_volume(speaker_volume);
-    encoder_->reinitialize_audio_encoder(new_a);
-
-    // 保存编码方式偏好
-    {
-        QSettings s("LiveAssistant", "Settings");
-        s.setValue("preferHwEncoder", new_v.prefer_hw);
+    if (has_section(changed, SettingsSection::Audio)) {
+        const auto& a = s.audio;
+        if (w->audio_engine_) {
+            w->audio_engine_->initialize(a.encoder_config.sample_rate, a.encoder_config.channels);
+            w->audio_engine_->set_microphone_volume(a.mic_volume);
+            w->audio_engine_->set_speaker_volume(a.speaker_volume);
+            if (!a.microphone_device_id.empty()) {
+                w->audio_engine_->select_microphone(a.microphone_device_id);
+            }
+            if (!a.speaker_device_id.empty()) {
+                w->audio_engine_->select_speaker(a.speaker_device_id);
+            }
+        }
+        if (w->encoder_) {
+            w->encoder_->reinitialize_audio_encoder(a.encoder_config);
+        }
     }
 
-    // Reinit video encoder + bridge settings
-    encoder_->reinitialize_video_encoder(new_v);
-    if (encoder_bridge_) {
-        encoder_bridge_->set_resolution(new_v.width, new_v.height);
-        encoder_bridge_->set_fps(new_v.fps);
+    if (has_section(changed, SettingsSection::Camera)) {
+        if (w->video_engine_) {
+            w->video_engine_->set_camera_mirror(s.camera.mirror);
+        }
+        // 更新 Scene 中摄像头 SceneItem 的 Transform.mirror
+        if (w->scene_manager_ && w->scene_manager_->get_current_scene()) {
+            auto scene = w->scene_manager_->get_current_scene();
+            for (auto& item : scene->get_all_scene_items()) {
+                if (item && item->get_source() &&
+                    QString::fromStdString(item->get_source()->get_id()).startsWith("camera_")) {
+                    Transform tr = item->get_transform();
+                    tr.mirror = s.camera.mirror;
+                    scene->set_transform(item, tr);
+                    break;
+                }
+            }
+        }
     }
 
-    // Select microphone
-    if (!mic_id.empty()) {
-        audio_engine_->select_microphone(mic_id);
+    if (has_section(changed, SettingsSection::UIState)) {
+        w->exit_preference_ = s.ui_state.exit_preference;
+    }
+}
+
+void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
+    SettingsSection changed = SettingsSection::None;
+
+    // --- 视频分区 ---
+    app_settings_.video = dlg.get_video_config();
+    changed |= SettingsSection::Video;
+
+    // --- 画布分区（分辨率改变时） ---
+    const auto new_v = app_settings_.video;
+    if (canvas_config_.get_width() != new_v.width || canvas_config_.get_height() != new_v.height) {
+        LOG_INFO(QString("分辨率改变: %1x%2 -> %3x%4")
+            .arg(canvas_config_.get_width()).arg(canvas_config_.get_height())
+            .arg(new_v.width).arg(new_v.height).toStdString());
+        app_settings_.canvas = (new_v.width >= new_v.height)
+            ? CanvasConfig(CanvasConfig::DisplayMode::LANDSCAPE_16_9)
+            : CanvasConfig(CanvasConfig::DisplayMode::PORTRAIT_9_16);
+        changed |= SettingsSection::Canvas;
     }
 
-    // Select speaker
-    if (!speaker_id.empty()) {
-        audio_engine_->select_speaker(speaker_id);
-    }
+    // --- 音频分区 ---
+    app_settings_.audio.encoder_config      = dlg.get_audio_config();
+    app_settings_.audio.mic_volume          = dlg.get_microphone_volume();
+    app_settings_.audio.speaker_volume      = dlg.get_speaker_volume();
+    app_settings_.audio.microphone_device_id = dlg.get_selected_microphone_id();
+    app_settings_.audio.speaker_device_id   = dlg.get_selected_speaker_id();
+    changed |= SettingsSection::Audio;
 
-    // If pushing, require restart to keep header/codecpar consistent
+    // --- 摄像头分区 ---
+    app_settings_.camera.mirror     = dlg.is_camera_mirror();
+    app_settings_.camera.device_id  = dlg.get_selected_camera_id();
+    app_settings_.camera.resolution = dlg.get_camera_resolution();
+    app_settings_.camera.fps        = dlg.get_camera_fps();
+    changed |= SettingsSection::Camera;
+
+    // 持久化并通知观察者
+    app_settings_.save(changed);
+    app_settings_.notify(changed);
+
+    // 推流中则提示重启（UI 逻辑留在 MainWindow）
     if (stream_pusher_ && stream_pusher_->is_pushing()) {
         QMessageBox::information(this, "提示", "参数已修改，将重启推流使其生效");
-        if (encoder_bridge_) {
-            encoder_bridge_->stop();
-        }
+        if (encoder_bridge_) encoder_bridge_->stop();
         stream_pusher_->stop();
         streams_registered_ = false;
     }
@@ -3886,6 +3890,7 @@ void MainWindow::toggle_microphone() {
     if (audio_engine_) {
         audio_engine_->set_microphone_mute(!microphone_enabled_);
     }
+    update_audio_mix_mode();
     update_microphone_ui();
     saveAudioVolumeSettings();
     LOG_INFO(std::string("Microphone ") + (microphone_enabled_ ? "enabled" : "disabled"));
@@ -3964,6 +3969,7 @@ void MainWindow::toggle_speaker() {
         // 控制扬声器采集开关（而不是静音）
         audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
     }
+    update_audio_mix_mode();
     update_speaker_ui();
     saveAudioVolumeSettings();
     LOG_INFO(std::string("Speaker capture ") + (speaker_enabled_ ? "enabled" : "disabled"));
@@ -4003,6 +4009,41 @@ void MainWindow::update_speaker_ui() {
             ui->label_speakerLevel->setText(QString::number(volume) + "%");
         }
     }
+}
+
+void MainWindow::update_audio_mix_mode() {
+    if (!audio_engine_) {
+        return;
+    }
+
+    const bool include_mic = microphone_enabled_;
+    const bool include_speaker =
+        speaker_enabled_ &&
+        audio_engine_->get_audio_capturer() &&
+        audio_engine_->get_audio_capturer()->is_speaker_capture_enabled();
+    const bool include_media = is_insert_video_playing_;
+
+    AudioMixMode mode = AudioMixMode::MIC_ONLY;
+    if (include_mic && include_speaker && include_media) {
+        mode = AudioMixMode::MIC_SPEAKER_MEDIA;
+    } else if (include_mic && include_speaker) {
+        mode = AudioMixMode::MIC_SPEAKER;
+    } else if (include_mic && include_media) {
+        mode = AudioMixMode::MIC_MEDIA;
+    } else if (include_speaker && include_media) {
+        mode = AudioMixMode::SPEAKER_MEDIA;
+    } else if (include_speaker) {
+        mode = AudioMixMode::SPEAKER_ONLY;
+    } else if (include_media) {
+        mode = AudioMixMode::MEDIA_ONLY;
+    }
+
+    audio_engine_->setMixMode(mode);
+    LOG_INFO("[MainWindow] Audio mix mode updated: mic=" +
+             std::string(include_mic ? "on" : "off") +
+             ", speaker=" + std::string(include_speaker ? "on" : "off") +
+             ", media=" + std::string(include_media ? "on" : "off") +
+             ", mode=" + std::to_string(static_cast<int>(mode)));
 }
 
 void MainWindow::show_speaker_menu(const QPoint& pos) {
@@ -4133,25 +4174,13 @@ void MainWindow::set_canvas_config(const CanvasConfig& config) {
     // 更新编码器配置（仅在非初始化阶段，即canvas_widget_已存在时）
     // 避免在setup_canvas_widget中重复初始化编码器
     if (encoder_ && encoder_bridge_ && canvasContainer_) {
-        int width = config.get_width();
-        int height = config.get_height();
-        LOG_INFO(QString("Reinitializing encoder with resolution: %1x%2").arg(width).arg(height).toStdString());
+        LOG_INFO(QString("Reinitializing encoder with resolution: %1x%2")
+                 .arg(config.get_width()).arg(config.get_height()).toStdString());
 
-        // 重新初始化视频编码器
-        VideoEncoderConfig video_config;
-        video_config.width = width;
-        video_config.height = height;
-        video_config.fps = 30;
-        video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;
-        video_config.gop = 60;
-        video_config.b_frames_enabled = false;
-        {
-            QSettings s("LiveAssistant", "Settings");
-            video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
-        }
-
+        app_settings_.canvas = config;
+        VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
         encoder_->reinitialize_video_encoder(video_config);
-        encoder_bridge_->set_resolution(width, height);
+        encoder_bridge_->set_resolution(config.get_width(), config.get_height());
     } else {
         LOG_INFO("Skipping encoder reinitialization (initialization phase)");
     }
@@ -4319,18 +4348,8 @@ void MainWindow::apply_canvas_config_change() {
     // 更新编码器配置（如果不在推流中）
     if (encoder_ && encoder_bridge_ && !encoder_bridge_->is_streaming()) {
         LOG_INFO("Reinitializing video encoder");
-        VideoEncoderConfig video_config;
-        video_config.width = width;
-        video_config.height = height;
-        video_config.fps = 30;
-        video_config.bitrate = is_portrait_mode_ ? 2000000 : 2500000;  // 竖屏可以适当降低码率
-        video_config.gop = 60;
-        video_config.b_frames_enabled = false;
-        {
-            QSettings s("LiveAssistant", "Settings");
-            video_config.prefer_hw = s.value("preferHwEncoder", true).toBool();
-        }
-
+        app_settings_.canvas = canvas_config_;
+        VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
         encoder_->reinitialize_video_encoder(video_config);
         LOG_INFO("Video encoder reinitialized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
                  " mode: " + std::to_string(width) + "x" + std::to_string(height));
@@ -4789,25 +4808,24 @@ void MainWindow::handleExit() {
 }
 
 void MainWindow::loadExitPreference() {
-    QSettings settings("LiveAssistant", "Settings");
-    exit_preference_ = settings.value("exitPreference", 0).toInt();
+    exit_preference_ = app_settings_.ui_state.exit_preference;
     LOG_INFO("Loaded exit preference: " + std::to_string(exit_preference_));
 }
 
 void MainWindow::saveExitPreference(int preference) {
     exit_preference_ = preference;
-    QSettings settings("LiveAssistant", "Settings");
-    settings.setValue("exitPreference", preference);
+    app_settings_.ui_state.exit_preference = preference;
+    app_settings_.save(SettingsSection::UIState);
     LOG_INFO("Saved exit preference: " + std::to_string(preference));
 }
 
 void MainWindow::saveAudioVolumeSettings() {
-    QSettings settings("LiveAssistant", "Settings");
     if (audio_engine_) {
-        settings.setValue("microphoneVolume", audio_engine_->get_microphone_volume());
-        settings.setValue("speakerVolume", audio_engine_->get_speaker_volume());
-        settings.setValue("microphoneEnabled", microphone_enabled_);
-        settings.setValue("speakerEnabled", speaker_enabled_);
+        app_settings_.audio.mic_volume     = audio_engine_->get_microphone_volume();
+        app_settings_.audio.speaker_volume = audio_engine_->get_speaker_volume();
+        app_settings_.audio.mic_enabled    = microphone_enabled_;
+        app_settings_.audio.speaker_enabled = speaker_enabled_;
+        app_settings_.save(SettingsSection::Audio);
         LOG_INFO("Saved audio volume settings");
     }
 }
@@ -4815,42 +4833,45 @@ void MainWindow::saveAudioVolumeSettings() {
 void MainWindow::loadAudioVolumeSettings() {
     QSettings settings("LiveAssistant", "Settings");
 
-    // 检查是否有保存的音量配置
-    bool hasSavedMicVolume = settings.contains("microphoneVolume");
-    bool hasSavedSpeakerVolume = settings.contains("speakerVolume");
-
     float micVolume;
     float speakerVolume;
 
-    if (hasSavedMicVolume || hasSavedSpeakerVolume) {
-        // 有保存的配置，使用保存的值
-        micVolume = settings.value("microphoneVolume", 0.4f).toFloat();
-        speakerVolume = settings.value("speakerVolume", 0.4f).toFloat();
-        LOG_INFO("Using saved volume settings");
-    } else {
-        // 没有保存的配置，使用系统当前的音量设置
+    // 首次启动没有保存的值时，使用系统当前音量作为初始值
+    if (!settings.contains("audio/micVolume")) {
         if (audio_engine_) {
-            micVolume = audio_engine_->get_microphone_volume();
+            micVolume    = audio_engine_->get_microphone_volume();
             speakerVolume = audio_engine_->get_speaker_volume();
         } else {
-            // 默认40%
-            micVolume = 0.4f;
+            micVolume    = 0.4f;
             speakerVolume = 0.4f;
         }
         LOG_INFO("No saved volume settings, using system current volume");
+    } else {
+        micVolume    = app_settings_.audio.mic_volume;
+        speakerVolume = app_settings_.audio.speaker_volume;
+        LOG_INFO("Using saved volume settings");
     }
 
-    // 加载静音状态（默认开启）
-    microphone_enabled_ = settings.value("microphoneEnabled", true).toBool();
-    speaker_enabled_ = settings.value("speakerEnabled", true).toBool();
+    microphone_enabled_ = app_settings_.audio.mic_enabled;
+    speaker_enabled_    = app_settings_.audio.speaker_enabled;
 
-    // 应用到音频引擎
+    // 同步回 app_settings_（首次启动时写入系统音量）
+    app_settings_.audio.mic_volume      = micVolume;
+    app_settings_.audio.speaker_volume  = speakerVolume;
+    app_settings_.audio.mic_enabled     = microphone_enabled_;
+    app_settings_.audio.speaker_enabled = speaker_enabled_;
+
     if (audio_engine_) {
         audio_engine_->set_microphone_volume(micVolume);
         audio_engine_->set_speaker_volume(speakerVolume);
         audio_engine_->set_microphone_mute(!microphone_enabled_);
         audio_engine_->set_speaker_mute(!speaker_enabled_);
+        if (audio_engine_->get_audio_capturer()) {
+            audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
+        }
     }
+
+    update_audio_mix_mode();
 
     LOG_INFO("Loaded audio volume settings: mic=" + std::to_string(static_cast<int>(micVolume * 100)) +
              "%, speaker=" + std::to_string(static_cast<int>(speakerVolume * 100)) + "%");
@@ -4858,6 +4879,21 @@ void MainWindow::loadAudioVolumeSettings() {
 
 void MainWindow::playVolumeFeedbackSound() {
     // 静音处理，不再播放音量反馈声音
+}
+
+// static
+VideoEncoderConfig MainWindow::build_video_config_from_settings(const AppSettings& s) {
+    VideoEncoderConfig cfg = s.video;
+    // canvas 是分辨率的权威来源，覆盖 video 里的 width/height
+    cfg.width  = s.canvas.get_width();
+    cfg.height = s.canvas.get_height();
+    // 竖屏时码率上限 2Mbps
+    if (cfg.height > cfg.width && cfg.bitrate > 2000000) {
+        cfg.bitrate = 2000000;
+    }
+    cfg.gop = cfg.fps * 2;
+    cfg.b_frames_enabled = false;
+    return cfg;
 }
 
 } // namespace live_assistant

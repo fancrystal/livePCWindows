@@ -14,6 +14,9 @@
 #include <QMouseEvent>
 #include <QTimer>
 #include <QScreen>
+#include <QDir>
+#include <QStandardPaths>
+#include <QSettings>
 namespace live_assistant {
 
 LoginWindow::LoginWindow(QWidget *parent) :
@@ -195,6 +198,49 @@ void LoginWindow::qmlStartLocalStream(const QString& rtmpUrl) {
     is_local_stream_mode_ = true;
 
     emit local_stream_success(rtmpUrl);
+}
+
+QString LoginWindow::qmlClearCache() {
+    LOG_INFO("qmlClearCache: start");
+    int total = 0;
+
+    // 辅助 lambda：删除目录下匹配的文件，返回删除数量
+    auto removeFiles = [&](const QString& dirPath, const QStringList& filters) {
+        QDir dir(dirPath);
+        if (!dir.exists()) return;
+        const auto files = dir.entryInfoList(filters, QDir::Files);
+        for (const QFileInfo& fi : files) {
+            if (QFile::remove(fi.absoluteFilePath())) {
+                ++total;
+            }
+        }
+        LOG_INFO("qmlClearCache: removed " + std::to_string(files.size()) +
+                 " file(s) from " + dirPath.toStdString());
+    };
+
+    // 1. 清理 AppSettings（推流/编码/音频/摄像头等持久化配置）
+    QSettings appSettings("LiveAssistant", "Settings");
+    appSettings.clear();
+    LOG_INFO("qmlClearCache: AppSettings cleared");
+
+    // 2. 清理日志文件
+    // 日志使用相对路径 "applogs/"，基准是进程工作目录（开发时为 build_vs2019/，发布时为 exe 目录）
+    // 两个路径都尝试，确保开发和生产环境都能命中
+    removeFiles(QDir::currentPath() + "/applogs",        {"*.log"});
+    removeFiles(QApplication::applicationDirPath() + "/applogs", {"*.log"});
+
+    // 3. 清理插播视频缓存（QStandardPaths::CacheLocation）
+    QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    removeFiles(cacheRoot, {"*.mp4", "*.flv", "*.ts", "*.m3u8"});
+
+    // 4. 清理场景配置（scenes_*.json），视频源布局存在这里
+    QString localDataDir  = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    QString appConfigDir  = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    removeFiles(localDataDir, {"scenes_*.json"});
+    removeFiles(appConfigDir, {"scenes_*.json"});
+
+    LOG_INFO("qmlClearCache: done, total files removed = " + std::to_string(total));
+    return QString("清理完成，共删除 %1 个文件").arg(total);
 }
 
 void LoginWindow::qmlSetStatus(const QString& status) {

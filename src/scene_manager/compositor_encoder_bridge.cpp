@@ -184,8 +184,6 @@ void CompositorEncoderBridge::start(int fps) {
 
     // 不再需要启动 QTimer，工作线程已经在运行
 
-    start_encoder_threads();
-
     LOG_INFO("CompositorEncoderBridge started with " + std::to_string(fps) + " fps, media_clock started");
 }
 
@@ -260,6 +258,13 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     if (encoder_) {
         AVCodecParameters* a_par = encoder_->get_audio_codec_parameters();
         AVRational a_tb = encoder_->get_audio_time_base();
+        ErrorCode video_init_result = encoder_->ensure_video_encoder_initialized();
+        if (video_init_result != ErrorCode::SUCCESS) {
+            if (a_par) avcodec_parameters_free(&a_par);
+            LOG_ERROR("[BRIDGE] Failed to initialize video encoder for streaming");
+            emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(video_init_result)));
+            return false;
+        }
         AVCodecParameters* v_par = encoder_->get_video_codec_parameters();
         AVRational v_tb = encoder_->get_video_time_base();
 
@@ -279,6 +284,7 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
         if (!a_par || !v_par || a_tb.den <= 0 || v_tb.den <= 0) {
             if (a_par) avcodec_parameters_free(&a_par);
             if (v_par) avcodec_parameters_free(&v_par);
+            encoder_->shutdown_video_encoder();
             LOG_ERROR("[BRIDGE] Audio/Video codec parameters unavailable or invalid, cannot start streaming");
             emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(ErrorCode::INVALID_STATE)));
             return false;
@@ -291,6 +297,7 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
         avcodec_parameters_free(&v_par);
 
         if (ra != ErrorCode::SUCCESS || rv != ErrorCode::SUCCESS) {
+            encoder_->shutdown_video_encoder();
             LOG_ERROR("[BRIDGE] Failed to register audio/video streams");
             emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(ErrorCode::INVALID_STATE)));
             return false;
@@ -340,10 +347,16 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     media_clock_.start();
     LOG_INFO("[BRIDGE] Media clock started");
 
+    start_encoder_threads();
+
     ErrorCode start_result = stream_pusher_->start();
     if (start_result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to start streaming to: " + url);
         emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(start_result)));
+        stop_encoder_threads();
+        if (encoder_) {
+            encoder_->shutdown_video_encoder();
+        }
         media_clock_.stop();
         return false;
     }
@@ -376,6 +389,10 @@ void CompositorEncoderBridge::stop_streaming() {
 
     if (stream_pusher_) {
         stream_pusher_->stop();
+    }
+
+    if (encoder_) {
+        encoder_->shutdown_video_encoder();
     }
 
     streaming_ = false;
@@ -450,7 +467,9 @@ void CompositorEncoderBridge::on_encode_timer() {
     // 🔧 异步编码架构：只捕获帧，加入编码队列
     // 编码在独立线程中进行，不阻塞定时器
     // ═══════════════════════════════════════════════════════════════
-    capture_and_queue_frame();
+    if (streaming_) {
+        capture_and_queue_frame();
+    }
 }
 
 void CompositorEncoderBridge::capture_and_queue_frame() {
