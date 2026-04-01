@@ -7,6 +7,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\add_material_dialog.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\app_settings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_capability_scanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -139,6 +142,9 @@
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_compositor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_nv12_copier.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\opencv_camera_capture_source.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -237,6 +243,9 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\add_material_dialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\app_settings.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_capability_scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -295,6 +304,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\settings_dialog.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\settings_observer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\share_settings_dialog.h">
@@ -370,6 +382,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_compositor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_nv12_copier.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_texture_ref.h">

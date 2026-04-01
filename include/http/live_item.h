@@ -66,8 +66,9 @@ struct InsertFileItem {
     QString getLocalCachePath() const {
         // 1. 获取系统推荐的缓存根目录
         QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-        // 2. 拼接自定义的fileName和路径，确保目录存在
-        QString cachePath = QDir::cleanPath(cacheRoot + "/" + fileName);
+        // 2. 使用 fileId + fileName 确保唯一性，避免同名文件冲突（如多个"竖屏.mp4"）
+        QString uniqueName = QString("%1_%2").arg(fileId).arg(fileName);
+        QString cachePath = QDir::cleanPath(cacheRoot + "/" + uniqueName);
         // 3. 确保目录存在（不存在则创建，避免写文件时因目录不存在失败）
         QDir().mkpath(QFileInfo(cachePath).absolutePath());
         return cachePath;

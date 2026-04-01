@@ -839,6 +839,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\add_material_dialog.cpp" />
+    <ClCompile Include="D:\work\project\LiveAssistant\src\app\app_settings.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_capability_scanner.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\camera_settings.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\app\config.cpp" />
@@ -883,6 +884,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_canvas_widget.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_color_converter.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_compositor.cpp" />
+    <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\gpu_nv12_copier.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\opencv_camera_capture_source.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\printwindow_capture_source.cpp" />
     <ClCompile Include="D:\work\project\LiveAssistant\src\scene_manager\scene_manager.cpp" />
@@ -912,6 +914,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\add_material_dialog.h" />
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\app_settings.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_capability_scanner.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\camera_settings.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\config.h" />
@@ -932,6 +935,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\screen_capture_selector.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\screen_share.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\settings_dialog.h" />
+    <ClInclude Include="D:\work\project\LiveAssistant\include\app\settings_observer.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\share_settings_dialog.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\circular_buffer.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\common\config_manager.h" />
@@ -957,6 +961,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_canvas_widget.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_color_converter.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_compositor.h" />
+    <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_nv12_copier.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\gpu_texture_ref.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\icapture_source.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\scene_manager\opencv_camera_capture_source.h" />
