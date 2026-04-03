@@ -907,6 +907,89 @@ ErrorCode H264Encoder::send_flush() {
     return ErrorCode::SUCCESS;
 }
 
+// ─── Annex-B → AVCC 包体归一化 ───────────────────────────────────────────────
+// QSV（Intel Quick Sync）即使设置了 AV_CODEC_FLAG_GLOBAL_HEADER，硬件层输出的
+// 包体仍携带 start code（Annex-B 字节流格式）。FLV/RTMP 要求 AVCC 格式（4 字节
+// 长度前缀），因此在编码器出口做一次统一转换，避免下游 muxer/pusher 各自处理。
+//
+// 转换规则：
+//   Annex-B:  [00 00 00 01][NAL data][00 00 00 01][NAL data]...
+//   AVCC:     [4字节大端长度][NAL data][4字节大端长度][NAL data]...
+// ─────────────────────────────────────────────────────────────────────────────
+static bool normalize_h264_packet_to_avcc(AVPacket* pkt)
+{
+    if (!pkt || !pkt->data || pkt->size < 4) return true;
+
+    const uint8_t* d = pkt->data;
+    // 如果首字节非零，肯定不是 Annex-B start code，直接跳过
+    if (d[0] != 0) return true;
+    // 4字节 start code: 00 00 00 01
+    bool is_annexb = (d[0] == 0 && d[1] == 0 && d[2] == 0 && d[3] == 1);
+    // 3字节 start code: 00 00 01（前面可能有 00 填充）
+    if (!is_annexb) is_annexb = (d[0] == 0 && d[1] == 0 && d[2] == 1);
+    if (!is_annexb) return true;  // 不是 Annex-B，无需转换
+
+    const uint8_t* src  = pkt->data;
+    const int      size = pkt->size;
+    std::vector<uint8_t> avcc;
+    avcc.reserve(size);
+
+    int i = 0;
+    int nal_count = 0;
+    while (i < size) {
+        // 找 start code
+        int sc_len = 0;
+        if (i + 3 < size && src[i]==0 && src[i+1]==0 && src[i+2]==0 && src[i+3]==1)
+            sc_len = 4;
+        else if (i + 2 < size && src[i]==0 && src[i+1]==0 && src[i+2]==1)
+            sc_len = 3;
+        else { ++i; continue; }
+
+        const int nal_start = i + sc_len;
+        if (nal_start >= size) break;
+
+        // 找下一个 start code 作为结束边界
+        int nal_end = size;
+        for (int j = nal_start; j < size - 2; ++j) {
+            if (src[j]==0 && src[j+1]==0) {
+                if (src[j+2] == 1) { nal_end = j; break; }
+                if (j + 3 < size && src[j+2]==0 && src[j+3]==1) { nal_end = j; break; }
+            }
+        }
+
+        int nal_size = nal_end - nal_start;
+        if (nal_size <= 0) { i = nal_end; continue; }
+
+        // 写 4 字节大端长度 + NAL 数据
+        avcc.push_back(static_cast<uint8_t>((nal_size >> 24) & 0xFF));
+        avcc.push_back(static_cast<uint8_t>((nal_size >> 16) & 0xFF));
+        avcc.push_back(static_cast<uint8_t>((nal_size >>  8) & 0xFF));
+        avcc.push_back(static_cast<uint8_t>( nal_size        & 0xFF));
+        avcc.insert(avcc.end(), src + nal_start, src + nal_end);
+        ++nal_count;
+        i = nal_end;
+    }
+
+    if (nal_count == 0 || avcc.empty()) return false;
+
+    // 保存 av_packet_unref 会清零的元数据
+    const int64_t saved_pts      = pkt->pts;
+    const int64_t saved_dts      = pkt->dts;
+    const int64_t saved_duration = pkt->duration;
+    const int      saved_flags   = pkt->flags;
+    const int      saved_sidx    = pkt->stream_index;
+
+    av_packet_unref(pkt);
+    if (av_new_packet(pkt, static_cast<int>(avcc.size())) < 0) return false;
+    memcpy(pkt->data, avcc.data(), avcc.size());
+    pkt->pts          = saved_pts;
+    pkt->dts          = saved_dts;
+    pkt->duration     = saved_duration;
+    pkt->flags        = saved_flags;
+    pkt->stream_index = saved_sidx;
+    return true;
+}
+
 ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
     packets.clear();
 
@@ -935,6 +1018,13 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
         if (av_packet_make_refcounted(pkt) < 0) {
             LOG_WARNING("av_packet_make_refcounted failed for received packet; proceeding but this may risk buffer lifetime issues");
         }
+
+        // QSV 硬件编码器输出可能带 Annex-B start code，在此归一化为 AVCC
+        //if (!normalize_h264_packet_to_avcc(pkt)) {
+        //    LOG_WARNING("[H264Encoder] Failed to normalize packet to AVCC, dropping");
+        //    av_packet_free(&pkt);
+        //    continue;
+        //}
 
         // 🔧 修复：强制第一帧为关键帧（IDR）
         // 即使 x264 参数设置了 forced-idr=1，编码器输出可能仍不包含关键帧标志

@@ -142,8 +142,28 @@ exit /b %1
 if %errorlevel% neq 0 goto :VCEnd</Command>
     </PreBuildEvent>
     <PostBuildEvent>
-      <Message>Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
+      <Message>Deploying Qt runtime files with windeployqt	Removing unused Qt3D/Quick3D runtime files from build output	Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
       <Command>setlocal
+C:\Qt\6.5.3\msvc2019_64\bin\windeployqt.exe --debug --no-3danimation --no-3dcore --no-3dextras --no-3dinput --no-3dlogic --no-3dquick --no-3dquickanimation --no-3dquickextras --no-3dquickinput --no-3dquickrender --no-3dquickscene2d --no-3drender --no-quick3d --no-quick3dassetimport --no-quick3dassetutils --no-quick3deffects --no-quick3dhelpers --no-quick3dhelpersimpl --no-quick3diblbaker --no-quick3dparticleeffects --no-quick3dparticles --no-quick3dphysics --no-quick3dphysicshelpers --no-quick3druntimerender --no-quick3dutils --dir D:/work/project/LiveAssistant/build_vs2019/Debug --qmldir D:/work/project/LiveAssistant --compiler-runtime --no-translations D:/work/project/LiveAssistant/build_vs2019/Debug/LiveAssistant.exe
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DAnimation.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DCore.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DExtras.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DInput.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DLogic.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DQuickScene2D.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt63DRender.dll D:/work/project/LiveAssistant/build_vs2019/Debug/Qt6Quick3DUtils.dll
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -rf D:/work/project/LiveAssistant/build_vs2019/Debug/geometryloaders D:/work/project/LiveAssistant/build_vs2019/Debug/sceneparsers D:/work/project/LiveAssistant/build_vs2019/Debug/renderers D:/work/project/LiveAssistant/build_vs2019/Debug/renderplugins
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avcodec-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avdevice-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avfilter-10.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avformat-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avutil-59.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/postproc-58.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swresample-5.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swscale-8.dll D:/work/project/LiveAssistant/build_vs2019/Debug
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
@@ -284,8 +304,28 @@ exit /b %1
 if %errorlevel% neq 0 goto :VCEnd</Command>
     </PreBuildEvent>
     <PostBuildEvent>
-      <Message>Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
+      <Message>Deploying Qt runtime files with windeployqt	Removing unused Qt3D/Quick3D runtime files from build output	Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
       <Command>setlocal
+C:\Qt\6.5.3\msvc2019_64\bin\windeployqt.exe --release --no-3danimation --no-3dcore --no-3dextras --no-3dinput --no-3dlogic --no-3dquick --no-3dquickanimation --no-3dquickextras --no-3dquickinput --no-3dquickrender --no-3dquickscene2d --no-3drender --no-quick3d --no-quick3dassetimport --no-quick3dassetutils --no-quick3deffects --no-quick3dhelpers --no-quick3dhelpersimpl --no-quick3diblbaker --no-quick3dparticleeffects --no-quick3dparticles --no-quick3dphysics --no-quick3dphysicshelpers --no-quick3druntimerender --no-quick3dutils --dir D:/work/project/LiveAssistant/build_vs2019/Release --qmldir D:/work/project/LiveAssistant --compiler-runtime --no-translations D:/work/project/LiveAssistant/build_vs2019/Release/LiveAssistant.exe
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DAnimation.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DCore.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DExtras.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DInput.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DLogic.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DQuickScene2D.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt63DRender.dll D:/work/project/LiveAssistant/build_vs2019/Release/Qt6Quick3DUtils.dll
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -rf D:/work/project/LiveAssistant/build_vs2019/Release/geometryloaders D:/work/project/LiveAssistant/build_vs2019/Release/sceneparsers D:/work/project/LiveAssistant/build_vs2019/Release/renderers D:/work/project/LiveAssistant/build_vs2019/Release/renderplugins
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avcodec-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avdevice-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avfilter-10.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avformat-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avutil-59.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/postproc-58.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swresample-5.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swscale-8.dll D:/work/project/LiveAssistant/build_vs2019/Release
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
@@ -426,8 +466,28 @@ exit /b %1
 if %errorlevel% neq 0 goto :VCEnd</Command>
     </PreBuildEvent>
     <PostBuildEvent>
-      <Message>Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
+      <Message>Deploying Qt runtime files with windeployqt	Removing unused Qt3D/Quick3D runtime files from build output	Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
       <Command>setlocal
+C:\Qt\6.5.3\msvc2019_64\bin\windeployqt.exe --release --no-3danimation --no-3dcore --no-3dextras --no-3dinput --no-3dlogic --no-3dquick --no-3dquickanimation --no-3dquickextras --no-3dquickinput --no-3dquickrender --no-3dquickscene2d --no-3drender --no-quick3d --no-quick3dassetimport --no-quick3dassetutils --no-quick3deffects --no-quick3dhelpers --no-quick3dhelpersimpl --no-quick3diblbaker --no-quick3dparticleeffects --no-quick3dparticles --no-quick3dphysics --no-quick3dphysicshelpers --no-quick3druntimerender --no-quick3dutils --dir D:/work/project/LiveAssistant/build_vs2019/MinSizeRel --qmldir D:/work/project/LiveAssistant --compiler-runtime --no-translations D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/LiveAssistant.exe
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DAnimation.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DCore.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DExtras.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DInput.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DLogic.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DQuickScene2D.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt63DRender.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/Qt6Quick3DUtils.dll
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -rf D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/geometryloaders D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/sceneparsers D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/renderers D:/work/project/LiveAssistant/build_vs2019/MinSizeRel/renderplugins
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avcodec-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avdevice-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avfilter-10.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avformat-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avutil-59.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/postproc-58.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swresample-5.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swscale-8.dll D:/work/project/LiveAssistant/build_vs2019/MinSizeRel
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
@@ -567,8 +627,28 @@ exit /b %1
 if %errorlevel% neq 0 goto :VCEnd</Command>
     </PreBuildEvent>
     <PostBuildEvent>
-      <Message>Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
+      <Message>Deploying Qt runtime files with windeployqt	Removing unused Qt3D/Quick3D runtime files from build output	Copying FFmpeg DLLs to output directory	Copying OpenCV DLLs to output directory	Copying libcurl DLL to output directory	Copying VLC DLLs to output directory	Copying VLC plugins directory	Creating resources directory	Copying cacert.pem to output directory</Message>
       <Command>setlocal
+C:\Qt\6.5.3\msvc2019_64\bin\windeployqt.exe --release --no-3danimation --no-3dcore --no-3dextras --no-3dinput --no-3dlogic --no-3dquick --no-3dquickanimation --no-3dquickextras --no-3dquickinput --no-3dquickrender --no-3dquickscene2d --no-3drender --no-quick3d --no-quick3dassetimport --no-quick3dassetutils --no-quick3deffects --no-quick3dhelpers --no-quick3dhelpersimpl --no-quick3diblbaker --no-quick3dparticleeffects --no-quick3dparticles --no-quick3dphysics --no-quick3dphysicshelpers --no-quick3druntimerender --no-quick3dutils --dir D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo --qmldir D:/work/project/LiveAssistant --compiler-runtime --no-translations D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/LiveAssistant.exe
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DAnimation.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DCore.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DExtras.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DInput.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DLogic.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DQuickScene2D.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt63DRender.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/Qt6Quick3DUtils.dll
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -rf D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/geometryloaders D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/sceneparsers D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/renderers D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo/renderplugins
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avcodec-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avdevice-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avfilter-10.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avformat-61.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/avutil-59.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/postproc-58.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swresample-5.dll D:/work/project/LiveAssistant/third_party/ffmpeg/lib/x64/swscale-8.dll D:/work/project/LiveAssistant/build_vs2019/RelWithDebInfo
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
