@@ -81,9 +81,12 @@ public:
     // Reset encoder state (for new streaming session)
     ErrorCode reset() override;
 
+    // 清空异步编码队列（推流停止/切换编码器时避免旧帧进入新会话）
+    void clear_encode_queue();
+
 signals:
-    // 编码完成后的音频数据回调（与原项目的 m_callback 对应）
-    void audio_encoded(const uint8_t* data, int size, int64_t timestamp);
+    // 编码完成：与 CompositorEncoderBridge::on_audio_encoded 对接（毫秒 PTS）
+    void audio_encoded(const QByteArray& encoded, int64_t timestamp_ms);
 
 private:
     ErrorCode send_frame_internal(const std::shared_ptr<AudioFrame>& frame);
@@ -106,6 +109,9 @@ private:
     std::thread encode_thread_;
     std::atomic<bool> encode_thread_running_{false};
 
+    // 单帧编码（send+receive），返回 emit 的 PTS
+    int64_t encode_one_frame(const QByteArray& frame_data, int64_t timestamp);
+
     // 编码线程函数
     void encode_thread_func();
 
@@ -125,7 +131,9 @@ private:
     // 新增：简单的字节缓冲区（与原项目一致）
     QByteArray input_buffer_;
     int64_t last_audio_timestamp_ = -1;  // 用于单调递增保护和时间戳回绕检测
-    
+    // 首包输出时间基准（微秒），与 process_audio_data 内 PTS 推导一致
+    int64_t first_output_timestamp_us_ = -1;
+
     // 🔧 新增：输出帧计数器，用于计算单调递增的 PTS
     // AAC 编码器可能有缓冲/延迟，不能依赖输入 timestamp 或编码器返回的 PTS
     // 我们用帧计数 * 每帧时长来计算 PTS，保证单调递增
@@ -135,8 +143,9 @@ private:
     int64_t frame_duration_us_ = 0;  // 微秒精度帧时长，避免整数截断漂移
 
     int64_t frame_offset_in_batch_;
-    
+
     int frame_samples_;
+    int encode_count_ = 0;  // 类成员，供 encode_one_frame 访问
 };
 
 } // namespace live_assistant
