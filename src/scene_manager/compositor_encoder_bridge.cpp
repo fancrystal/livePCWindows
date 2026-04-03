@@ -336,6 +336,9 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     // 🔧 OBS 风格 PTS 偏移归零：重置偏移变量，等待第一帧到达时重新记录
     first_video_pts_ms_ = -1;
     streaming_pts_initialized_ = false;
+    // 视频帧计数器 PTS 基准
+    video_pts_base_us_ = -1;
+    video_pts_initial_frame_ = -1;
     // 重置漂移监控状态
     audio_total_samples_received_ = 0;
     last_drift_check_ms_ = 0;
@@ -382,10 +385,16 @@ void CompositorEncoderBridge::stop_streaming() {
         return;
     }
 
+    // 先将 streaming_ 置为 false，阻止 on_audio_data_ready 继续向音频编码器投递数据
+    streaming_ = false;
+
     // ═══════════════════════════════════════════════════════════════
-    // 🔧 停止编码线程池
+    // 🔧 停止编码线程池（队列已在 stop_encoder_threads 内预先清空）
     // ═══════════════════════════════════════════════════════════════
     stop();  // stops capture thread + encoder threads + media_clock
+
+    // 释放 sws_context_（RGBA→NV12 色彩转换上下文），避免跨推流会话内存驻留
+    release_sws_context();
 
     if (stream_pusher_) {
         stream_pusher_->stop();
@@ -393,9 +402,12 @@ void CompositorEncoderBridge::stop_streaming() {
 
     if (encoder_) {
         encoder_->shutdown_video_encoder();
+        // 清空音频编码器的待处理队列，释放 QByteArray 音频数据
+        auto* audio_enc = dynamic_cast<AACEncoder*>(encoder_->get_audio_encoder());
+        if (audio_enc) {
+            audio_enc->clear_encode_queue();
+        }
     }
-
-    streaming_ = false;
     stream_url_.clear();
     emit streaming_stopped();
     LOG_INFO("[BRIDGE] Streaming stopped");
@@ -483,24 +495,30 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
         
         auto current_pts_ms = media_clock_.get_elapsed_time_us() / 1000;
         
-        // 🔧 OBS 风格 PTS 偏移归零：记录第一帧视频 PTS 并应用偏移
-        // 注意：需要同时检查 video 和 audio 的 first_pts，确保任一帧到达时都能正确初始化
+        // 🔧 视频 PTS 计算改用帧计数器，避免 QTimer 抖动导致帧间隔不规则
+        // 帧号 × 帧时长，保证每个编码帧 PTS 等间隔（30fps = 33.33ms）
+        // first_video_pts_ms_ 仅用于与音频的相对同步（第一帧对齐）
         if (first_video_pts_ms_ == -1) {
             first_video_pts_ms_ = current_pts_ms;
+            video_pts_base_us_ = current_pts_ms * 1000LL;
+            video_pts_initial_frame_ = video_frame_count_;
             LOG_INFO("[BRIDGE] First video PTS recorded: " + std::to_string(first_video_pts_ms_) + "ms");
         }
-        
+
         // 如果 streaming_pts_initialized_ 还未初始化（音频未到达），现在初始化
         if (!streaming_pts_initialized_) {
             streaming_pts_initialized_ = true;
             LOG_INFO("[BRIDGE] Streaming PTS initialized by video at: " + std::to_string(current_pts_ms) + "ms");
         }
-        
-        // 应用 PTS 偏移，确保第一帧视频 PTS=0
-        int64_t adjusted_pts_ms = current_pts_ms - first_video_pts_ms_;
-        
+
+        // 🔧 帧计数器 PTS = (frame_number - initial_frame) × frame_duration_ms
+        // 帧号偏移确保首帧为 0，后续帧严格等间隔
+        int64_t frame_offset = video_frame_count_ - video_pts_initial_frame_;
+        int64_t adjusted_pts_ms = static_cast<int64_t>(frame_offset) * frame_duration_ms;
+
+        // raw_pts 仅用于诊断，不参与实际 PTS 计算
         if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
-            LOG_INFO("[BRIDGE] Video frame #" + std::to_string(video_frame_count_) + 
+            LOG_INFO("[BRIDGE] Video frame #" + std::to_string(video_frame_count_) +
                      ": raw_pts=" + std::to_string(current_pts_ms) + "ms, " +
                      "adjusted_pts=" + std::to_string(adjusted_pts_ms) + "ms, " +
                      "offset=" + std::to_string(first_video_pts_ms_) + "ms");
@@ -770,20 +788,19 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
 }
 
 // 新增：处理编码后的音频数据（推送到流）
-void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, int64_t timestamp) {
-    if (!stream_pusher_ || !stream_pusher_->is_pushing() || !data || size <= 0) {
+void CompositorEncoderBridge::on_audio_encoded(const QByteArray& encoded, int64_t timestamp) {
+    if (!stream_pusher_ || !stream_pusher_->is_pushing() || encoded.isEmpty()) {
         return;
     }
+    const int size = encoded.size();
 
-    // 🔇 过滤静音帧和异常帧
-    // 6字节AAC帧是已知异常帧，会导致杂音
-    // if (size == 6) {
-    //     static int silent_6byte_count = 0;
-    //     if (++silent_6byte_count <= 3) {
-    //         LOG_DEBUG("[BRIDGE] Filtered 6-byte abnormal AAC frame");
-    //     }
-    //     return;
-    // }
+    // 过滤起播阶段的损坏帧：FFmpeg native AAC 编码器在 flush 后前几帧会输出
+    // 极小的无效包（6字节全零或随机垃圾），解码时产生 "Input buffer exhausted"
+    // 和 "channel element X.Y is not allocated" 等错误。有效的 AAC-LC 立体声帧
+    // 即使完全静音也至少需要 8 字节，小于此阈值的包直接丢弃。
+    if (size < 8) {
+        return;
+    }
 
     // 🔇 检测静音帧：检查前64字节，如果90%以上都是静音则过滤
     // if (size > 32) {
@@ -845,7 +862,7 @@ void CompositorEncoderBridge::on_audio_encoded(const uint8_t* data, int size, in
         av_packet_free(&pkt);
         return;
     }
-    std::memcpy(pkt->data, data, size);
+    std::memcpy(pkt->data, encoded.constData(), size);
 
     // 修正 AAC 帧 duration：使用 double 避免整数除法截断
     // 正确值：1024 / 48000 = 0.0213333s = 21.3333ms
@@ -902,27 +919,29 @@ void CompositorEncoderBridge::stop_encoder_threads() {
     if (!encoder_threads_running_.load()) {
         return;
     }
-    
+
+    // 先清空队列：让 drain 循环立即退出，避免主线程在 join() 中长时间阻塞。
+    // 阻塞期间 WGC/摄像头仍在产帧，会将大量 QImage 堆积到 Qt 事件队列（每帧 ~8MB），
+    // 导致停流后内存快速上涨。清空队列后 join() 可在几毫秒内返回。
+    {
+        std::lock_guard<std::mutex> lock(encode_queue_mutex_);
+        pre_encode_queue_.clear();
+    }
+
     encoder_threads_running_.store(false);
-    
+
     // 唤醒所有等待中的编码线程
     encode_queue_cv_.notify_all();
-    
+
     // 等待所有编码线程退出
     for (auto& thread : encoder_threads_) {
         if (thread.joinable()) {
             thread.join();
         }
     }
-    
+
     encoder_threads_.clear();
-    
-    // 清空编码队列
-    {
-        std::lock_guard<std::mutex> lock(encode_queue_mutex_);
-        pre_encode_queue_.clear();
-    }
-    
+
     LOG_INFO("[BRIDGE] Encoder thread pool stopped");
 }
 

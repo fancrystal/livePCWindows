@@ -129,7 +129,7 @@ private slots:
     // 处理音频引擎的原始数据（提交到混音器）
     void on_audio_data_ready(const QByteArray& data, int64_t timestamp);
     // 处理编码后的音频数据（推送到流）
-    void on_audio_encoded(const uint8_t* data, int size, int64_t timestamp);
+    void on_audio_encoded(const QByteArray& data, int64_t timestamp);
 
 private:
     void encode_and_push_frame();
@@ -252,6 +252,11 @@ private:
     // 🔧 OBS 风格 PTS 偏移归零（确保第一帧 PTS=0）
     int64_t first_video_pts_ms_ = -1;      // 第一帧音/视频的 PTS（毫秒），音视频共用
     bool streaming_pts_initialized_ = false;  // 推流 PTS 是否已初始化
+
+    // 🔧 视频 PTS 帧计数器基准：确保每个编码帧 PTS 等间隔
+    // 不使用 media_clock 实时值（受 QTimer 抖动影响），而是用帧号 × 帧时长推算
+    int64_t video_pts_base_us_ = -1;       // 首帧的 media_clock（微秒），用于诊断
+    int64_t video_pts_initial_frame_ = -1;  // 首帧的 video_frame_count_，用于帧号偏移
 
     // 音频时钟漂移监控（仅诊断，不修正 PTS）
     int64_t audio_total_samples_received_ = 0;  // 从声卡实际收到的总采样数
