@@ -158,6 +158,11 @@ bool WGCCaptureLoop::start()
 {
     if (running_.exchange(true)) return true;
     stopping_ = false;
+
+    // 初始化诊断日志时间戳
+    last_processed_time_ = std::chrono::steady_clock::now();
+    last_fps_log_ = std::chrono::steady_clock::now();
+
     worker_ = std::thread(&WGCCaptureLoop::thread_proc, this);
     return true;
 }
@@ -214,6 +219,17 @@ bool WGCCaptureLoop::init_capture_objects()
 {
     last_size_ = item_.Size();
 
+    // 采集降分辨率：如果是外接屏高分辨率且配置了降分辨率，则使用缩小后的尺寸
+    auto capture_w = static_cast<uint32_t>(last_size_.Width);
+    auto capture_h = static_cast<uint32_t>(last_size_.Height);
+    if (cfg_.prefer_low_resolution && capture_w > static_cast<uint32_t>(cfg_.reduce_to_width)) {
+        capture_w = static_cast<uint32_t>(cfg_.reduce_to_width);
+        capture_h = static_cast<uint32_t>(cfg_.reduce_to_height);
+        LOG_INFO("[WGC] Using reduced resolution for capture: " +
+                 std::to_string(capture_w) + "x" + std::to_string(capture_h) +
+                 " (original: " + std::to_string(last_size_.Width) + "x" + std::to_string(last_size_.Height) + ")");
+    }
+
     // Use shared D3D device
     auto& shared = SharedD3D11Device::instance();
     auto winrt_device = shared.winrt_device();
@@ -224,7 +240,7 @@ bool WGCCaptureLoop::init_capture_objects()
 
     auto dxgiDevice = GetDXGIInterfaceFromObject<ID3D11Device>(winrt_device);
 
-    swapchain_ = CreateSwapChain(dxgiDevice.get(), static_cast<uint32_t>(last_size_.Width), static_cast<uint32_t>(last_size_.Height),
+    swapchain_ = CreateSwapChain(dxgiDevice.get(), capture_w, capture_h,
                                  static_cast<DXGI_FORMAT>(pixel_format_), 2);
 
     frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(winrt_device, pixel_format_, 2, last_size_);
@@ -295,8 +311,12 @@ void WGCCaptureLoop::on_frame_arrived(
         LOG_DEBUG("[DIAG] WGCCaptureLoop::on_frame_arrived START t=" + std::to_string(frame_start_ms % 100000));
         if (stopping_) return;
 
-    bool resized = false;
-    winrt::com_ptr<ID3D11Texture2D> surfaceTexture;
+        // ── 第一步：无论如何先从 pool 取出帧 ─────────────────────────────
+        // WGC frame pool 只有 2 个 buffer slot。
+        // 必须在节流判断之前调用 TryGetNextFrame()，否则被丢弃的帧仍占着 slot，
+        // 两帧后 pool 满，FrameArrived 停止触发，采集彻底冻结。
+        bool resized = false;
+        winrt::com_ptr<ID3D11Texture2D> surfaceTexture;
 
         {
             auto frame = sender.TryGetNextFrame();
@@ -304,30 +324,71 @@ void WGCCaptureLoop::on_frame_arrived(
 
             resized = try_resize_swapchain(frame);
 
-            // back buffer
-            winrt::com_ptr<ID3D11Texture2D> backBuffer;
-            winrt::check_hresult(swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(), backBuffer.put_void()));
-
-            surfaceTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
-            SharedD3D11Device::instance().context()->CopyResource(backBuffer.get(), surfaceTexture.get());
-
-            // Phase 1: GPU 纹理直传路径（在 frame.Close() 前拷贝，避免 WGC 缓冲区回收）
+            // ── 第二步：节流检查（帧已从 pool 取出，丢弃只是不处理像素数据）──
+            // 在无独显笔记本上，copy_texture_to_qimage 耗时 8~13ms/帧，
+            // 60fps 副屏每 16.6ms 触一次，CPU 跟不上，限到 30fps 可缓解。
+            // GPU 路径也受益：减少 CS dispatch 和 GPU 内存带宽。
+            bool should_process = true;
             {
-                TextureCallback tex_cb;
-                {
-                    std::lock_guard<std::mutex> lk(tex_cb_mutex_);
-                    tex_cb = tex_cb_;
+                std::lock_guard<std::mutex> lock(throttle_mutex_);
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - last_processed_time_).count();
+                if (elapsed < TARGET_INTERVAL_MS) {
+                    should_process = false;  // 节流：取出帧但跳过像素处理
+                } else {
+                    last_processed_time_ = now;
                 }
-                if (tex_cb) {
-                    GpuTextureRef tex_ref = create_gpu_frame_copy(surfaceTexture.get());
-                    if (tex_ref.is_valid()) {
-                        tex_cb(tex_ref);
+            }
+
+            // ── 第三步：处理帧像素（仅在通过节流检查时执行）─────────────────
+            // 注意：若 resized==true 但被节流，仍需让外部的 Present1 + Recreate 执行，
+            // 因此这里不直接 return，而是条件性地跳过像素处理。
+            if (should_process) {
+                // back buffer
+                winrt::com_ptr<ID3D11Texture2D> backBuffer;
+                winrt::check_hresult(swapchain_->GetBuffer(0, winrt::guid_of<ID3D11Texture2D>(), backBuffer.put_void()));
+
+                surfaceTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
+                SharedD3D11Device::instance().context()->CopyResource(backBuffer.get(), surfaceTexture.get());
+
+                // Phase 1: GPU 纹理直传路径（在 frame.Close() 前拷贝，避免 WGC 缓冲区回收）
+                {
+                    TextureCallback tex_cb;
+                    {
+                        std::lock_guard<std::mutex> lk(tex_cb_mutex_);
+                        tex_cb = tex_cb_;
+                    }
+                    if (tex_cb) {
+                        GpuTextureRef tex_ref = create_gpu_frame_copy(surfaceTexture.get());
+                        if (tex_ref.is_valid()) {
+                            tex_cb(tex_ref);
+                        }
                     }
                 }
             }
 
-            // 显式关闭frame，尽早释放FramePool的buffer
+            // 显式关闭 frame，释放 FramePool buffer slot（无论是否处理都必须执行）
             frame.Close();
+
+            // 节流且无 resize：跳过后续 Present1 / CPU 回读
+            if (!should_process && !resized) {
+                return;
+            }
+        }
+
+        // ── 诊断日志：每秒输出实际处理帧率 ──────────────────────────────
+        {
+            std::lock_guard<std::mutex> lock(fps_mutex_);
+            frame_count_.fetch_add(1, std::memory_order_relaxed);
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(now - last_fps_log_).count();
+            if (elapsed_s >= 1) {
+                LOG_DEBUG("[WGC] Processed fps: " + std::to_string(frame_count_.load(std::memory_order_relaxed) / elapsed_s)
+                          + " (throttle=" + std::to_string(TARGET_INTERVAL_MS) + "ms)");
+                frame_count_.store(0, std::memory_order_relaxed);
+                last_fps_log_ = now;
+            }
         }
 
     DXGI_PRESENT_PARAMETERS params{};

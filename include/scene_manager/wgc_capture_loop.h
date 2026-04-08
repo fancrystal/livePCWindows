@@ -77,6 +77,16 @@ private:
     std::atomic<bool> stopping_{false};
     std::thread worker_;
 
+    // 采集节流：限制到目标帧率（用于外接屏 60fps 场景）
+    static constexpr int TARGET_INTERVAL_MS = 33;  // 30fps ≈ 33ms/帧
+    std::chrono::steady_clock::time_point last_processed_time_{};
+    std::mutex throttle_mutex_;
+
+    // 诊断日志：每秒输出采集帧率
+    std::atomic<int> frame_count_{0};
+    std::chrono::steady_clock::time_point last_fps_log_{};
+    std::mutex fps_mutex_;
+
     std::mutex cb_mutex_;
     ImageCallback cb_;
 

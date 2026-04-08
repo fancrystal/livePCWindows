@@ -18,6 +18,7 @@ extern "C" {
 }
 
 #include <d3d11.h>
+#include <dxgi.h>
 
 namespace live_assistant {
 
@@ -72,6 +73,63 @@ bool H264Encoder::initialize_shared_d3d11va()
 
     LOG_INFO("[H264Encoder] D3D11VA device context initialized from SharedD3D11Device (Phase 4)");
     return true;
+}
+
+int H264Encoder::detect_discrete_gpu() {
+    // 返回：0=只有集显/软编路径, 1=NVIDIA独显, 2=AMD独显(不含集显), 3=NVIDIA+AMD都有
+    int result = 0;
+
+    winrt::com_ptr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                    reinterpret_cast<void**>(factory.put()));
+    if (FAILED(hr)) {
+        LOG_WARNING("[H264Encoder] detect_discrete_gpu: CreateDXGIFactory1 failed, hr=0x" +
+                   std::to_string(static_cast<uint32_t>(hr)));
+        return 0;
+    }
+
+    winrt::com_ptr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapters1(i, adapter.put()) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+
+        std::wstring name(desc.Description);
+        std::string name_utf8;
+        {
+            int len = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
+            if (len > 0) {
+                name_utf8.resize(static_cast<size_t>(len - 1));
+                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, &name_utf8[0], len, nullptr, nullptr);
+            }
+        }
+
+        bool is_nvidia = name.find(L"NVIDIA") != std::wstring::npos ||
+                         name.find(L"GeForce") != std::wstring::npos;
+        bool is_amd = name.find(L"AMD") != std::wstring::npos ||
+                     name.find(L"Radeon") != std::wstring::npos;
+
+        // 检查是否是独立显卡（非软件渲染，VRAM > 128MB 通常是独显）
+        bool is_discrete = (desc.VendorId != 0x1414 &&  // 不是 Microsoft Software Renderer
+                          (desc.DedicatedVideoMemory > 128 * 1024 * 1024 ||  // 有独立显存
+                           desc.DedicatedSystemMemory > 64 * 1024 * 1024)); // 或独立系统内存
+
+        if (is_nvidia && is_discrete) {
+            result |= 1;  // bit 0 = NVIDIA 独显
+            LOG_INFO("[H264Encoder] GPU detected: NVIDIA (dGPU) - " + name_utf8);
+        } else if (is_amd && is_discrete) {
+            result |= 2;  // bit 1 = AMD 独显
+            LOG_INFO("[H264Encoder] GPU detected: AMD (dGPU) - " + name_utf8);
+        } else if (!name_utf8.empty()) {
+            LOG_INFO("[H264Encoder] GPU detected: " + name_utf8 +
+                    (is_discrete ? " (iGPU)" : " (unknown)"));
+        }
+
+        adapter = nullptr;
+    }
+
+    LOG_INFO("[H264Encoder] GPU detection result: " + std::to_string(result) +
+             " (0=none, 1=NVIDIA, 2=AMD, 3=both)");
+    return result;
 }
 
 std::string H264Encoder::preset_to_string(VideoEncodingPreset preset) const {
@@ -169,19 +227,23 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         }
 #endif
 
-        // Build candidates order based on CPU vendor (智能选择策略)
-        // Intel CPU: 优先集显QSV → 独显NVENC → 软编libx264
-        // AMD CPU: 优先集显AMF → 独显NVENC → 软编libx264
-        // 其他: NVENC → QSV → AMF → 软编libx264
-        if (!cpu_vendor.empty() && cpu_vendor.find("GenuineIntel") != std::string::npos) {
-            candidates = {"h264_qsv", "h264_nvenc", "libx264"};
-            LOG_INFO("[H264Encoder] Intel CPU detected → Priority: QSV(iGPU) → NVENC(dGPU) → Software");
-        } else if (!cpu_vendor.empty() && cpu_vendor.find("AuthenticAMD") != std::string::npos) {
-            candidates = {"h264_amf", "h264_nvenc", "libx264"};
-            LOG_INFO("[H264Encoder] AMD CPU detected → Priority: AMF(iGPU) → NVENC(dGPU) → Software");
+        // Build candidates order based on GPU detection (智能选择策略)
+        // 策略：无独显时 AMF(AMD集显) > x264 > QSV(Intel集显)
+        //        有独显时 NVENC/AMF(独显) > x264 > QSV(集显)
+        int gpu_type = detect_discrete_gpu();
+
+        if (gpu_type & 1) {
+            // NVIDIA 独显存在：优先使用 NVENC（独显），QSV 放 x264 后面
+            candidates = {"h264_nvenc", "libx264", "h264_qsv"};
+            LOG_INFO("[H264Encoder] NVIDIA dGPU detected → Priority: NVENC(dGPU) → Software → QSV(iGPU)");
+        } else if (gpu_type & 2) {
+            // AMD 独显存在：优先使用 AMF（独显），QSV 放 x264 后面
+            candidates = {"h264_amf", "libx264", "h264_qsv"};
+            LOG_INFO("[H264Encoder] AMD dGPU detected → Priority: AMF(dGPU) → Software → QSV(iGPU)");
         } else {
-            candidates = {"h264_nvenc", "h264_qsv", "h264_amf", "libx264"};
-            LOG_INFO("[H264Encoder] Unknown CPU vendor → Priority: NVENC → QSV → AMF → Software");
+            // 无独显：AMD 集显 AMF > x264 > Intel QSV
+            candidates = {"h264_amf", "libx264", "h264_qsv"};
+            LOG_INFO("[H264Encoder] No discrete GPU → Priority: AMF(iGPU) → Software → QSV(iGPU)");
         }
 
         // 硬件编码器按优先级自动探测，支持回退到软件编码

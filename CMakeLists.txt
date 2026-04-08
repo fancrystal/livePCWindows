@@ -11,7 +11,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # MSVC specific settings to ensure standard library includes are found
 if(MSVC)
     # Ensure we're using the correct MSVC runtime
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus")
+    # /EHa: 启用 SEH 异常与 C++ 异常的混合处理，使 _set_se_translator 能捕获 D3D11 驱动崩溃
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus /EHa")
 endif()
 
 
@@ -65,7 +66,11 @@ file(GLOB_RECURSE VIDEO_ENGINE_SOURCES "src/video_engine/*.cpp")
 file(GLOB_RECURSE AUDIO_ENGINE_SOURCES "src/audio_engine/*.cpp")
 file(GLOB_RECURSE AUDIO_ENGINE_HEADERS "include/audio_engine/*.h")
 file(GLOB_RECURSE ENCODER_SOURCES "src/encoder/*.cpp")
+list(FILTER ENCODER_SOURCES EXCLUDE REGEX ".*qsv_device\\.cpp$")
+list(FILTER ENCODER_SOURCES EXCLUDE REGEX ".*qsv_encoder\\.cpp$")
 file(GLOB_RECURSE ENCODER_HEADERS "include/encoder/*.h")
+list(FILTER ENCODER_HEADERS EXCLUDE REGEX ".*qsv_device\\.h$")
+list(FILTER ENCODER_HEADERS EXCLUDE REGEX ".*qsv_encoder\\.h$")
 file(GLOB_RECURSE STREAM_PUSHER_SOURCES "src/stream_pusher/*.cpp")
 file(GLOB_RECURSE STREAM_PUSHER_HEADERS "include/stream_pusher/*.h")
 file(GLOB_RECURSE MEDIA_PIPELINE_SOURCES "src/media_pipeline/*.cpp")

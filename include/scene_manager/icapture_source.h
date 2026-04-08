@@ -69,6 +69,11 @@ struct CaptureConfig {
     bool capture_cursor = true;
     bool capture_border = true;
 
+    // WGC 采集优化选项
+    bool prefer_low_resolution = false;  // 采集时降分辨率（对于外接屏高分辨率场景）
+    int reduce_to_width = 1280;           // 降分辨率目标宽度
+    int reduce_to_height = 720;           // 降分辨率目标高度
+
     // CAMERA options
     bool mirror = false;
 

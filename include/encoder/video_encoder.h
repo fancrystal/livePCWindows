@@ -90,6 +90,10 @@ private:
     // Phase 4: 用 SharedD3D11Device 初始化 D3D11VA 设备上下文，供 QSV 派生使用
     bool initialize_shared_d3d11va();
 
+    // 检测系统是否有独立显卡
+    // 返回：0=只有集显/软编路径, 1=NVIDIA独显, 2=AMD独显(不含集显), 3=NVIDIA+AMD都有
+    int detect_discrete_gpu();
+
     VideoEncoderConfig config_;
     bool initialized_ = false;
     bool force_keyframe_ = false;

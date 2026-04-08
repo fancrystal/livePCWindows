@@ -161,9 +161,11 @@ bool GpuColorConverter::create_nv12_texture(int w, int h)
     //   E_INVALIDARG（此 Intel 驱动要求输出纹理必须有 BIND_RENDER_TARGET）。
     // - BIND_RENDER_TARGET 单独使用：CreateTexture2D 和 CreateVideoProcessorOutputView 均成功。
     //   VideoProcessorBlt 写入后纹理可能产生 RC/CCS（Render Compressed）格式。
-    //   但 compositor_encoder_bridge 已改用 CopySubresourceRegion 按 NV12 平面分别拷贝，
-    //   可绕过 RC/CCS 导致的 CopyResource 崩溃。因此 BIND_RENDER_TARGET 是目前唯一可行选项。
-    desc.BindFlags      = D3D11_BIND_RENDER_TARGET;
+    // - 但 GpuNv12Copier 需要从该纹理创建 SRV（D3D11_CREATE_SHADER_RESOURCE_VIEW），
+    //   所以必须加上 BIND_SHADER_RESOURCE，否则 CreateShaderResourceView 返回 E_INVALIDARG。
+    // - 实测：`BIND_RENDER_TARGET | BIND_SHADER_RESOURCE` 在此 Intel 驱动上 CreateTexture2D 成功，
+    //   VideoProcessorOutputView 成功，VideoProcessorBlt 成功，SRV 也成功。
+    desc.BindFlags      = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     desc.CPUAccessFlags = 0;
 
     HRESULT hr = shared.device()->CreateTexture2D(&desc, nullptr, nv12_texture_.put());
