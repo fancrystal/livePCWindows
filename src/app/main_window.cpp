@@ -20,6 +20,7 @@
 #include "http/live_item.h"
 #include "media_pipeline/media_file_source.h"
 #include <QScopeGuard>
+#include <set>
 #include "ui_main_window.h"
 #include "scene_manager/scene_manager.h"
 #include "scene_manager/source_factory.h"
@@ -88,16 +89,13 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow) {
     ui->setupUi(this);
 
-    // 最早加载持久化配置，后续所有初始化都从 app_settings_ 读取
     app_settings_.load();
     canvas_config_ = app_settings_.canvas;
     is_portrait_mode_ = (canvas_config_.get_width() < canvas_config_.get_height());
 
-    // 注册设置观察者
     settings_applier_ = std::make_unique<SettingsApplier>(this);
     app_settings_.add_observer(settings_applier_.get());
 
-    // 加载QSS样式文件（仅应用于主窗口）
     QFile qssFile(":/resources/live_companion_style.qss");
     if (qssFile.open(QFile::ReadOnly | QFile::Text)) {
         QTextStream stream(&qssFile);
@@ -109,7 +107,6 @@ MainWindow::MainWindow(QWidget *parent) :
         LOG_WARNING("Failed to load QSS stylesheet: " + qssFile.errorString().toStdString());
     }
 
-    // 设置底部控制栏按钮样式 - 与开始直播按钮风格统一
     setupBottomButtonsStyle();
 
     setWindowTitle("LiveAssistant");
@@ -124,10 +121,9 @@ MainWindow::MainWindow(QWidget *parent) :
 
         // logo
         QLabel* logoLbl = new QLabel(titleContainer);
-        logoLbl->setFixedSize(32, 32);  // 先设置固定尺寸
+        logoLbl->setFixedSize(32, 32);  
         QPixmap iconPix(":/images/Frame_icon.png");
         if (!iconPix.isNull()) {
-            // 使用KeepAspectRatioByExpanding确保填满32x32区域
             QPixmap scaledPix = iconPix.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
             logoLbl->setPixmap(scaledPix);
         }
@@ -165,12 +161,10 @@ MainWindow::MainWindow(QWidget *parent) :
         suffix->setFont(suf);
         tlay->addWidget(suffix);
 
-        // 分隔符
         QLabel* sep = new QLabel("|", titleContainer);
         sep->setStyleSheet("color: #666666; font-size: 14px;");
         tlay->addWidget(sep);
 
-        // 直播标题 label（动态更新）
         live_title_label_ = new QLabel(titleContainer);
         live_title_label_->setStyleSheet(
             "QLabel { color: #cccccc; font-size: 13px; font-weight: normal; }"
@@ -347,31 +341,24 @@ MainWindow::MainWindow(QWidget *parent) :
     setup_ui_connections();
     setup_scene_list();
 
-    // 加载退出偏好设置
     loadExitPreference();
 
-    // 延迟初始化系统托盘图标（延迟 1 秒，让窗口先稳定显示）
     QTimer::singleShot(1000, this, [this]() {
         setupSystemTray();
         LOG_INFO("System tray initialized after delay");
     });
 
-    // 初始化网络连接
     setupNetworkConnections();
 
     update_status("Ready");
 
-    // DPI 适配：监听屏幕 DPI 变化（当窗口在不同屏幕间移动时）
     connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
         if (screen) {
-            // 当屏幕变化时，更新窗口的 DPI 缩放
             LOG_INFO("Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
-            // 触发窗口更新以应用新的 DPI
             this->updateGeometry();
         }
     });
 
-    // 监听当前屏幕的 DPI 变化
     if (windowHandle() && windowHandle()->screen()) {
         connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
             LOG_INFO("DPI changed to: " + std::to_string(dpi));
@@ -379,10 +366,7 @@ MainWindow::MainWindow(QWidget *parent) :
         });
     }
 
-    // 初始化WebView控件（在设置直播间信息后）
-    // initWebEngineViews() 将在 setLiveItem 中被调用
-
-    // 初始化WebView UI属性（按照旧项目逻辑）
+    
     initWebEngineUI();
 
     LOG_INFO("MainWindow created");
@@ -394,21 +378,17 @@ void MainWindow::initWebEngineUI()
         return;
     }
 
-    // 设置WebEngine native属性（按照旧项目）
     ui->webEngineView_chat->setAttribute(Qt::WA_NativeWindow, false);
     ui->webEngineView_chat->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
     ui->webEngineView_product->setAttribute(Qt::WA_NativeWindow, false);
     ui->webEngineView_product->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
 
-    // 允许触摸事件
     ui->webEngineView_chat->setAttribute(Qt::WA_AcceptTouchEvents, true);
     ui->webEngineView_product->setAttribute(Qt::WA_AcceptTouchEvents, true);
 
-    // 启用插件
     ui->webEngineView_chat->settings()->setAttribute(QWebEngineSettings::PluginsEnabled, true);
     ui->webEngineView_product->settings()->setAttribute(QWebEngineSettings::PluginsEnabled, true);
 
-    // 配置WebView自适应布局
     auto configWebView = [&](QWebEngineView* webView) {
         webView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         webView->setMinimumSize(0, 0);
@@ -422,7 +402,6 @@ void MainWindow::initWebEngineUI()
 }
 
 void MainWindow::initWebEngineViews() {
-    // WebView加载暂时注释掉，排查崩溃问题
     LOG_INFO("initWebEngineViews called - WebView loading disabled for debugging");
     return;
 
@@ -432,13 +411,11 @@ void MainWindow::initWebEngineViews() {
         return;
     }
 
-    // 防止重复初始化：检查是否已经加载过URL
     if (!ui->webEngineView_chat->url().isEmpty() || !ui->webEngineView_product->url().isEmpty()) {
         LOG_INFO("WebEngineViews already initialized, skipping...");
         return;
     }
 
-    // 处理token，去掉Bearer前缀（如果有）
     QString token = token_;
     if (token.startsWith("Bearer ")) {
         token = token.mid(7);
@@ -446,26 +423,20 @@ void MainWindow::initWebEngineViews() {
 
     LOG_INFO("Initializing WebEngineViews with domain: " + domain_.toStdString());
 
-    // 使用lambda函数简化CustomWebEngineView初始化（按照旧项目逻辑）
     auto initCustomWebEngine = [this, token](QWebEngineView* webView, const QString& urlStr) {
-        // 转换为CustomWebEngineView
         CustomWebEngineView* customWebView = dynamic_cast<CustomWebEngineView*>(webView);
         if (customWebView) {
-            // 设置Authorization Token和域名
             customWebView->setAuthorizationToken(token, domain_);
-            // 设置URL
             customWebView->setCustomUrl(QUrl(urlStr));
         }
     };
 
-    // 初始化聊天互动WebView
     if (!current_live_item_.liveId.isEmpty()) {
         QString chatUrl = "https://" + domain_ + "/livesaas/liveStream/livedetails?roomInfoId=" + current_live_item_.liveId + "&embed=onlyInfo&tab=chat";
         LOG_INFO("Chat WebView URL: " + chatUrl.toStdString());
         initCustomWebEngine(ui->webEngineView_chat, chatUrl);
     }
 
-    // 初始化商品卡片WebView
     if (!current_live_item_.liveId.isEmpty()) {
         QString goodsUrl = "https://" + domain_ + "/livesaas/liveStream/livedetails?roomInfoId=" + current_live_item_.liveId + "&embed=onlyInfo&tab=goods";
         LOG_INFO("Product WebView URL: " + goodsUrl.toStdString());
@@ -477,7 +448,6 @@ void MainWindow::initWebEngineViews() {
 MainWindow::~MainWindow() {
     LOG_INFO("MainWindow destroyed");
 
-    // 清理系统托盘
     cleanupSystemTray();
 
     // Stop timers
@@ -506,8 +476,7 @@ void MainWindow::setup_scene_list() {
     connect(listWidget_sceneItems_->model(), &QAbstractItemModel::rowsMoved,
             this, &MainWindow::on_scene_item_reordered);
 
-    // 连接场景管理按钮
-    if (ui) {
+     if (ui) {
         if (ui->comboBox_scenes) {
             ui->comboBox_scenes->setVisible(true);
         }
@@ -517,18 +486,15 @@ void MainWindow::setup_scene_list() {
         }
     }
 
-    // 创建右键菜单按钮（添加/删除/重命名场景）
     create_scene_buttons();
 }
 
 void MainWindow::build_scene_selector() {
     if (!scene_manager_) return;
 
-    // 使用UI中的comboBox_scenes
     if (ui && ui->comboBox_scenes) {
         ui->comboBox_scenes->setVisible(true);
 
-        // 阻塞信号以避免触发场景切换
         ui->comboBox_scenes->blockSignals(true);
 
         ui->comboBox_scenes->clear();
@@ -538,7 +504,6 @@ void MainWindow::build_scene_selector() {
             ui->comboBox_scenes->addItem(QString::fromStdString(name));
         }
 
-        // 设置当前选中的场景
         auto current_scene = scene_manager_->get_current_scene();
         if (current_scene) {
             int index = ui->comboBox_scenes->findText(QString::fromStdString(current_scene->get_name()));
@@ -547,7 +512,6 @@ void MainWindow::build_scene_selector() {
             }
         }
 
-        // 只在第一次时连接信号
         static bool signal_connected = false;
         if (!signal_connected) {
             connect(ui->comboBox_scenes, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -555,7 +519,6 @@ void MainWindow::build_scene_selector() {
             signal_connected = true;
         }
 
-        // 恢复信号
         ui->comboBox_scenes->blockSignals(false);
     }
 }
@@ -566,30 +529,24 @@ void MainWindow::on_scene_selected(int index) {
     QString scene_name = ui->comboBox_scenes->itemText(index);
     if (scene_name.isEmpty()) return;
 
-    // 切换场景
     scene_manager_->set_current_scene(scene_name.toStdString());
 
-    // 防御：切换后验证 get_current_scene 有效，避免 remove_scene 残留越界 index 导致崩溃
     auto current = scene_manager_->get_current_scene();
     if (!current) {
         LOG_ERROR("[MainWindow] on_scene_selected: get_current_scene() returned null after set, index may be invalid");
         return;
     }
 
-    // 同步到canvas_widget（更新预览画布）
     if (canvas_widget_) {
         canvas_widget_->set_current_scene(scene_name.toStdString());
     }
 
-    // 同步到video_engine
     if (video_engine_) {
         video_engine_->set_current_scene(current);
     }
 
-    // 重建场景项列表
     build_scene_list();
 
-    // 同步到compositor
     sync_scene_to_compositor();
 
     LOG_INFO("Switched to scene: " + scene_name.toStdString());
@@ -598,13 +555,11 @@ void MainWindow::on_scene_selected(int index) {
 void MainWindow::on_add_scene_clicked() {
     if (!scene_manager_) return;
 
-    // 弹出对话框让用户输入新场景名称
     bool ok = false;
     QString new_name = QInputDialog::getText(this, "添加场景", "请输入新场景名称:",
                                               QLineEdit::Normal, "新场景", &ok);
     if (!ok || new_name.isEmpty()) return;
 
-    // 检查是否已存在
     auto scene_names = scene_manager_->get_scene_names();
     for (const auto& name : scene_names) {
         if (name == new_name.toStdString()) {
@@ -613,23 +568,17 @@ void MainWindow::on_add_scene_clicked() {
         }
     }
 
-    // 创建新场景
     if (scene_manager_->create_scene(new_name.toStdString()) == ErrorCode::SUCCESS) {
-        // 切换到新场景
         scene_manager_->set_current_scene(new_name.toStdString());
 
-        // 同步到canvas_widget（更新预览画布）
         if (canvas_widget_) {
             canvas_widget_->set_current_scene(new_name.toStdString());
         }
 
-        // 重建场景选择器
         build_scene_selector();
 
-        // 重建场景项列表
         build_scene_list();
 
-        // 同步
         sync_scene_to_compositor();
 
         LOG_INFO("Created new scene: " + new_name.toStdString());
@@ -648,7 +597,6 @@ void MainWindow::on_remove_scene_clicked() {
     auto current_scene = scene_manager_->get_current_scene();
     if (!current_scene) return;
 
-    // 确认删除
     int ret = QMessageBox::question(this, "删除场景",
         QString("确定要删除场景 \"%1\" 吗？").arg(QString::fromStdString(current_scene->get_name())),
         QMessageBox::Yes | QMessageBox::No);
@@ -657,15 +605,15 @@ void MainWindow::on_remove_scene_clicked() {
 
     QString scene_name = QString::fromStdString(current_scene->get_name());
 
-    // 删除场景
+
     if (scene_manager_->remove_scene(scene_name.toStdString()) == ErrorCode::SUCCESS) {
-        // 重建场景选择器
+
         build_scene_selector();
 
-        // 重建场景项列表
+
         build_scene_list();
 
-        // 同步
+
         sync_scene_to_compositor();
 
         LOG_INFO("Removed scene: " + scene_name.toStdString());
@@ -678,14 +626,14 @@ void MainWindow::on_rename_scene_clicked() {
     auto current_scene = scene_manager_->get_current_scene();
     if (!current_scene) return;
 
-    // 弹出对话框让用户输入新名称
+
     bool ok = false;
     QString new_name = QInputDialog::getText(this, "重命名场景", "请输入新场景名称:",
                                               QLineEdit::Normal,
                                               QString::fromStdString(current_scene->get_name()), &ok);
     if (!ok || new_name.isEmpty()) return;
 
-    // 检查是否已存在
+
     auto scene_names = scene_manager_->get_scene_names();
     for (const auto& name : scene_names) {
         if (name == new_name.toStdString() && name != current_scene->get_name()) {
@@ -694,9 +642,9 @@ void MainWindow::on_rename_scene_clicked() {
         }
     }
 
-    // 重命名
+
     if (current_scene->set_name(new_name.toStdString()) == ErrorCode::SUCCESS) {
-        // 重建场景选择器
+
         build_scene_selector();
 
         LOG_INFO("Renamed scene to: " + new_name.toStdString());
@@ -704,7 +652,7 @@ void MainWindow::on_rename_scene_clicked() {
 }
 
 void MainWindow::create_scene_buttons() {
-    // 为场景选择器添加右键菜单
+
     if (ui && ui->comboBox_scenes) {
         ui->comboBox_scenes->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(ui->comboBox_scenes, &QComboBox::customContextMenuRequested, this, [this](const QPoint& pos) {
@@ -730,21 +678,21 @@ void MainWindow::create_scene_buttons() {
 void MainWindow::save_scenes_config() {
     if (!scene_manager_) return;
 
-    // 获取配置目录 - Local (新路径)
+
     QString config_dir_local = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     QDir dir_local(config_dir_local);
     if (!dir_local.exists()) {
         dir_local.mkpath(config_dir_local);
     }
 
-    // 获取配置目录 - Roaming (旧路径，兼容旧版本)
+
     QString config_dir_roaming = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
     QDir dir_roaming(config_dir_roaming);
     if (!dir_roaming.exists()) {
         dir_roaming.mkpath(config_dir_roaming);
     }
 
-    // 按直播间名称保存场景配置
+
     QString config_file_local;
     QString config_file_roaming;
     if (!live_id_.isEmpty()) {
@@ -755,10 +703,10 @@ void MainWindow::save_scenes_config() {
         config_file_roaming = config_dir_roaming + "/scenes_default.json";
     }
 
-    // 序列化场景
+
     QJsonArray scenes_array = scene_manager_->serialize();
 
-    // 构建完整的配置对象，包含场景和元数据
+
     QJsonObject config_obj;
     config_obj["scenes"] = scenes_array;
     config_obj["is_portrait"] = is_portrait_mode_;
@@ -766,7 +714,7 @@ void MainWindow::save_scenes_config() {
     QJsonDocument doc(config_obj);
     QByteArray json_data = doc.toJson(QJsonDocument::Indented);
 
-    // 保存到 Local 目录
+
     QFile file_local(config_file_local);
     if (file_local.open(QIODevice::WriteOnly | QIODevice::Text)) {
         file_local.write(json_data);
@@ -776,7 +724,7 @@ void MainWindow::save_scenes_config() {
         LOG_ERROR("Failed to save scenes config to: " + config_file_local.toStdString());
     }
 
-    // 同时保存到 Roaming 目录（兼容旧版本）
+
     QFile file_roaming(config_file_roaming);
     if (file_roaming.open(QIODevice::WriteOnly | QIODevice::Text)) {
         file_roaming.write(json_data);
@@ -790,21 +738,21 @@ void MainWindow::save_scenes_config() {
 void MainWindow::load_scenes_config() {
     if (!scene_manager_) return;
 
-    // 获取配置目录 - Local
+
     QString config_dir_local = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     QDir dir_local(config_dir_local);
     if (!dir_local.exists()) {
         dir_local.mkpath(config_dir_local);
     }
 
-    // 获取配置目录 - Roaming (旧配置位置)
+
     QString config_dir_roaming = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
     QDir dir_roaming(config_dir_roaming);
     if (!dir_roaming.exists()) {
         dir_roaming.mkpath(config_dir_roaming);
     }
 
-    // 构建配置文件路径
+
     QString config_file;
     QString live_id = live_id_;
     if (!live_id.isEmpty()) {
@@ -817,10 +765,10 @@ void MainWindow::load_scenes_config() {
     LOG_INFO("Config directory (Roaming): " + config_dir_roaming.toStdString());
     LOG_INFO("Looking for config file: " + config_file.toStdString());
 
-    // 检查是否有直播间特定的配置文件
+
     QFile file(config_file);
     if (!file.exists()) {
-        // 检查旧格式配置文件（Local）
+
         QString old_file_local = config_dir_local + "/scenes.json";
         LOG_INFO("Checking legacy file (Local): " + old_file_local.toStdString());
         QFile old_file_check1(old_file_local);
@@ -828,7 +776,7 @@ void MainWindow::load_scenes_config() {
             config_file = old_file_local;
             LOG_INFO("Using legacy scenes config file (Local)");
         } else {
-            // 检查旧格式配置文件（Roaming/LiveAssistant子目录）
+
             QString old_file_roaming = config_dir_roaming + "/LiveAssistant/scenes.json";
             LOG_INFO("Checking legacy file (Roaming): " + old_file_roaming.toStdString());
             QFile old_file_check2(old_file_roaming);
@@ -860,7 +808,7 @@ void MainWindow::load_scenes_config() {
     QJsonArray scenes_array;
     bool loaded_portrait_mode = false;
 
-    // 支持两种格式：1. 新格式 {scenes: [...], is_portrait: true}  2. 旧格式 [...]
+
     if (doc.isObject()) {
         QJsonObject config_obj = doc.object();
         if (config_obj.contains("scenes")) {
@@ -870,7 +818,7 @@ void MainWindow::load_scenes_config() {
                 LOG_INFO("Loaded portrait mode from config: " + std::to_string(loaded_portrait_mode));
             }
         } else {
-            // 没有 scenes 字段，可能是旧格式
+
             scenes_array = config_obj.toVariantMap().value("scenes").toJsonArray();
         }
     } else if (doc.isArray()) {
@@ -880,9 +828,9 @@ void MainWindow::load_scenes_config() {
         return;
     }
 
-    // 反序列化场景
+
     if (scene_manager_->deserialize(scenes_array) == ErrorCode::SUCCESS) {
-        // 应用保存的横竖屏状态
+
         if (loaded_portrait_mode != is_portrait_mode_) {
             LOG_INFO("Restoring portrait mode: " + std::to_string(loaded_portrait_mode));
             if (loaded_portrait_mode) {
@@ -892,7 +840,7 @@ void MainWindow::load_scenes_config() {
             }
         }
 
-        // 重建UI
+
         build_scene_selector();
         build_scene_list();
         sync_scene_to_compositor();
@@ -911,7 +859,7 @@ void MainWindow::restore_capture_sources() {
         return;
     }
 
-    // 遍历所有场景的 SceneItem，为摄像头和屏幕共享源重建采集连接
+
     auto scene_names = scene_manager_->get_scene_names();
     LOG_INFO("Restoring capture sources for " + std::to_string(scene_names.size()) + " scenes");
 
@@ -925,40 +873,40 @@ void MainWindow::restore_capture_sources() {
             const std::string source_id = item->get_source_id();
             QString qsource_id = QString::fromStdString(source_id);
 
-            // 判断源类型
+
             bool is_camera = qsource_id.startsWith("camera_");
             bool is_screen = qsource_id.startsWith("capture_");
 
             if (!is_camera && !is_screen) continue;
 
-            // 检查是否已经有对应的采集源在运行
+
             if (capture_manager_->has_source(source_id)) {
                 LOG_INFO("Capture source already exists: " + source_id);
                 continue;
             }
 
-            // 获取保存的设备ID和参数
+
             std::string device_id = item->get_device_id();
             const auto& params = item->get_source_params();
 
             if (device_id.empty()) {
-                // 从 source_id 解析设备ID（兼容旧格式）
+
                 if (is_camera) {
-                    device_id = qsource_id.mid(7).toStdString(); // 去掉 "camera_" 前缀
+                    device_id = qsource_id.mid(7).toStdString();
                 } else if (is_screen) {
-                    device_id = qsource_id.mid(8).toStdString(); // 去掉 "capture_" 前缀
+                    device_id = qsource_id.mid(8).toStdString();
                 }
             }
 
             LOG_INFO("Restoring capture source: " + source_id + ", device_id: " + device_id);
 
-            // 创建采集配置
+
             CaptureConfig cfg;
             if (is_camera) {
                 cfg.type = CaptureConfig::TargetType::CAMERA;
                 cfg.target_id = device_id;
 
-                // 从保存的参数中获取配置
+
                 if (params.count("resolution")) {
                     std::string resolution = params.at("resolution");
                     size_t pos = resolution.find('x');
@@ -980,7 +928,7 @@ void MainWindow::restore_capture_sources() {
                 if (params.count("capture_mode")) {
                     cfg.capture_mode = string_to_capture_mode(params.at("capture_mode"));
                 } else {
-                    cfg.capture_mode = CaptureMode::FFMPEG;  // 默认 FFmpeg
+                    cfg.capture_mode = CaptureMode::FFMPEG;
                 }
                 if (params.count("mirror")) {
                     cfg.mirror = (params.at("mirror") == "true");
@@ -991,10 +939,10 @@ void MainWindow::restore_capture_sources() {
                          ", pixel_format=" + pixel_format_to_string(cfg.pixel_format) +
                          ", capture_mode=" + capture_mode_to_string(cfg.capture_mode));
             } else if (is_screen) {
-                // 判断是屏幕还是窗口
+
                 bool is_screen_mode = true;
-                // 尝试从参数中获取类型
-                // 这里简化处理，默认都是屏幕共享
+
+
                 cfg.type = CaptureConfig::TargetType::SCREEN;
                 cfg.target_id = device_id;
                 cfg.fps = 15;
@@ -1003,7 +951,7 @@ void MainWindow::restore_capture_sources() {
                 }
             }
 
-            // 创建真正的采集源
+
             std::shared_ptr<ICaptureSource> src;
             try {
                 src = CaptureFactory::create_capture_source(cfg);
@@ -1020,25 +968,25 @@ void MainWindow::restore_capture_sources() {
                 continue;
             }
 
-            // 连接 frameReady 信号到 compositor 更新
-            // 这里复用手动的 on_select_camera 中的逻辑
+
+
             connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
-                // 更新compositor（用于推流和预览）
+
                 if (compositor_ && !frame.image.isNull()) {
                     if (!compositor_->has_layer(source_id)) {
                         compositor_->add_layer(source_id);
 
-                        // 同步正确的图层顺序和transform
+
                         if (scene_manager_) {
                             auto scene_names = scene_manager_->get_scene_names();
                             for (const auto& scene_name : scene_names) {
                                 auto items = scene_manager_->get_scene_items(scene_name);
                                 for (auto& item : items) {
                                     if (item && item->get_source_id() == source_id) {
-                                        // 设置图层顺序
+
                                         compositor_->set_layer_order(source_id, item->get_order());
 
-                                        // 设置图层transform
+
                                         const auto& tr = item->get_transform();
                                         int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
                                         int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
@@ -1054,9 +1002,9 @@ void MainWindow::restore_capture_sources() {
                     compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
                 }
 
-                // 同时更新 SceneSource（用于预览显示）
+
                 if (scene_manager_) {
-                    // 遍历所有场景的 SceneItem
+
                     auto scene_names = scene_manager_->get_scene_names();
                     for (const auto& scene_name : scene_names) {
                         auto items = scene_manager_->get_scene_items(scene_name);
@@ -1077,12 +1025,12 @@ void MainWindow::restore_capture_sources() {
                 }
             });
 
-            // 将采集源添加到 CaptureManager（与手动添加摄像头时的逻辑一致）
+
             if (capture_manager_) {
                 capture_manager_->add_source(source_id, src);
             }
 
-            // 启动采集源（CaptureFactory::create_capture_source 已经调用过 initialize，不要重复调用）
+
             if (src->start()) {
                 LOG_INFO("Successfully restored capture source: " + source_id);
             } else {
@@ -1097,24 +1045,24 @@ void MainWindow::restore_capture_sources() {
 void MainWindow::stop_all_capture_sources() {
     LOG_INFO("========== stop_all_capture_sources START ==========");
 
-    // 先停止主窗口的摄像头预览（如果有）
+
     if (is_camera_preview_) {
         stop_camera_preview();
     }
 
-    // 先清理 SceneManager 中的 Source（反序列化时创建的）
+
     if (scene_manager_) {
         scene_manager_->cleanup_all_sources();
     }
 
-    // 然后清理 CaptureManager 中的采集源（restore_capture_sources 时创建的）
+
     if (!capture_manager_) {
         LOG_INFO("CaptureManager not initialized, nothing to stop");
         LOG_INFO("========== stop_all_capture_sources END ==========");
         return;
     }
 
-    // 获取所有采集源的 ID
+
     auto source_ids = capture_manager_->get_all_source_ids();
     LOG_INFO("Stopping " + std::to_string(source_ids.size()) + " capture sources");
 
@@ -1136,14 +1084,14 @@ void MainWindow::build_scene_list() {
         return;
     }
 
-    // 阻断信号传播，避免在构建过程中触发不必要的更新
+
     listWidget_sceneItems_->blockSignals(true);
     listWidget_sceneItems_->clear();
 
     auto scene = scene_manager_->get_current_scene();
     auto scene_items = scene->get_all_scene_items();
 
-    // 先分离摄像头和其他场景项
+
     std::vector<std::shared_ptr<SceneItem>> camera_items;
     std::vector<std::shared_ptr<SceneItem>> other_items;
     
@@ -1155,7 +1103,7 @@ void MainWindow::build_scene_list() {
         }
     }
     
-    // 先添加摄像头项，确保它们在列表顶部
+
     for (const auto& item : camera_items) {
         auto* lw_item = new QListWidgetItem(listWidget_sceneItems_);
         lw_item->setSizeHint(QSize(240, 34));
@@ -1165,7 +1113,7 @@ void MainWindow::build_scene_list() {
         auto* row = new SceneItemRow(item, display_name, listWidget_sceneItems_);
 
         const int row_index = listWidget_sceneItems_->row(lw_item);
-        row->set_move_up_enabled(false); // 摄像头项不能再往上移动
+        row->set_move_up_enabled(false);
 
         connect(row, &SceneItemRow::visibilityToggled, this, [this]() {
             sync_scene_to_compositor();
@@ -1194,12 +1142,12 @@ void MainWindow::build_scene_list() {
             }
         });
 
-        // 摄像头项不需要上移功能
+
 
         listWidget_sceneItems_->setItemWidget(lw_item, row);
     }
     
-    // 再添加其他场景项
+
     const int total = static_cast<int>(other_items.size());
     for (int i = total - 1; i >= 0; --i) {
         auto item = other_items[i];
@@ -1212,7 +1160,7 @@ void MainWindow::build_scene_list() {
         auto* row = new SceneItemRow(item, display_name, listWidget_sceneItems_);
 
         const int row_index = listWidget_sceneItems_->row(lw_item);
-        row->set_move_up_enabled(row_index > 0); // 其他项可以上移，但不能超过摄像头项
+        row->set_move_up_enabled(row_index > 0);
 
         connect(row, &SceneItemRow::visibilityToggled, this, [this]() {
             sync_scene_to_compositor();
@@ -1245,12 +1193,12 @@ void MainWindow::build_scene_list() {
             if (!listWidget_sceneItems_) return;
             int r = listWidget_sceneItems_->row(lw_item);
             if (r <= 0) return;
-            // 检查目标位置是否是摄像头项
+
             auto* target_item = listWidget_sceneItems_->item(r - 1);
-            if (!target_item) return;  // 防止 item 已被删除时的空指针崩溃
+            if (!target_item) return;
             QString target_sid = target_item->data(Qt::UserRole).toString();
             if (target_sid.startsWith("camera_")) {
-                return; // 不能移动到摄像头项上面
+                return;
             }
             listWidget_sceneItems_->model()->moveRow(QModelIndex(), r, QModelIndex(), r - 1);
         });
@@ -1258,7 +1206,7 @@ void MainWindow::build_scene_list() {
         listWidget_sceneItems_->setItemWidget(lw_item, row);
     }
 
-    // 恢复信号
+
     listWidget_sceneItems_->blockSignals(false);
 
     // update placeholder visibility after rebuilding scene list
@@ -1279,11 +1227,11 @@ void MainWindow::on_scene_item_reordered() {
         auto items = scene->get_all_scene_items();
         for (auto& it : items) {
             if (QString::fromStdString(it->get_source_id()) == sid) {
-                // 如果是摄像头源，保持其较高的order值
+
                 if (!sid.startsWith("camera_")) {
                     it->set_order(order);
                 } else {
-                    // 摄像头源保持较高的order值
+
                     it->set_order(9999);
                 }
                 break;
@@ -1314,7 +1262,7 @@ void MainWindow::set_local_stream_mode(bool enabled) {
     is_local_stream_mode_ = enabled;
     LOG_INFO(QString("Local stream mode: %1").arg(enabled ? "enabled" : "disabled").toStdString());
 
-    // 本地推流模式下禁用插播视频按钮
+
     if (enabled && ui->pushButton_insertVideo) {
         ui->pushButton_insertVideo->setEnabled(false);
         ui->pushButton_insertVideo->setToolTip("本地推流模式不支持插播视频");
@@ -1329,7 +1277,7 @@ void MainWindow::setCredentials(const QString& socketUrl, const QString& userId,
     live_url_ = liveurl;
     once_key_ = oncekey;
 
-    // 从socket_url提取domain（按照旧项目逻辑）
+
     {
         int protocolEndPos = socket_url_.indexOf("://");
         if (protocolEndPos == -1) {
@@ -1345,7 +1293,7 @@ void MainWindow::setCredentials(const QString& socketUrl, const QString& userId,
             domain_ = socket_url_.mid(protocolEndPos);
         }
 
-        // 硬编码覆盖（和旧项目一致）
+
         domain_ = "b-test.lxi-tech.com";
         LOG_INFO("Extracted domain: " + domain_.toStdString());
     }
@@ -1357,7 +1305,7 @@ void MainWindow::setCredentials(const QString& socketUrl, const QString& userId,
 void MainWindow::setLiveItem(const LiveItem& liveItem) {
     LOG_INFO("========== setLiveItem START ==========");
 
-    // 同步 live_id_ 与 LiveItem
+
     bool live_id_changed = !liveItem.liveId.isEmpty() && live_id_ != liveItem.liveId;
     if (live_id_changed) {
         LOG_INFO(QString("Live ID changed: %1 -> %2").arg(live_id_).arg(liveItem.liveId).toStdString());
@@ -1365,11 +1313,11 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
 
     current_live_item_ = liveItem;
 
-    // 更新直播标题显示
+
     if (live_title_label_) {
         if (!liveItem.title.isEmpty()) {
             live_title_label_->setText(liveItem.title);
-            live_title_label_->setToolTip(liveItem.title);  // 鼠标悬停显示完整标题
+            live_title_label_->setToolTip(liveItem.title);
         } else {
             live_title_label_->setText(QString::fromUtf8("未知直播间"));
         }
@@ -1382,52 +1330,42 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
             liveItem.status == LiveStatus::PENDING ? "待开播" : "已结束")
         .toStdString());
 
-    // 如果 live_id 发生变化，清理旧场景列表 UI 并准备重新加载
+
     if (live_id_changed) {
         live_id_ = liveItem.liveId;
 
-        // 清理场景列表 UI
+
         if (listWidget_sceneItems_) {
             listWidget_sceneItems_->blockSignals(true);
             listWidget_sceneItems_->clear();
             listWidget_sceneItems_->blockSignals(false);
         }
 
-        // 重新加载该直播间的场景配置
+
         load_scenes_config();
     }
 
-    // 如果有推流地址，自动设置RTMP目标
+
     if (!liveItem.pushUrl.isEmpty() && !liveItem.pushUrl[0].isEmpty()) {
         QString rtmpUrl = liveItem.pushUrl[0];
-        // 解析RTMP地址（假设格式为 rtmp://server/app/stream_key）
-        LOG_INFO(QString("Auto-set RTMP URL from LiveItem: %1").arg(rtmpUrl).toStdString());
-        // 这里可以根据需要进一步解析 server_url 和 stream_key
-        rtmp_server_url_ = rtmpUrl;
+
+        // FIX: Only accept rtmp:// or rtmps:// URLs
+        if (rtmpUrl.startsWith("rtmp://") || rtmpUrl.startsWith("rtmps://")) {
+            rtmp_server_url_ = rtmpUrl;
+        }
     }
 
-    // 根据服务器配置设置画布方向（当前默认使用横屏，忽略服务器竖屏配置）
-    // 后续服务器API准备好后可以取消注释下面的代码
-    /*
-    if (!liveItem.canvasOrientation.isEmpty()) {
-        LOG_INFO(QString("Server canvas orientation: %1").arg(liveItem.canvasOrientation).toStdString());
-        apply_server_canvas_config(liveItem.canvasOrientation);
-    } else {
-        LOG_INFO("No canvas orientation from server, using default landscape mode");
-        // 默认使用横屏
-        apply_server_canvas_config("landscape");
-    }
-    */
-    // 临时：强制使用横屏模式，等待服务器API完善
-    LOG_INFO("Using default landscape mode (ignoring server config for now)");
-    apply_server_canvas_config("landscape");
+    QString canvasOrientation = liveItem.isVerticalScreen ? "portrait" : "landscape";
+    LOG_INFO(QString("Server canvas orientation: %1 (isVerticalScreen=%2)")
+        .arg(canvasOrientation).arg(liveItem.isVerticalScreen).toStdString());
+    apply_server_canvas_config(canvasOrientation);
 
-    // 更新切换按钮文本
+
     if (ui->pushButton_toggleOrientation) {
         ui->pushButton_toggleOrientation->setText(is_portrait_mode_ ? "竖屏" : "横屏");
     }
 
-    // 初始化WebView控件
+
     initWebEngineViews();
     LOG_INFO("========== setLiveItem END ==========");
 }
@@ -1435,7 +1373,7 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
 void MainWindow::initialize_modules() {
     LOG_INFO("========== initialize_modules START ==========");
 
-    // 清理旧的模块资源（如果有）
+
     if (capture_manager_) {
         auto source_ids = capture_manager_->get_all_source_ids();
         for (const auto& id : source_ids) {
@@ -1452,8 +1390,8 @@ void MainWindow::initialize_modules() {
     compositor_ = std::make_shared<Compositor>();
     encoder_bridge_ = std::make_shared<CompositorEncoderBridge>();
 
-    // GPU 路径初始化（Phase 2-4）
-    // 使用画布配置分辨率初始化，GpuCompositor 内部会用 SharedD3D11Device
+
+
     gpu_compositor_ = std::make_shared<GpuCompositor>();
     gpu_color_converter_ = std::make_shared<GpuColorConverter>();
     const int canvas_w = canvas_config_.get_width();
@@ -1471,31 +1409,33 @@ void MainWindow::initialize_modules() {
         gpu_color_converter_.reset();
     }
 
-    // 初始化场景选择器UI
+
     build_scene_selector();
 
-    // 加载保存的场景配置
+
     load_scenes_config();
 
-    // 使用当前画布配置的分辨率初始化视频引擎
+
     LOG_INFO(QString("Initializing VideoEngine with resolution: %1x%2")
         .arg(canvas_config_.get_width()).arg(canvas_config_.get_height()).toStdString());
     video_engine_->initialize(canvas_config_.get_width(), canvas_config_.get_height(), 30);
     audio_engine_->initialize(48000, 2);
-    // 进入直播间时不立即启动麦克风采集，等点击"开始直播"时再采集
-    // 这样可以避免持续占用麦克风资源
-    LOG_INFO("Audio engine initialized, will start capture when live streaming begins");
+    app_settings_.audio.microphone_device_id = audio_engine_->refresh_microphone_to_system_default();
+    app_settings_.audio.speaker_device_id = audio_engine_->refresh_speaker_to_system_default();
+    LOG_INFO("[MainWindow] Synced audio devices to current system defaults: mic=" +
+             app_settings_.audio.microphone_device_id +
+             ", speaker=" + app_settings_.audio.speaker_device_id);
+     LOG_INFO("Audio engine initialized, will start capture when live streaming begins");
     update_audio_status("待机", "gray");
-    // 先设置静音模式，等开始直播时再启动真实采集
     if (encoder_bridge_) {
         encoder_bridge_->set_audio_engine(audio_engine_);
-        encoder_bridge_->set_silent_audio(true);  // 默认静音，等开始直播后开启
+        encoder_bridge_->set_silent_audio(true);  // 
     }
 
-    // 加载保存的音量设置（如果有），否则使用系统当前音量
+
     loadAudioVolumeSettings();
 
-    // 初始化音频控件UI（同步滑块值）
+
     update_microphone_ui();
     update_speaker_ui();
 
@@ -1505,7 +1445,7 @@ void MainWindow::initialize_modules() {
     LOG_INFO(QString("Preparing deferred video encoder config: %1x%2").arg(video_config.width).arg(video_config.height).toStdString());
     encoder_->reinitialize_video_encoder(video_config);
 
-    // 使用音频引擎的实际采样率和声道数（设备原生格式）
+
     AudioEncoderConfig audio_config;
     audio_config.sample_rate = audio_engine_->get_sample_rate();
     audio_config.channels = audio_engine_->get_channels();
@@ -1519,9 +1459,9 @@ void MainWindow::initialize_modules() {
     encoding_timer_->start(33);
 
     streams_registered_ = false;
-    // 使用UI文件中定义的标签，不再手动创建
-    // 直播时长使用 ui->label_liveDuration
-    // 音频状态可以使用其他合适的位置或添加新标签
+
+
+
 
     live_duration_timer_ = new QTimer(this);
     connect(live_duration_timer_, &QTimer::timeout, this, [this]() {
@@ -1539,25 +1479,25 @@ void MainWindow::initialize_modules() {
         if (ui->label_liveDuration) ui->label_liveDuration->setText(text);
     });
 
-    // 系统信息更新定时器 (每2秒更新一次)
+
     system_info_timer_ = new QTimer(this);
     connect(system_info_timer_, &QTimer::timeout, [this]() {
         update_system_info();
     });
 
-    // 系统监控日志打印定时器 (每分钟打印一次)
+
     system_log_timer_ = new QTimer(this);
     connect(system_log_timer_, &QTimer::timeout, [this]() {
         log_system_stats_periodically();
     });
 
-    // 程序启动时启动系统信息更新定时器（非直播状态，每3秒更新）
-    // 注意：延迟启动，确保其他模块已完全初始化
+
+
     if (system_info_timer_) {
         QTimer::singleShot(500, this, [this]() {
             if (system_info_timer_) {
                 system_info_timer_->start(3000);
-                // 立即更新一次显示
+
                 update_system_info();
             }
         });
@@ -1576,10 +1516,10 @@ void MainWindow::setup_ui_connections() {
 
         SettingsPanel dlg(this, defaultTab);
 
-        // 从 app_settings_ 填充视频配置（canvas 为分辨率权威来源）
+
         dlg.set_video_config(build_video_config_from_settings(app_settings_));
 
-        // 从 app_settings_ 填充音频配置（合并 encoder_config 与实际音量）
+
         {
             AudioEncoderConfig audio_for_dlg = app_settings_.audio.encoder_config;
             audio_for_dlg.mic_volume     = app_settings_.audio.mic_volume;
@@ -1587,20 +1527,20 @@ void MainWindow::setup_ui_connections() {
             dlg.set_audio_config(audio_for_dlg);
         }
 
-        // 设置麦克风列表（设备枚举仍从引擎获取，selected 以 app_settings_ 为准）
+
         dlg.set_available_microphones(audio_engine_->get_available_microphones(),
                                        app_settings_.audio.microphone_device_id);
 
-        // 设置扬声器列表
+
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
                                     app_settings_.audio.speaker_device_id);
 
-        // 设置摄像头列表
+
         if (video_engine_) {
             dlg.set_available_cameras(video_engine_->get_available_camera_choices());
             dlg.set_video_engine(video_engine_);
 
-            // 摄像头实际分辨率/帧率从引擎读（可能被外部改变），mirror 从 app_settings_ 读
+
             std::string current_camera_device_id = app_settings_.camera.device_id;
             std::string current_resolution       = video_engine_->get_camera_resolution();
             int         current_fps              = video_engine_->get_camera_fps();
@@ -1609,7 +1549,7 @@ void MainWindow::setup_ui_connections() {
             dlg.set_camera_config(current_camera_device_id, current_resolution, current_fps, current_mirror);
         }
 
-        // 隐藏背景tab页（功能未实现）
+
         dlg.hide_background_tab();
 
         if (dlg.exec() == QDialog::Accepted) {
@@ -1624,17 +1564,17 @@ void MainWindow::setup_ui_connections() {
         });
     }
 
-    // 状态标签初始化
+
     if (ui->label_status) {
         ui->label_status->setText("预览中");
         ui->label_status->setObjectName("labelPreviewStatus");
     }
 
-    // 横竖屏切换按钮连接
+
     if (ui->pushButton_toggleOrientation) {
         connect(ui->pushButton_toggleOrientation, &QPushButton::clicked, this, [this]() {
             toggle_canvas_orientation();
-            // 更新按钮文本
+
             if (ui->pushButton_toggleOrientation) {
                 ui->pushButton_toggleOrientation->setText(is_portrait_mode_ ? "竖屏" : "横屏");
             }
@@ -1654,12 +1594,12 @@ void MainWindow::setup_ui_connections() {
                         on_screen_share_button_clicked();
                         break;
                     case AddMaterialDialog::Selection::Video:
-                        // 本地推流模式不支持插播视频
+
                         if (is_local_stream_mode_) {
                             QMessageBox::information(this, "提示", "本地推流模式不支持插播视频");
                             return;
                         }
-                        // 直接打开插播视频列表对话框，与插播视频按钮逻辑一致
+
                         show_insert_video_widget();
                         break;
                     default:
@@ -1679,25 +1619,25 @@ void MainWindow::setup_ui_connections() {
             }
 
             if (encoder_bridge_->is_streaming()) {
-                // 停止推流 - 显示结束直播确认对话框
+
                 QMessageBox::StandardButton reply = QMessageBox::question(
                     this,
                     "结束直播",
                     "确认结束直播么？",
                     QMessageBox::Yes | QMessageBox::No,
-                    QMessageBox::No  // 默认选择"否"
+                    QMessageBox::No
                 );
 
                 if (reply == QMessageBox::Yes) {
-                    // 用户确认结束直播
+
                     encoder_bridge_->stop_streaming();
-                    // 停止直播时也停止音频采集
+
                     if (audio_engine_ && audio_engine_->is_capturing()) {
                         LOG_INFO("Stopping audio capture after live streaming ended");
                         audio_engine_->stop_capture();
                     }
                     ui->pushButton_startLive->setText("开始直播");
-                    // 启用画布切换按钮
+
                     if (ui->pushButton_toggleOrientation) {
                         ui->pushButton_toggleOrientation->setEnabled(true);
                         ui->pushButton_toggleOrientation->setStyleSheet(
@@ -1709,7 +1649,7 @@ void MainWindow::setup_ui_connections() {
                     if (ui->label_status) {
                         ui->label_status->setText("推流结束");
                     }
-                    // 停止计时器
+
                     if (live_duration_timer_) {
                         live_duration_timer_->stop();
                         streaming_start_time_ms_ = 0;
@@ -1717,38 +1657,38 @@ void MainWindow::setup_ui_connections() {
                             ui->label_liveDuration->setText("00:00:00");
                         }
                     }
-                    // 改为3秒间隔持续更新系统信息（非直播状态）
+
                     if (system_info_timer_) {
                         system_info_timer_->start(3000);
-                        // 立即更新一次显示
+
                         update_system_info();
                     }
                     LOG_INFO("直播已结束");
                 }
-                // 如果用户选择"否"，什么都不做
+
                 return;
             }
 
-            // 开始推流 - 显示开始直播确认对话框
+
             LOG_DEBUG("[DIAG] 准备开始推流");
             QMessageBox::StandardButton reply = QMessageBox::question(
                 this,
                 "开始直播",
                 "确认开始直播么？",
                 QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::No  // 默认选择"否"
+                QMessageBox::No
             );
 
             if (reply == QMessageBox::Yes) {
-                // 用户确认开始直播
+
                 QString url = rtmp_server_url_;
                 if (url.isEmpty()) {
-                    // 如果没有预设的推流地址，使用默认地址
+
                     url = "rtmp://47.92.156.37:1935/live/aaa";
                 }
 
                 if (encoder_bridge_->start_streaming(url.toStdString())) {
-                    // 开始直播时启动音频采集
+
                     if (audio_engine_ && !audio_engine_->is_capturing()) {
                         LOG_INFO("Starting audio capture for live streaming");
                         update_audio_status("初始化中...", "orange");
@@ -1766,7 +1706,7 @@ void MainWindow::setup_ui_connections() {
                             LOG_WARNING("Failed to start audio capture for live streaming");
                             update_audio_status("故障", "red");
                         } else {
-                            // 启动成功后，关闭静音模式
+
                             if (encoder_bridge_) {
                                 encoder_bridge_->set_silent_audio(false);
                             }
@@ -1775,7 +1715,7 @@ void MainWindow::setup_ui_connections() {
                     }
 
                     ui->pushButton_startLive->setText("停止直播");
-                    // 禁用画布切换按钮
+
                     if (ui->pushButton_toggleOrientation) {
                         ui->pushButton_toggleOrientation->setEnabled(false);
                         ui->pushButton_toggleOrientation->setStyleSheet(
@@ -1785,13 +1725,13 @@ void MainWindow::setup_ui_connections() {
                     if (ui->label_status) {
                         ui->label_status->setText("正在推流");
                     }
-                    // 启动直播时长计时器
+
                     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
-                    // 直播时长显示用更高频刷新，避免偶尔“跳两秒”的观感（实际时长仍按系统时钟计算）
+
                     if (live_duration_timer_) {
                         live_duration_timer_->start(200);
                     }
-                    // 系统监控（CPU/内存/GPU/码率/FPS）按 2 秒更新，避免频繁 GPU 查询阻塞主线程
+
                     if (system_info_timer_) {
                         system_info_timer_->start(2000);
                     }
@@ -1800,7 +1740,7 @@ void MainWindow::setup_ui_connections() {
                     QMessageBox::warning(this, "错误", "开始推流失败，请检查推流地址");
                 }
             }
-            // 如果用户选择"否"，什么都不做
+
         });
     }
 
@@ -1822,7 +1762,7 @@ void MainWindow::setup_ui_connections() {
             set_microphone_volume(value / 100.0f);
             playVolumeFeedbackSound();
         });
-        // 滑块释放时保存设置
+
         connect(ui->slider_mic, &QSlider::sliderReleased, this, [this]() {
             saveAudioVolumeSettings();
         });
@@ -1845,7 +1785,7 @@ void MainWindow::setup_ui_connections() {
             set_speaker_volume(value / 100.0f);
             playVolumeFeedbackSound();
         });
-        // 滑块释放时保存设置
+
         connect(ui->slider_speaker, &QSlider::sliderReleased, this, [this]() {
             saveAudioVolumeSettings();
         });
@@ -1855,10 +1795,10 @@ void MainWindow::setup_ui_connections() {
     update_microphone_ui();
     update_speaker_ui();
 
-    // 插播视频按钮连接（本地推流模式下禁用）
+
     if (ui->pushButton_insertVideo) {
         if (is_local_stream_mode_) {
-            // 本地推流模式：禁用插播视频按钮
+
             ui->pushButton_insertVideo->setEnabled(false);
             ui->pushButton_insertVideo->setToolTip("本地推流模式不支持插播视频");
             LOG_INFO("Insert video button disabled for local stream mode");
@@ -1869,10 +1809,10 @@ void MainWindow::setup_ui_connections() {
 }
 
 void MainWindow::setupBottomButtonsStyle() {
-    // 设置底部控制栏按钮样式 - 与开始直播按钮风格统一但颜色区分
-    // 开始直播: #4a6ef0 -> #f05a6a (紫红)
+
+
     
-    // 共享屏幕: #2196F3 -> #00BCD4 (青色)
+
     QString shareScreenStyle = R"(
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1895,7 +1835,7 @@ void MainWindow::setupBottomButtonsStyle() {
         }
     )";
 
-    // 摄像头: #4CAF50 -> #8BC34A (绿色)
+
     QString cameraStyle = R"(
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1918,7 +1858,7 @@ void MainWindow::setupBottomButtonsStyle() {
         }
     )";
 
-    // 插播视频: #FF9800 -> #FF5722 (橙红色)
+
     QString insertVideoStyle = R"(
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1941,7 +1881,7 @@ void MainWindow::setupBottomButtonsStyle() {
         }
     )";
 
-    // 设置: #9C27B0 -> #E040FB (紫色)
+
     QString settingsStyle = R"(
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1964,10 +1904,10 @@ void MainWindow::setupBottomButtonsStyle() {
         }
     )";
 
-    // 应用不同的样式并连接点击事件
+
     if (ui->pushButton_shareScreen) {
         ui->pushButton_shareScreen->setStyleSheet(shareScreenStyle);
-        // 连接共享屏幕按钮点击事件
+
         connect(ui->pushButton_shareScreen, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Share screen button clicked from bottom toolbar");
             show_screen_share_selector();
@@ -1975,7 +1915,7 @@ void MainWindow::setupBottomButtonsStyle() {
     }
     if (ui->pushButton_camera) {
         ui->pushButton_camera->setStyleSheet(cameraStyle);
-        // 连接摄像头按钮点击事件
+
         connect(ui->pushButton_camera, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Camera button clicked from bottom toolbar");
             on_camera_button_clicked();
@@ -1994,7 +1934,7 @@ void MainWindow::setupBottomButtonsStyle() {
 void MainWindow::on_insert_video_button_clicked() {
     LOG_INFO("Insert video button clicked");
 
-    // 本地推流模式不支持插播视频
+
     if (is_local_stream_mode_) {
         QMessageBox::information(this, "提示", "本地推流模式不支持插播视频");
         return;
@@ -2007,15 +1947,15 @@ void MainWindow::show_insert_video_widget() {
     if (!insert_video_widget_) {
         insert_video_widget_ = new InsertVideoWidget(this);
 
-        // 设置直播间信息
-        // 从 current_live_item_ 获取直播间ID
+
+
         QString roomId = current_live_item_.liveId;
         if (!roomId.isEmpty()) {
-            // 注意：需要传递 live_url_，不能传空字符串
+
             insert_video_widget_->setLiveInfo(live_url_, user_id_, token_, roomId);
         }
 
-        // 连接开始插播信号
+
         connect(insert_video_widget_, &InsertVideoWidget::startInsertVideo,
                 this, &MainWindow::on_start_insert_video);
     }
@@ -2029,7 +1969,7 @@ void MainWindow::on_start_insert_video(const QString& fileId, const QString& fil
     LOG_INFO("Starting insert video: " + fileId.toStdString() + " - " + fileName.toStdString() +
              ", loopEnabled=" + std::to_string(loopEnabled));
 
-    // 如果已经有插播视频在播放，先停止
+
     if (is_insert_video_playing_) {
         stopInsertVideoPlayback();
     }
@@ -2051,14 +1991,14 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
         return;
     }
 
-    // 创建 MediaFileSource
+
     std::string source_id = "insert_video_" + fileId.toStdString();
     auto mediaSource = std::make_shared<MediaFileSource>(source_id, fileItem);
 
-    // 设置循环播放
+
     mediaSource->set_loop_enabled(loopEnabled);
 
-    // 设置音频回调：直接推送到 AudioEngine 队列
+
     mediaSource->set_audio_ready_callback([this, source_id](std::shared_ptr<AudioFrame> frame) {
         if (audio_engine_ && frame) {
             audio_engine_->pushMediaFrame(frame);
@@ -2071,7 +2011,7 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
         return;
     }
 
-    // 添加到场景
+
     if (!scene_manager_) {
         LOG_ERROR("Scene manager not initialized");
         return;
@@ -2083,79 +2023,79 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
         return;
     }
 
-    // 添加到场景（全屏显示）
+
     auto sceneItem = scene->add_source(mediaSource);
     if (sceneItem) {
-        // 设置全屏变换
+
         Transform transform(0, 0, canvas_config_.get_width(), canvas_config_.get_height());
         scene->set_transform(sceneItem, transform);
         
-        // 设置插播视频的order为最低（0），确保在摄像头之下渲染（先渲染的在下面）
+
         sceneItem->set_order(0);
 
-        // 添加到 Compositor（用于推流渲染）
+
         if (compositor_) {
             const std::string source_id_str = mediaSource->get_id();
             if (!compositor_->has_layer(source_id_str)) {
                 compositor_->add_layer(source_id_str);
-                // 设置最低的 z_order，确保插播视频在底层（被摄像头覆盖）
+
                 compositor_->set_layer_order(source_id_str, 0);
             }
             compositor_->update_layer_transform(source_id_str, 
                 QRectF(0, 0, canvas_config_.get_width(), canvas_config_.get_height()), 1.0f);
         }
 
-        // 设置帧回调 - 通过 encoder_bridge 设置无锁回调
-        // 注意：不再使用 Qt 信号槽，因为回调已经在工作线程中直接更新 latest_frame_
-        // 画布渲染时通过 get_latest_frame() 获取帧（和摄像头/屏幕共享一样）
+
+
+
         if (encoder_bridge_) {
             encoder_bridge_->attach_insert_video_source(mediaSource.get());
         }
 
-        // 启动播放
+
         if (mediaSource->start()) {
             current_insert_video_source_ = mediaSource;
             current_insert_video_file_id_ = fileId;
             is_insert_video_playing_ = true;
 
-            // 创建帧同步定时器（30fps，每33ms从同步器取帧更新到Compositor）
+
             insert_video_timer_ = new QTimer(this);
             connect(insert_video_timer_, &QTimer::timeout, this, &MainWindow::on_insert_video_frame_ready);
             insert_video_timer_->start(33);  // ~30fps
             LOG_INFO("[INSERT_VIDEO] Frame sync timer started at 30fps");
 
             if (audio_engine_) {
-                audio_engine_->set_media_volume(0.7f);  // 默认插播音量为70%
+                audio_engine_->set_media_volume(0.7f);
             }
             update_audio_mix_mode();
 
             LOG_INFO("Insert video playback started: " + fileItem->fileName.toStdString());
 
-            // 更新场景列表UI
+
             sync_scene_to_compositor();
 
-            // 关键修复：确保所有摄像头源保持最高的 order 值，永远在最上层
+
             auto scene = scene_manager_->get_current_scene();
             if (scene) {
                 auto items = scene->get_all_scene_items();
                 for (auto& item : items) {
                     if (item && item->get_source()) {
                         auto src = item->get_source();
-                        // 检查是否是摄像头源（VIDEO_CAPTURE 类型）
+
                         if (src->get_type() == Source::Type::VIDEO_CAPTURE) {
-                            item->set_order(9999); // 保持摄像头的最高order值
+                            item->set_order(9999);
                         }
                     }
                 }
                 scene->normalize_orders();
-                // 重新同步到 compositor，确保 order 值正确应用
+
                 sync_scene_to_compositor();
             }
 
             build_scene_list();
 
-            // 连接播放完成回调
-            // TODO: 实现播放完成检测
+
+
         } else {
             LOG_ERROR("Failed to start media source");
             scene->remove_scene_item(sceneItem);
@@ -2171,19 +2111,19 @@ void MainWindow::stopInsertVideoPlayback() {
 
     LOG_INFO("Stopping insert video playback");
 
-    // 停止帧同步定时器
+
     if (insert_video_timer_) {
         insert_video_timer_->stop();
         insert_video_timer_->deleteLater();
         insert_video_timer_ = nullptr;
     }
 
-    // 分离插播视频源（清除时间基准和同步器）
+
     if (encoder_bridge_ && current_insert_video_source_) {
         encoder_bridge_->detach_insert_video_source(current_insert_video_source_.get());
     }
 
-    // 从场景中移除
+
     if (scene_manager_ && current_insert_video_source_) {
         auto scene = scene_manager_->get_current_scene();
         if (scene) {
@@ -2191,7 +2131,7 @@ void MainWindow::stopInsertVideoPlayback() {
         }
     }
 
-    // 停止并清理源
+
     if (current_insert_video_source_) {
         current_insert_video_source_->stop();
         current_insert_video_source_->shutdown();
@@ -2202,7 +2142,7 @@ void MainWindow::stopInsertVideoPlayback() {
     is_insert_video_playing_ = false;
 
     if (audio_engine_) {
-        // 注销插播音频源回调
+
         if (!current_insert_video_file_id_.isEmpty()) {
             QString callbackId = QString("insert_video_%1").arg(current_insert_video_file_id_);
             audio_engine_->unregisterAudioSource(callbackId);
@@ -2210,7 +2150,7 @@ void MainWindow::stopInsertVideoPlayback() {
     }
     update_audio_mix_mode();
 
-    // 更新UI
+
     sync_scene_to_compositor();
     build_scene_list();
 
@@ -2222,19 +2162,19 @@ void MainWindow::on_stop_insert_video() {
 }
 
 void MainWindow::on_insert_video_frame_ready() {
-    // 从 encoder_bridge_ 的同步器获取插播视频帧
+
     if (!encoder_bridge_ || !compositor_ || !current_insert_video_source_) {
         return;
     }
 
     SyncedVideoFrame synced_frame;
-    // 非阻塞获取帧（最多尝试一次）
+
     if (encoder_bridge_->pop_insert_video_frame(synced_frame) && synced_frame.frame) {
         const std::string source_id = current_insert_video_source_->get_id();
-        // 更新 Compositor 中的层（这会同时更新画布显示和推流）
+
         compositor_->update_layer_video_frame(source_id, synced_frame.frame);
 
-        // 调试日志：确认帧更新成功
+
         static int frame_count = 0;
         static int64_t last_log_time = 0;
         frame_count++;
@@ -2274,12 +2214,12 @@ void MainWindow::show_camera_selector() {
         return;
     }
 
-    // 打印每个摄像头的详细信息
+
     for (const auto& camera : camera_choices) {
         LOG_INFO("摄像头设备: " + camera.display_name + " (DShow名称: " + camera.dshow_name + ")");
     }
 
-    // 检查当前是否有摄像头源在运行
+
     std::string existing_camera_device_id;
     bool has_running_camera = false;
     if (capture_manager_) {
@@ -2295,13 +2235,13 @@ void MainWindow::show_camera_selector() {
 
     CameraSettingsDialog dialog(this);
 
-    // 如果已经有摄像头在运行，禁用预览功能避免冲突
+
     if (has_running_camera) {
         LOG_INFO("已有摄像头在运行，禁用预览功能");
         dialog.set_preview_disabled(true);
     }
 
-    // 使用新的接口传递摄像头信息（包含 OpenCV 索引）
+
     std::vector<std::string> display_names;
     std::vector<std::string> dshow_names;
     std::vector<int> opencv_indices;
@@ -2313,7 +2253,7 @@ void MainWindow::show_camera_selector() {
     dialog.set_available_cameras_with_opencv(display_names, dshow_names, opencv_indices);
 
     if (dialog.exec() == QDialog::Accepted) {
-        // 获取完整的采集配置
+
         CaptureConfig capture_cfg = dialog.get_capture_config();
 
         const std::string camera_device_id = capture_cfg.target_id;
@@ -2342,7 +2282,7 @@ void MainWindow::show_camera_selector() {
             return;
         }
 
-        // 检查是否已有该摄像头源
+
         const std::string source_id = "camera_" + std::to_string(std::hash<std::string>{}(camera_device_id));
         if (capture_manager_ && capture_manager_->has_source(source_id)) {
             LOG_INFO("该摄像头已在使用中，无需重新添加");
@@ -2350,19 +2290,19 @@ void MainWindow::show_camera_selector() {
             return;
         }
 
-        // 尝试从对话框获取预览源（复用已打开的摄像头）
+
         auto preview_source = dialog.take_preview_source();
         if (preview_source) {
             LOG_INFO("复用对话框已打开的摄像头源");
-            // 使用对话框创建的预览源
+
             on_select_camera_with_source(selected_camera, capture_cfg, preview_source);
         } else {
-            // 对话框没有创建新源，需要创建
+
             LOG_INFO("创建新的摄像头源");
             on_select_camera(selected_camera, capture_cfg);
         }
     }
-    // 如果取消，对话框的析构函数会自动清理临时预览源
+
 }
 
 void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfig& config) {
@@ -2375,10 +2315,10 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
         return;
     }
 
-    // 使用配置中的设备 ID
+
     std::string camera_device_id = config.target_id;
     if (config.capture_mode == CaptureMode::OPENCV) {
-        // OpenCV 模式使用索引
+
         camera_device_id = std::to_string(config.opencv_index);
     }
 
@@ -2393,7 +2333,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
         return;
     }
 
-    // 使用传入的配置
+
     CaptureConfig cfg = config;
     cfg.target_id = camera_device_id;
 
@@ -2428,23 +2368,23 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
     LOG_INFO("成功创建摄像头采集源");
 
     LOG_INFO("连接frameReady信号到Compositor的槽函数");
-    // 使用信号槽连接替代回调，显式指定跨线程连接类型
+
     connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
-        // 更新compositor（用于推流）
+
         if (compositor_ && !frame.image.isNull()) {
             if (!compositor_->has_layer(source_id)) {
                 compositor_->add_layer(source_id);
 
-                // 同步正确的图层顺序和transform
+
                 if (scene_manager_ && scene_manager_->get_current_scene()) {
                     auto scene = scene_manager_->get_current_scene();
                     auto items = scene->get_all_scene_items();
                     for (auto& item : items) {
                         if (item && item->get_source_id() == source_id) {
-                            // 设置图层顺序
+
                             compositor_->set_layer_order(source_id, item->get_order());
 
-                            // 设置图层transform
+
                             const auto& tr = item->get_transform();
                             int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
                             int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
@@ -2459,13 +2399,13 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
         }
 
-        // 更新对应的ScreenSource或CameraSource（用于预览显示）
+
         if (scene_manager_ && scene_manager_->get_current_scene()) {
             auto scene = scene_manager_->get_current_scene();
             auto items = scene->get_all_scene_items();
             for (auto& item : items) {
                 if (item && item->get_source_id() == source_id) {
-                    // 尝试更新 ScreenSource（屏幕共享）
+
                     auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                     if (screenSrc) {
                         screenSrc->push_frame(frame.image);
@@ -2504,7 +2444,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                         break;
                     }
 
-                    // 尝试更新 CameraSource（摄像头）
+
                     auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
                     if (cameraSrc) {
                         cameraSrc->push_frame(frame.image);
@@ -2568,14 +2508,14 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
             auto added_item = scene->add_source(camera_source);
             // If we have a canvas size available, set the scene item's transform to fill the canvas
             if (added_item) {
-                // 保存设备ID和参数，用于序列化
+
                 added_item->set_device_id(camera_device_id);
                 added_item->set_display_name(camera_name.toStdString());
 
-                // 保存摄像头参数
+
                 std::unordered_map<std::string, std::string> params;
 
-                // 从 video_engine_ 获取当前配置
+
                 if (video_engine_) {
                     params["resolution"] = video_engine_->get_camera_resolution();
                     params["fps"] = std::to_string(video_engine_->get_camera_fps());
@@ -2589,16 +2529,16 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                 }
                 params["mirror"] = config.mirror ? "true" : "false";
 
-                // 保存 FFmpeg 设备 ID（Friendly Name）和 OpenCV 索引
-                params["ffmpeg_device_id"] = camera_device_id;  // FFmpeg 用 Friendly Name
-                // OpenCV 索引需要从 capture_cfg 获取，但这里没有
-                // 暂时保存 camera_device_id，恢复时如果是 OpenCV 模式会重新枚举
-                params["opencv_index"] = "0";  // 默认索引
+
+                params["ffmpeg_device_id"] = camera_device_id;
+
+
+                params["opencv_index"] = "0";
                 added_item->set_source_params(params);
 
-                // 使用canvas_config_的逻辑尺寸，确保视频源初始尺寸合理
-                int canvas_w = canvas_config_.get_width(); // 默认1280
-                int canvas_h = canvas_config_.get_height(); // 默认720
+
+                int canvas_w = canvas_config_.get_width();
+                int canvas_h = canvas_config_.get_height();
                 int w = canvas_w / 2;
                 int h = canvas_h / 2;
                 int x = (canvas_w - w) / 2;
@@ -2613,16 +2553,16 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                 Transform tr(x, y, w, h, 0.0f, 1.0f, mirror);
                 scene->set_transform(added_item, tr);
 
-                // 设置摄像头的order为最高，确保它永远在最上层
-                added_item->set_order(9999); // 设置一个很高的值
+
+                added_item->set_order(9999);
                 scene->normalize_orders();
             }
             LOG_INFO("更新场景项并同步到Compositor");
-            update_scene_items();  // 确保compositor中有对应的图层
+            update_scene_items();
             LOG_INFO("Added camera source to scene: " + camera_name.toStdString() + ", id=" + source_id);
         }
 
-    // 最后启动摄像头源，确保此时compositor中已经有了对应的图层
+
     LOG_INFO("启动摄像头采集源: " + source_id);
     if (!capture_manager_->start_source(source_id)) {
         LOG_ERROR("启动摄像头采集源失败");
@@ -2643,7 +2583,7 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
         return;
     }
 
-    // 使用配置中的设备 ID
+
     std::string camera_device_id = config.target_id;
     if (config.capture_mode == CaptureMode::OPENCV) {
         camera_device_id = std::to_string(config.opencv_index);
@@ -2652,7 +2592,7 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
     const std::string source_id = "camera_" + std::to_string(std::hash<std::string>{}(camera_device_id));
     LOG_INFO("生成的源ID: " + source_id);
 
-    // 检查是否已存在
+
     if (capture_manager_->has_source(source_id)) {
         LOG_INFO("该摄像头已在使用中: " + source_id);
         QMessageBox::information(this, "提示", "该摄像头已在使用中");
@@ -2665,17 +2605,17 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
         return;
     }
 
-    // 连接frameReady信号到Compositor的槽函数
+
     LOG_INFO("连接frameReady信号到Compositor的槽函数");
     connect(existing_source.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
         LOG_DEBUG("[DIAG] 收到frameReady信号，源ID: " + source_id);
 
-        // 更新compositor（用于推流）
+
         if (compositor_ && !frame.image.isNull()) {
             if (!compositor_->has_layer(source_id)) {
                 compositor_->add_layer(source_id);
 
-                // 同步正确的图层顺序和transform
+
                 if (scene_manager_ && scene_manager_->get_current_scene()) {
                     auto scene = scene_manager_->get_current_scene();
                     auto items = scene->get_all_scene_items();
@@ -2696,7 +2636,7 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
         }
 
-        // 更新 CameraSource（用于预览显示）
+
         if (scene_manager_ && scene_manager_->get_current_scene()) {
             auto scene = scene_manager_->get_current_scene();
             auto items = scene->get_all_scene_items();
@@ -2713,12 +2653,12 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
     }, Qt::QueuedConnection);
     LOG_INFO("信号槽连接成功");
 
-    // 将采集源添加到采集管理器
+
     LOG_INFO("将采集源添加到采集管理器: " + source_id);
     capture_manager_->add_source(source_id, existing_source);
     LOG_INFO("采集源添加成功");
 
-    // 将摄像头源添加到场景中
+
     if (scene_manager_ && scene_manager_->get_current_scene()) {
         LOG_INFO("将摄像头源添加到场景中");
         auto scene = scene_manager_->get_current_scene();
@@ -2730,11 +2670,11 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
         LOG_INFO("添加到场景");
         auto added_item = scene->add_source(camera_source);
         if (added_item) {
-            // 保存设备ID和参数
+
             added_item->set_device_id(camera_device_id);
             added_item->set_display_name(camera_name.toStdString());
 
-            // 保存摄像头参数
+
             std::unordered_map<std::string, std::string> params;
             params["resolution"] = config.resolution_string();
             params["fps"] = std::to_string(config.fps);
@@ -2828,28 +2768,28 @@ void MainWindow::show_screen_share_selector() {
                 LOG_INFO(std::string("生成的源ID: ") + source_id);
 
                 LOG_INFO(std::string("连接frameReady信号到Compositor的槽函数"));
-                // 使用信号槽连接替代回调，显式指定跨线程连接类型
-                connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
-                    // 每帧都打印会导致 UI 卡顿，仅在调试时打开
-                    //LOG_INFO("   收到frameReady信号，源ID: " + source_id + ", 图像尺寸: " + std::to_string(frame.image.width()) + "x" + std::to_string(frame.image.height()));
 
-                    // 对于屏幕共享，同时更新compositor和ScreenSource
-                    if (source_id.find("capture_") == 0) {  // 屏幕共享源ID以"capture_"开头
-                        // 更新compositor（用于推流）
+                connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
+
+
+
+
+                    if (source_id.find("capture_") == 0) {
+
                         if (compositor_ && !frame.image.isNull()) {
                             if (!compositor_->has_layer(source_id)) {
                                 compositor_->add_layer(source_id);
 
-                                // 同步正确的图层顺序和transform
+
                                 if (scene_manager_ && scene_manager_->get_current_scene()) {
                                     auto scene = scene_manager_->get_current_scene();
                                     auto items = scene->get_all_scene_items();
                                     for (auto& item : items) {
                                         if (item && item->get_source_id() == source_id) {
-                                            // 设置图层顺序
+
                                             compositor_->set_layer_order(source_id, item->get_order());
 
-                                            // 设置图层transform
+
                                             const auto& tr = item->get_transform();
                                             int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
                                             int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
@@ -2864,20 +2804,20 @@ void MainWindow::show_screen_share_selector() {
                             compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
                         }
 
-                        // 更新对应的ScreenSource或CameraSource（用于预览显示）
+
                         if (scene_manager_ && scene_manager_->get_current_scene()) {
                             auto scene = scene_manager_->get_current_scene();
                             auto items = scene->get_all_scene_items();
                             for (auto& item : items) {
                                 if (item && item->get_source_id() == source_id) {
-                                    // 尝试更新 ScreenSource（屏幕共享）
+
                                     auto screenSrc = std::dynamic_pointer_cast<ScreenSource>(item->get_source());
                                     if (screenSrc) {
                                         screenSrc->push_frame(frame.image);
                                         break;
                                     }
 
-                                    // 尝试更新 CameraSource（摄像头）
+
                                     auto cameraSrc = std::dynamic_pointer_cast<CameraSource>(item->get_source());
                                     if (cameraSrc) {
                                         cameraSrc->push_frame(frame.image);
@@ -2887,7 +2827,7 @@ void MainWindow::show_screen_share_selector() {
                             }
                         }
                     }
-                    // 对于摄像头，只更新ScreenSource（已在其他地方处理）
+
                 }, Qt::QueuedConnection);
                 LOG_INFO(std::string("信号槽连接成功"));
 
@@ -2909,35 +2849,35 @@ void MainWindow::show_screen_share_selector() {
                         screen_src->start();
                         auto added_item = scene->add_source(screen_src);
                         if (added_item) {
-                            // 保存设备ID和参数，用于序列化
+
                             added_item->set_device_id(selected_target->id);
 
-                            // 保存屏幕共享参数
+
                             std::unordered_map<std::string, std::string> params;
                             params["fps"] = std::to_string(fps);
                             params["capture_cursor"] = capture_cursor ? "true" : "false";
                             params["capture_border"] = capture_border ? "true" : "false";
                             added_item->set_source_params(params);
 
-                            // 使用canvas_config_的逻辑尺寸，让视频源自适应满画布
+
                             int canvas_w = canvas_config_.get_width();
                             int canvas_h = canvas_config_.get_height();
 
-                            // 假设视频源的原始宽高比（这里使用16:9作为默认值，实际应该从视频源获取）
-                            // 注意：实际应用中应该从视频源获取真实的宽高比
-                            int src_w = 1280; // 假设视频源宽度
-                            int src_h = 720; // 假设视频源高度
 
-                            // 计算缩放比例，取较小值以保证完全显示
+
+                            int src_w = 1280;
+                            int src_h = 720;
+
+
                             double scale_w = static_cast<double>(canvas_w) / src_w;
                             double scale_h = static_cast<double>(canvas_h) / src_h;
                             double scale = (std::min)(scale_w, scale_h);
 
-                            // 计算缩放后的尺寸
+
                             int target_w = static_cast<int>(src_w * scale);
                             int target_h = static_cast<int>(src_h * scale);
 
-                            // 计算居中位置
+
                             int x = (canvas_w - target_w) / 2;
                             int y = (canvas_h - target_h) / 2;
 
@@ -2945,18 +2885,18 @@ void MainWindow::show_screen_share_selector() {
                             scene->set_transform(added_item, tr);
                         }
 
-                        // 确保所有摄像头项仍然保持最高的order值
+
                         auto items = scene->get_all_scene_items();
                         for (auto& item : items) {
                             if (QString::fromStdString(item->get_source_id()).startsWith("camera_")) {
-                                item->set_order(9999); // 保持摄像头的最高order值
+                                item->set_order(9999);
                             }
                         }
                         scene->normalize_orders();
 
                         update_scene_items();
 
-                        // 同步图层顺序到 Compositor
+
                         sync_scene_to_compositor();
 
                         LOG_INFO(std::string("Added ScreenSource to scene for preview: ") + source_id);
@@ -2983,7 +2923,7 @@ void MainWindow::on_select_screen_share(const QString& target_id, bool is_screen
     QString target_type = is_screen_mode ? "屏幕" : "窗口";
     std::string source_id = std::string("capture_") + target_id.toStdString();
 
-    // 只记录日志，不弹窗提示
+
     if (capture_manager_ && capture_manager_->has_source(source_id)) {
         LOG_INFO("Screen sharing already active for: " + target_id.toStdString());
     } else {
@@ -2995,7 +2935,7 @@ void MainWindow::on_camera_frame_ready() {
 }
 
 void MainWindow::update_status(const QString& message) {
-    // 状态栏已移除
+
 }
 
 void MainWindow::setup_canvas_widget() {
@@ -3003,20 +2943,20 @@ void MainWindow::setup_canvas_widget() {
     canvas_widget_ = new CanvasWidget(this);
     canvas_widget_->set_scene_manager(scene_manager_);
     canvas_widget_->set_video_engine(video_engine_);
-    // 使用默认的画布配置（横屏16:9）
+
     LOG_INFO("Calling set_canvas_config from setup_canvas_widget");
     set_canvas_config(canvas_config_);
 
     canvas_widget_->set_compositor(compositor_);
 
     encoder_bridge_->set_compositor(compositor_);
-    // GPU 路径（Phase 2-4）：若初始化成功，接入 GpuCompositor + GpuColorConverter
+
     if (gpu_compositor_ && gpu_color_converter_) {
         encoder_bridge_->set_gpu_compositor(gpu_compositor_);
         encoder_bridge_->set_gpu_color_converter(gpu_color_converter_);
         LOG_INFO("GPU pipeline wired to encoder bridge");
     }
-    // 设置 CanvasRenderer 作为回退方案（用于推流捕获）
+
     if (canvas_widget_->get_renderer() && scene_manager_->get_current_scene()) {
         encoder_bridge_->set_canvas_renderer(
             std::shared_ptr<CanvasRenderer>(canvas_widget_->get_renderer()),
@@ -3026,7 +2966,7 @@ void MainWindow::setup_canvas_widget() {
     encoder_bridge_->set_encoder(encoder_);
     encoder_bridge_->set_stream_pusher(stream_pusher_);
     encoder_bridge_->set_audio_engine(audio_engine_);
-    // 使用当前画布配置的分辨率，而不是硬编码
+
     encoder_bridge_->set_resolution(canvas_config_.get_width(), canvas_config_.get_height());
     // Start the encoder bridge so it begins capturing/compositing frames for streaming.
     if (encoder_ && encoder_bridge_) {
@@ -3035,13 +2975,20 @@ void MainWindow::setup_canvas_widget() {
         LOG_INFO("Encoder bridge started from MainWindow with fps: " + std::to_string(encoder_->get_video_config().fps));
     }
 
-    // 连接推流控制信号
+
     connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_started,
             this, &MainWindow::on_streaming_started);
     connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_stopped,
             this, &MainWindow::on_streaming_stopped);
+    // QueuedConnection: start_streaming() holds state_mutex_ when it emits
+    // streaming_error on failure.  A DirectConnection would call on_streaming_error
+    // immediately in the same thread, which re-enters state_mutex_ (non-recursive)
+    // → undefined behaviour / crash in kernelbase.  QueuedConnection defers the
+    // slot to the next event-loop iteration after start_streaming() has returned
+    // and released the lock.
     connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_error,
-            this, &MainWindow::on_streaming_error);
+            this, &MainWindow::on_streaming_error,
+            Qt::QueuedConnection);
 
     // To avoid crashes from dangling event filters or transient stageContainer_, insert the canvas
     // directly into the layout so it is managed by the UI layout system (stable and predictable).
@@ -3070,26 +3017,26 @@ void MainWindow::setup_canvas_widget() {
         if (stageAddButton_) { delete stageAddButton_; stageAddButton_ = nullptr; }
     }
 
-    // 创建画布容器，用于保持宽高比
+
     if (!canvasContainer_) {
         canvasContainer_ = new QWidget(ui->centralWidget);
         canvasContainer_->setStyleSheet("background-color: #000000;");
     }
     ui->verticalLayout_liveArea->insertWidget(0, canvasContainer_);
 
-    // 将 canvas_widget_ 放入容器中
+
     canvas_widget_->setParent(canvasContainer_);
-    // 初始时隐藏画布，等布局完成后再显示正确大小
+
     canvas_widget_->hide();
 
-    // 强制布局更新，确保容器大小已计算完成
+
     ui->liveArea->updateGeometry();
     ui->liveArea->layout()->activate();
     canvasContainer_->updateGeometry();
 
-    // 计算并设置正确的初始大小（基于容器大小）
+
     QTimer::singleShot(0, this, [this]() {
-        // 先安装事件过滤器，再调整大小
+
         if (canvasContainer_) {
             canvasContainer_->installEventFilter(this);
         }
@@ -3144,7 +3091,7 @@ void MainWindow::setup_canvas_widget() {
         }
         stageAddButton_->show();
     }
-    // position overlays: + button above "添加直播画面" text
+
     repositionPlaceholderOverlays();
 
     connect(canvas_widget_, &CanvasWidget::scene_item_selected, this, [this](std::shared_ptr<SceneItem> item) {
@@ -3160,7 +3107,7 @@ void MainWindow::setup_canvas_widget() {
     // After canvas inserted, update placeholder visibility
     updateStagePlaceholderVisibility();
 
-    // 恢复采集源（反序列化后重建采集连接，使画面能正常显示）
+
     restore_capture_sources();
 
     LOG_INFO("========== setup_canvas_widget END ==========");
@@ -3288,7 +3235,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         }
     }
     if (ui && watched == ui->liveArea && event->type() == QEvent::Resize) {
-        // 根据当前画布方向调整舞台容器宽高比
+
         update_stage_container_aspect_ratio();
         // Reposition placeholder overlays when liveArea resizes
         repositionPlaceholderOverlays();
@@ -3308,31 +3255,31 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::update_system_info() {
-    // 更新系统监控数据
+
     system_monitor().update();
 
-    // 获取系统信息
+
     const auto& sys_stats = system_monitor().get_cached_stats();
 
-    // 准备内存显示文本
+
     QString memory_text;
     {
-        // 这里显示的是“显存占用率”（used/total），不是 GPU 核心利用率
+
         memory_text = QString("内存: %1GB/%2GB (%3%)")
             .arg(sys_stats.memory_used_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
             .arg(sys_stats.memory_total_bytes / 1024.0 / 1024.0 / 1024.0, 0, 'f', 1)
             .arg(sys_stats.memory_usage_percent, 0, 'f', 0);
     }
 
-    // 根据是否直播构建状态文本
+
     QString status_text;
     QString style;
 
-    // 判断是否正在直播（统一使用stream_pusher_的推送状态）
+
     bool is_pushing = stream_pusher_ && stream_pusher_->is_pushing();
 
     if (is_pushing) {
-        // 直播中：显示实际码率和FPS（从stream_pusher_获取）
+
         auto stats = stream_pusher_->get_stats();
         QString bitrate_fps_text = QString("码率: %1kb/s | FPS: %2 | ")
             .arg(static_cast<int>(stats.bandwidth_kbps))
@@ -3343,7 +3290,7 @@ void MainWindow::update_system_info() {
             .arg(memory_text);
         style = "font-size: 12px; color: #cccccc;";
     } else {
-        // 非直播：码率和FPS显示为0
+
         status_text = QString("码率: 0kb/s | FPS: 0.00 | CPU: %1% | %2")
             .arg(QString::number(sys_stats.cpu_usage_percent, 'f', 1))
             .arg(memory_text);
@@ -3391,7 +3338,7 @@ void MainWindow::restoreStage() {
     if (stageBtnMax_) { stageBtnMax_->setIcon(QIcon(":/images/Frame_Max@2x.png")); stageBtnMax_->setToolTip("最大化"); }
     if (ui->pushButton_maximize) { ui->pushButton_maximize->setIcon(QIcon(":/images/Frame_Max@2x.png")); ui->pushButton_maximize->setToolTip("最大化"); }
 }
-// 新增：定期打印系统统计日志（每分钟打印一次）
+
 void MainWindow::log_system_stats_periodically() {
     const auto& stats = system_monitor().get_cached_stats();
 
@@ -3462,9 +3409,9 @@ void MainWindow::show_scene_item_settings(int index) {
     std::string source_id = source->get_id();
     QString source_type = QString::fromStdString(source->get_metadata());
 
-    // 检查是否是摄像头源
+
     if (QString::fromStdString(source_id).startsWith("camera_")) {
-        // 打开设置面板并切换到摄像头页面
+
         if (!encoder_ || !audio_engine_ || !video_engine_) {
             QMessageBox::warning(this, "错误", "模块未初始化");
             return;
@@ -3472,10 +3419,10 @@ void MainWindow::show_scene_item_settings(int index) {
 
         SettingsPanel dlg(this, SettingsTab::Camera);
 
-        // 从 app_settings_ 填充视频配置
+
         dlg.set_video_config(build_video_config_from_settings(app_settings_));
 
-        // 从 app_settings_ 填充音频配置
+
         {
             AudioEncoderConfig audio_for_dlg = app_settings_.audio.encoder_config;
             audio_for_dlg.mic_volume     = app_settings_.audio.mic_volume;
@@ -3483,18 +3430,18 @@ void MainWindow::show_scene_item_settings(int index) {
             dlg.set_audio_config(audio_for_dlg);
         }
 
-        // 设置麦克风列表
+
         dlg.set_available_microphones(audio_engine_->get_available_microphones(),
                                        app_settings_.audio.microphone_device_id);
 
-        // 设置扬声器列表
+
         dlg.set_available_speakers(audio_engine_->get_available_speakers(),
                                     app_settings_.audio.speaker_device_id);
 
-        // 设置摄像头列表
+
         dlg.set_available_cameras(video_engine_->get_available_camera_choices());
 
-        // 摄像头分辨率/帧率从引擎读，mirror 和 device_id 从 app_settings_ 读
+
         std::string current_resolution = video_engine_->get_camera_resolution();
         int         current_fps        = video_engine_->get_camera_fps();
         bool        current_mirror     = app_settings_.camera.mirror;
@@ -3503,14 +3450,14 @@ void MainWindow::show_scene_item_settings(int index) {
             current_device_id = item->get_device_id();
         }
 
-        // 设置摄像头配置
+
         dlg.set_camera_config(current_device_id, current_resolution, current_fps, current_mirror);
 
         if (dlg.exec() == QDialog::Accepted) {
-            // 应用通用设置
+
             applySettingsPanelChanges(dlg);
 
-            // 获取新的摄像头配置
+
             std::string new_resolution = dlg.get_camera_resolution();
             int new_fps = dlg.get_camera_fps();
             bool new_mirror = dlg.is_camera_mirror();
@@ -3519,19 +3466,19 @@ void MainWindow::show_scene_item_settings(int index) {
                      ", 帧率: " + std::to_string(new_fps) +
                      ", 镜像: " + (new_mirror ? "开启" : "关闭"));
 
-            // 更新 video_engine 配置
+
             video_engine_->set_camera_resolution(new_resolution);
             video_engine_->set_camera_fps(new_fps);
             video_engine_->set_camera_mirror(new_mirror);
 
-            // 更新镜像显示
+
             if (current_mirror != new_mirror) {
                 auto transform = item->get_transform();
                 transform.mirror = new_mirror;
                 item->set_transform(transform);
             }
 
-            // 如果分辨率或帧率改变了，提示用户
+
             if (new_resolution != current_resolution || new_fps != current_fps) {
                 QMessageBox::information(this, "提示",
                     "分辨率或帧率已更改，需要重新添加摄像头才能生效。\n"
@@ -3541,21 +3488,21 @@ void MainWindow::show_scene_item_settings(int index) {
             LOG_INFO("Camera settings updated for source: " + source_id);
         }
     }
-    // 检查是否是屏幕共享源（capture_ 开头）
+
     else if (QString::fromStdString(source_id).startsWith("capture_")) {
         LOG_INFO("Opening share settings for source: " + source_id);
 
-        // 打开共享设置对话框
+
         ShareSettingsDialog dlg(this);
 
-        // 获取当前 capture_manager_ 中的源配置
+
         if (capture_manager_) {
             auto src = capture_manager_->get_source(source_id);
             if (src) {
                 LOG_INFO("Found source in capture_manager, current config - cursor: " +
                          std::string(src->get_config().capture_cursor ? "true" : "false") +
                          ", border: " + std::string(src->get_config().capture_border ? "true" : "false"));
-                // 设置初始值为当前配置
+
                 const auto& cfg = src->get_config();
                 dlg.setInitialValues(cfg.capture_cursor, cfg.capture_border);
             } else {
@@ -3572,7 +3519,7 @@ void MainWindow::show_scene_item_settings(int index) {
             LOG_INFO("Share settings dialog accepted - cursor: " + std::string(capture_cursor ? "true" : "false") +
                      ", border: " + std::string(capture_border ? "true" : "false"));
 
-            // 更新 capture_manager_ 中的源的设置
+
             if (capture_manager_) {
                 capture_manager_->update_share_settings(source_id, capture_cursor, capture_border);
             }
@@ -3582,7 +3529,7 @@ void MainWindow::show_scene_item_settings(int index) {
             LOG_INFO("Share settings dialog cancelled");
         }
     } else {
-        // 其他类型的源，显示开发中
+
         QMessageBox::information(this, "提示", "设置功能开发中...");
     }
 }
@@ -3607,7 +3554,7 @@ void MainWindow::SettingsApplier::on_settings_changed(const AppSettings& s, Sett
         if (w->canvas_widget_) {
             w->canvas_widget_->set_canvas_config(s.canvas);
         }
-        // 分辨率变更也需要重新初始化视频编码器
+
         if (!has_section(changed, SettingsSection::Video)) {
             VideoEncoderConfig video_config = MainWindow::build_video_config_from_settings(s);
             if (w->encoder_) {
@@ -3641,7 +3588,7 @@ void MainWindow::SettingsApplier::on_settings_changed(const AppSettings& s, Sett
         if (w->video_engine_) {
             w->video_engine_->set_camera_mirror(s.camera.mirror);
         }
-        // 更新 Scene 中摄像头 SceneItem 的 Transform.mirror
+
         if (w->scene_manager_ && w->scene_manager_->get_current_scene()) {
             auto scene = w->scene_manager_->get_current_scene();
             for (auto& item : scene->get_all_scene_items()) {
@@ -3664,11 +3611,11 @@ void MainWindow::SettingsApplier::on_settings_changed(const AppSettings& s, Sett
 void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     SettingsSection changed = SettingsSection::None;
 
-    // --- 视频分区 ---
+
     app_settings_.video = dlg.get_video_config();
     changed |= SettingsSection::Video;
 
-    // --- 画布分区（分辨率改变时） ---
+
     const auto new_v = app_settings_.video;
     if (canvas_config_.get_width() != new_v.width || canvas_config_.get_height() != new_v.height) {
         LOG_INFO(QString("分辨率改变: %1x%2 -> %3x%4")
@@ -3680,7 +3627,7 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
         changed |= SettingsSection::Canvas;
     }
 
-    // --- 音频分区 ---
+
     app_settings_.audio.encoder_config      = dlg.get_audio_config();
     app_settings_.audio.mic_volume          = dlg.get_microphone_volume();
     app_settings_.audio.speaker_volume      = dlg.get_speaker_volume();
@@ -3688,18 +3635,18 @@ void MainWindow::applySettingsPanelChanges(SettingsPanel& dlg) {
     app_settings_.audio.speaker_device_id   = dlg.get_selected_speaker_id();
     changed |= SettingsSection::Audio;
 
-    // --- 摄像头分区 ---
+
     app_settings_.camera.mirror     = dlg.is_camera_mirror();
     app_settings_.camera.device_id  = dlg.get_selected_camera_id();
     app_settings_.camera.resolution = dlg.get_camera_resolution();
     app_settings_.camera.fps        = dlg.get_camera_fps();
     changed |= SettingsSection::Camera;
 
-    // 持久化并通知观察者
+
     app_settings_.save(changed);
     app_settings_.notify(changed);
 
-    // 推流中则提示重启（UI 逻辑留在 MainWindow）
+
     if (stream_pusher_ && stream_pusher_->is_pushing()) {
         QMessageBox::information(this, "提示", "参数已修改，将重启推流使其生效");
         if (encoder_bridge_) encoder_bridge_->stop();
@@ -3752,7 +3699,7 @@ void MainWindow::delete_scene_item(int index) {
 QString MainWindow::extract_source_name(std::shared_ptr<Source> source, std::shared_ptr<SceneItem> item) {
     if (!source) return "Unknown";
 
-    // 优先使用 SceneItem 的 display_name
+
     if (item) {
         const std::string& dn = item->get_display_name();
         if (!dn.empty()) {
@@ -3816,12 +3763,12 @@ void MainWindow::sync_scene_to_compositor() {
 
     auto scene = scene_manager_->get_current_scene();
 
-    // 注意：video_engine_->set_current_scene() 现在只在开始插播时调用一次
-    // 不在这里调用，避免频繁同步造成性能问题
+
+
 
     auto items = scene->get_all_scene_items();
 
-    // 事件驱动时打印，频繁调用时注释掉避免阻塞
+
     // LOG_INFO("[DIAG] sync_scene_to_compositor: scene=" + scene->get_name() +
     //          ", items_count=" + std::to_string(items.size()));
 
@@ -3844,8 +3791,8 @@ void MainWindow::sync_scene_to_compositor() {
         const int w = tr.width > 0 ? tr.width : 640;
         const int h = tr.height > 0 ? tr.height : 360;
 
-        // 允许源部分超出画布边界，实现裁剪效果
-        // 只对小于画布的源做边界限制，大于等于画布的源允许自由移动
+
+
         int canvas_width = canvas_config_.get_width();
         int canvas_height = canvas_config_.get_height();
         if (canvas_widget_) {
@@ -3858,14 +3805,14 @@ void MainWindow::sync_scene_to_compositor() {
         int final_w = w;
         int final_h = h;
 
-        // 只有当源小于画布时才限制位置
+
         if (w < canvas_width) {
             final_x = (std::max)(0, (std::min)(tr.x, canvas_width - w));
         }
         if (h < canvas_height) {
             final_y = (std::max)(0, (std::min)(tr.y, canvas_height - h));
         }
-        // 尺寸不做钳制，保留原始尺寸
+
 
         compositor_->update_layer_transform(sid, QRectF(final_x, final_y, final_w, final_h), tr.opacity);
         compositor_->set_layer_visible(sid, it->is_visible());
@@ -3880,8 +3827,8 @@ void MainWindow::sync_scene_to_compositor() {
 }
 
 void MainWindow::update_audio_status(const QString& text, const QString& color) {
-    // 不再使用手动创建的标签显示音频状态
-    // 可以在日志中记录音频状态
+
+
     LOG_INFO("Audio status: " + text.toStdString() + " (color: " + color.toStdString() + ")");
 }
 
@@ -3916,7 +3863,7 @@ void MainWindow::update_microphone_ui() {
             ui->pushButton_mic->setIcon(QIcon(":/images/Voice-on@2x.png"));
             ui->pushButton_mic->setToolTip(QString::fromUtf8("麦克风 (点击静音)\n右键选择设备"));
         } else {
-            // 静音状态：显示关闭录音图标
+
             ui->pushButton_mic->setIcon(QIcon(":/images/Voice-off@2x.png"));
             ui->pushButton_mic->setToolTip(QString::fromUtf8("麦克风 (已静音)\n点击取消静音"));
         }
@@ -3966,7 +3913,7 @@ void MainWindow::show_microphone_menu(const QPoint& pos) {
 void MainWindow::toggle_speaker() {
     speaker_enabled_ = !speaker_enabled_;
     if (audio_engine_ && audio_engine_->get_audio_capturer()) {
-        // 控制扬声器采集开关（而不是静音）
+
         audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
     }
     update_audio_mix_mode();
@@ -3995,7 +3942,7 @@ void MainWindow::update_speaker_ui() {
             ui->pushButton_speaker->setIcon(QIcon(":/images/Volume@2x.png"));
             ui->pushButton_speaker->setToolTip(QString::fromUtf8("扬声器 (点击静音)\n右键选择设备"));
         } else {
-            // 静音状态：显示静音图标
+
             ui->pushButton_speaker->setIcon(QIcon(":/images/Volume-mute@2x.png"));
             ui->pushButton_speaker->setToolTip(QString::fromUtf8("扬声器 (已静音)\n点击取消静音"));
         }
@@ -4063,7 +4010,7 @@ void MainWindow::show_speaker_menu(const QPoint& pos) {
         connect(action, &QAction::triggered, this, [this, device_id = device.id]() {
             if (audio_engine_->select_speaker(device_id)) {
                 LOG_INFO("Selected speaker: " + device_id);
-                // 更新扬声器音量UI
+
                 update_speaker_ui();
             }
         });
@@ -4072,27 +4019,27 @@ void MainWindow::show_speaker_menu(const QPoint& pos) {
     menu.exec(pos);
 }
 
-// 推流控制方法实现
+
 
 void MainWindow::on_streaming_started() {
     LOG_INFO("推流状态：已开始");
     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
     if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
-    // 直播时长显示用更高频刷新，避免偶尔“跳两秒”的观感（实际时长仍按系统时钟计算）
+
     if (live_duration_timer_) live_duration_timer_->start(200);
 
-    // 启动系统信息更新定时器（每秒更新，包含码率/FPS）
+
     if (system_info_timer_) {
-        system_info_timer_->start(1000); // 每秒更新一次（直播时）
-        // 立即更新一次系统信息
+        system_info_timer_->start(1000);
+
         update_system_info();
     }
 
-    // 启动系统监控日志打印定时器 (每分钟打印一次)
+
     if (system_log_timer_) {
-        system_log_timer_->start(60000); // 60000ms = 1分钟
+        system_log_timer_->start(60000);
         system_log_counter_ = 0;
-        // 立即打印一次初始状态
+
         log_system_stats_periodically();
     }
 }
@@ -4100,24 +4047,24 @@ void MainWindow::on_streaming_started() {
 void MainWindow::on_streaming_stopped() {
     LOG_INFO("推流状态：已停止");
     if (live_duration_timer_) live_duration_timer_->stop();
-    // 不停止 system_info_timer_，改为3秒间隔持续更新系统信息
+
     if (system_info_timer_) {
-        system_info_timer_->start(3000); // 每3秒更新一次
-        // 立即更新一次系统信息显示（非直播状态）
+        system_info_timer_->start(3000);
+
         update_system_info();
     }
-    if (system_log_timer_) system_log_timer_->stop(); // 停止日志打印定时器
+    if (system_log_timer_) system_log_timer_->stop();
     streaming_start_time_ms_ = 0;
     if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
 
-    // 非直播状态也显示系统信息（使用统一格式，码率和FPS显示为0）
+
     update_system_info();
 }
 
 void MainWindow::on_streaming_error(const QString& error) {
     LOG_ERROR("推流错误: " + error.toStdString());
 
-    // 停止推流
+
     if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
         encoder_bridge_->stop_streaming();
     }
@@ -4125,18 +4072,18 @@ void MainWindow::on_streaming_error(const QString& error) {
         stream_pusher_->stop();
     }
 
-    // 停止音频采集
+
     if (audio_engine_ && audio_engine_->is_capturing()) {
         audio_engine_->stop_capture();
         update_audio_status("已停止", "gray");
     }
 
-    // 停止编码桥接器
+
     if (encoder_bridge_) {
         encoder_bridge_->stop();
     }
 
-    // 更新UI状态
+
     if (ui->pushButton_startLive) {
         ui->pushButton_startLive->setText("开始直播");
         ui->pushButton_startLive->setStyleSheet("");
@@ -4146,11 +4093,11 @@ void MainWindow::on_streaming_error(const QString& error) {
         ui->label_status->setStyleSheet("color: red; font-weight: bold;");
     }
 
-    // 显示错误弹窗
+
     QMessageBox::warning(this, "推流错误", error);
 }
 
-// 画布配置管理方法实现
+
 void MainWindow::set_canvas_config(const CanvasConfig& config) {
     LOG_INFO("========== set_canvas_config START ==========");
     LOG_INFO(QString("Config name: %1, Resolution: %2x%3")
@@ -4165,14 +4112,14 @@ void MainWindow::set_canvas_config(const CanvasConfig& config) {
 
     canvas_config_ = config;
 
-    // 更新CanvasWidget
+
     if (canvas_widget_) {
         LOG_INFO("Updating canvas_widget_ config");
         canvas_widget_->set_canvas_config(config);
     }
 
-    // 更新编码器配置（仅在非初始化阶段，即canvas_widget_已存在时）
-    // 避免在setup_canvas_widget中重复初始化编码器
+
+
     if (encoder_ && encoder_bridge_ && canvasContainer_) {
         LOG_INFO(QString("Reinitializing encoder with resolution: %1x%2")
                  .arg(config.get_width()).arg(config.get_height()).toStdString());
@@ -4193,7 +4140,7 @@ const CanvasConfig& MainWindow::get_canvas_config() const {
     return canvas_config_;
 }
 
-// 设置为横屏模式 16:9 (1280x720)
+
 void MainWindow::set_landscape_mode() {
     LOG_INFO("========== set_landscape_mode START ==========");
     if (!is_portrait_mode_) {
@@ -4201,7 +4148,7 @@ void MainWindow::set_landscape_mode() {
         return;
     }
 
-    // 如果正在推流，禁止切换
+
     if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
         LOG_INFO("Streaming in progress, cannot switch");
         QMessageBox::warning(this, "画布切换",
@@ -4212,14 +4159,14 @@ void MainWindow::set_landscape_mode() {
 
     LOG_INFO("Switching to landscape mode (1280x720)");
 
-    // 更新画布配置
+
     canvas_config_ = CanvasConfig::get_default();
     is_portrait_mode_ = false;
 
-    // 应用新的画布配置
+
     apply_canvas_config_change();
 
-    // 更新按钮文本
+
     if (ui->pushButton_toggleOrientation) {
         ui->pushButton_toggleOrientation->setText("横屏");
     }
@@ -4228,7 +4175,7 @@ void MainWindow::set_landscape_mode() {
     LOG_INFO("========== set_landscape_mode END ==========");
 }
 
-// 设置为竖屏模式 9:16 (720x1280)
+
 void MainWindow::set_portrait_mode() {
     LOG_INFO("========== set_portrait_mode START ==========");
     if (is_portrait_mode_) {
@@ -4236,7 +4183,7 @@ void MainWindow::set_portrait_mode() {
         return;
     }
 
-    // 如果正在推流，禁止切换
+
     if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
         LOG_INFO("Streaming in progress, cannot switch");
         QMessageBox::warning(this, "画布切换",
@@ -4247,14 +4194,14 @@ void MainWindow::set_portrait_mode() {
 
     LOG_INFO("Switching to portrait mode (720x1280)");
 
-    // 更新画布配置
+
     canvas_config_ = CanvasConfig::get_portrait();
     is_portrait_mode_ = true;
 
-    // 应用新的画布配置
+
     apply_canvas_config_change();
 
-    // 更新按钮文本
+
     if (ui->pushButton_toggleOrientation) {
         ui->pushButton_toggleOrientation->setText("竖屏");
     }
@@ -4263,9 +4210,9 @@ void MainWindow::set_portrait_mode() {
     LOG_INFO("========== set_portrait_mode END ==========");
 }
 
-// 切换横竖屏
+
 void MainWindow::toggle_canvas_orientation() {
-    // 防止用户快速连点导致频繁重初始化（尤其是编码器），引发卡顿/崩溃风险
+
     int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     if (last_canvas_toggle_ms_ != 0 && (now_ms - last_canvas_toggle_ms_) < 300) {
@@ -4286,7 +4233,7 @@ void MainWindow::toggle_canvas_orientation() {
     }
 }
 
-// 应用服务器配置的画布方向（预留接口）
+
 void MainWindow::apply_server_canvas_config(const QString& orientation) {
     LOG_INFO("========== apply_server_canvas_config START ==========");
     server_canvas_orientation_ = orientation.toLower();
@@ -4297,13 +4244,13 @@ void MainWindow::apply_server_canvas_config(const QString& orientation) {
     if (server_canvas_orientation_ == "portrait") {
         set_portrait_mode();
     } else {
-        // 默认横屏
+
         set_landscape_mode();
     }
     LOG_INFO("========== apply_server_canvas_config END ==========");
 }
 
-// 辅助方法：应用画布配置变更
+
 void MainWindow::apply_canvas_config_change() {
     LOG_INFO("========== apply_canvas_config_change START ==========");
 
@@ -4321,31 +4268,31 @@ void MainWindow::apply_canvas_config_change() {
     LOG_INFO(QString("Applying canvas config: %1x%2, portrait=%3")
         .arg(width).arg(height).arg(is_portrait_mode_).toStdString());
 
-    // 更新 CanvasWidget
+
     if (canvas_widget_) {
         LOG_INFO("Updating CanvasWidget");
         canvas_widget_->set_canvas_config(canvas_config_);
     }
 
-    // 更新 Compositor
+
     if (compositor_) {
         LOG_INFO("Updating Compositor");
         compositor_->set_canvas_size(width, height);
     }
 
-    // 更新 EncoderBridge
+
     if (encoder_bridge_) {
         LOG_INFO("Updating EncoderBridge");
         encoder_bridge_->set_resolution(width, height);
     }
 
-    // 更新 VideoEngine
+
     if (video_engine_) {
         LOG_INFO("Reinitializing VideoEngine");
         video_engine_->initialize(width, height, 30);
     }
 
-    // 更新编码器配置（如果不在推流中）
+
     if (encoder_ && encoder_bridge_ && !encoder_bridge_->is_streaming()) {
         LOG_INFO("Reinitializing video encoder");
         app_settings_.canvas = canvas_config_;
@@ -4357,12 +4304,12 @@ void MainWindow::apply_canvas_config_change() {
         LOG_INFO("Skipping encoder reinitialization (streaming or not ready)");
     }
 
-    // 调整场景项位置适配新比例
+
     LOG_INFO("Adjusting scene items");
     adjust_scene_items_for_canvas_change();
 
-    // 特殊处理：如果有插播视频在播放，更新其 Compositor layer 为全屏
-    // 插播视频的 source_id 以 "insert_video_" 开头
+
+
     if (current_insert_video_source_ && compositor_) {
         const std::string source_id = current_insert_video_source_->get_id();
         if (source_id.find("insert_video_") == 0 && compositor_->has_layer(source_id)) {
@@ -4373,13 +4320,13 @@ void MainWindow::apply_canvas_config_change() {
         }
     }
 
-    // 更新 UI
+
     LOG_INFO("Updating canvas orientation UI");
     update_canvas_orientation_ui();
     LOG_INFO("========== apply_canvas_config_change END ==========");
 }
 
-// 调整场景项位置以适配新的画布比例
+
 void MainWindow::adjust_scene_items_for_canvas_change() {
     if (!scene_manager_ || !scene_manager_->get_current_scene()) {
         return;
@@ -4396,7 +4343,7 @@ void MainWindow::adjust_scene_items_for_canvas_change() {
 
         auto transform = item->get_transform();
 
-        // 确保场景项在新画布范围内
+
         if (transform.x + transform.width > canvas_w) {
             transform.x = (std::max)(0, canvas_w - transform.width);
         }
@@ -4404,7 +4351,7 @@ void MainWindow::adjust_scene_items_for_canvas_change() {
             transform.y = (std::max)(0, canvas_h - transform.height);
         }
 
-        // 如果场景项超出画布，缩小它
+
         if (transform.width > canvas_w) {
             transform.width = canvas_w / 2;
         }
@@ -4412,17 +4359,17 @@ void MainWindow::adjust_scene_items_for_canvas_change() {
             transform.height = canvas_h / 2;
         }
 
-        // 确保不超出边界
+
         transform.x = (std::min)(transform.x, canvas_w - transform.width);
         transform.y = (std::min)(transform.y, canvas_h - transform.height);
 
         scene->set_transform(item, transform);
     }
 
-    // 同步到 compositor
+
     sync_scene_to_compositor();
 
-    // 刷新画布
+
     if (canvas_widget_) {
         canvas_widget_->refresh();
     }
@@ -4431,25 +4378,25 @@ void MainWindow::adjust_scene_items_for_canvas_change() {
              std::to_string(canvas_w) + "x" + std::to_string(canvas_h));
 }
 
-// 更新画布方向相关的 UI
+
 void MainWindow::update_canvas_orientation_ui() {
-    // 注意：不在 title/状态栏上显示横竖屏字样或分辨率
+
     LOG_INFO("Canvas orientation UI updated");
 
-    // 调整画布容器大小以匹配新的宽高比
+
     update_stage_container_aspect_ratio();
 }
 
-// 根据当前画布方向调整舞台容器的宽高比
+
 void MainWindow::update_stage_container_aspect_ratio() {
     if (!ui || !ui->liveArea) {
         return;
     }
 
-    // 获取画布宽高比
+
     double canvas_aspect = canvas_config_.get_aspect_ratio();
 
-    // 获取可用空间
+
     int available_width, available_height;
     if (canvasContainer_) {
         QRect containerRect = canvasContainer_->rect();
@@ -4465,38 +4412,38 @@ void MainWindow::update_stage_container_aspect_ratio() {
         available_height = liveAreaRect.height();
     }
 
-    // 计算适应可用空间的最大画布尺寸（保持宽高比）
+
     int target_width, target_height;
 
-    // 计算按宽度限制的高度
+
     int height_by_width = static_cast<int>(available_width / canvas_aspect);
-    // 计算按高度限制的宽度
+
     int width_by_height = static_cast<int>(available_height * canvas_aspect);
 
     if (height_by_width <= available_height) {
-        // 按宽度限制
+
         target_width = available_width;
         target_height = height_by_width;
     } else {
-        // 按高度限制
+
         target_width = width_by_height;
         target_height = available_height;
     }
 
-    // 确保最小尺寸
+
     target_width = qMax(target_width, 320);
     target_height = qMax(target_height, 180);
 
-    // 居中放置
+
     int x = (available_width - target_width) / 2;
     int y = (available_height - target_height) / 2;
 
-    // 如果有 canvasContainer_（setup_canvas_widget 之后），使用它
+
     if (canvasContainer_ && canvas_widget_) {
-        // 设置 canvas_widget_ 在容器中的位置和大小
+
         canvas_widget_->setGeometry(x, y, target_width, target_height);
 
-        // 更新占位符位置
+
         repositionPlaceholderOverlays();
 
         LOG_INFO("Canvas widget resized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
@@ -4505,17 +4452,17 @@ void MainWindow::update_stage_container_aspect_ratio() {
         return;
     }
 
-    // 如果有 stageContainer_（初始化阶段），使用它
+
     if (stageContainer_ && stagePlaceholderWidget_) {
-        // 设置舞台容器几何位置
+
         stageContainer_->setGeometry(x, y, target_width, target_height);
 
-        // 同步更新画布控件
+
         if (canvas_widget_) {
             canvas_widget_->setGeometry(0, 0, target_width, target_height);
         }
 
-        // 更新占位符按钮位置
+
         if (stageAddButton_) {
             stageAddButton_->setGeometry(stageContainer_->rect());
         }
@@ -4547,13 +4494,13 @@ void MainWindow::changeEvent(QEvent* event) {
 void MainWindow::closeEvent(QCloseEvent* event) {
     LOG_INFO("MainWindow close event triggered");
     
-    // 如果已经在退出过程中，直接接受
+
     if (is_exiting_) {
         event->accept();
         return;
     }
     
-    // 如果正在推流，提示用户
+
     if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
         int ret = QMessageBox::question(this, "推流进行中",
             "当前正在推流直播中，确定要退出吗？\n退出后将中断直播推流。",
@@ -4564,17 +4511,17 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         }
     }
     
-    // 显示退出确认对话框
+
     ExitDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
         ExitDialog::Action action = dialog.getSelectedAction();
         
-        // 如果用户选择了记住选择
+
         if (dialog.shouldRememberChoice()) {
             if (action == ExitDialog::Action::Minimize) {
-                saveExitPreference(1); // 记住最小化
+                saveExitPreference(1);
             } else {
-                saveExitPreference(2); // 记住退出
+                saveExitPreference(2);
             }
         }
         
@@ -4587,23 +4534,23 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             LOG_INFO("User chose to exit");
             is_exiting_ = true;
             
-            // 停止所有定时器
+
             if (live_duration_timer_) live_duration_timer_->stop();
             if (system_info_timer_) system_info_timer_->stop();
             if (encoding_timer_) encoding_timer_->stop();
             
-            // 停止推流
+
             if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
                 encoder_bridge_->stop_streaming();
             }
 
-            // 保存音量设置
+
             saveAudioVolumeSettings();
 
-            // 保存场景配置
+
             save_scenes_config();
 
-            // 清理资源并退出
+
             cleanupSystemTray();
             event->accept();
             QMainWindow::close();
@@ -4614,53 +4561,53 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::setupSystemTray() {
-    // 检查系统是否支持托盘图标
+
     if (!QSystemTrayIcon::isSystemTrayAvailable()) {
         LOG_WARNING("System tray is not available on this system");
         return;
     }
     
-    // 创建托盘图标菜单
+
     system_tray_menu_ = new QMenu(this);
     
-    // 显示窗口动作
+
     tray_action_show_ = new QAction("显示窗口", this);
     connect(tray_action_show_, &QAction::triggered, this, &MainWindow::onTrayShowAction);
     system_tray_menu_->addAction(tray_action_show_);
     
-    // 分隔符
+
     system_tray_menu_->addSeparator();
     
-    // 退出动作
+
     tray_action_exit_ = new QAction("退出程序", this);
     connect(tray_action_exit_, &QAction::triggered, this, &MainWindow::onTrayExitAction);
     system_tray_menu_->addAction(tray_action_exit_);
     
-    // 创建系统托盘图标
+
     system_tray_icon_ = new QSystemTrayIcon(this);
     
-    // 设置托盘图标
+
     QIcon trayIcon(":/images/Frame_icon.png");
     if (!trayIcon.isNull()) {
         system_tray_icon_->setIcon(trayIcon);
     } else {
-        // 使用默认图标
+
         system_tray_icon_->setIcon(QIcon::fromTheme("application-default-icon"));
     }
     
     system_tray_icon_->setToolTip("直播伴侣");
     system_tray_icon_->setContextMenu(system_tray_menu_);
     
-    // 连接托盘图标激活信号
-    // 先设置标志，防止初始化时误触发显示窗口
+
+
     tray_icon_initializing_ = true;
     connect(system_tray_icon_, &QSystemTrayIcon::activated,
             this, &MainWindow::onTrayIconActivated);
     
-    // 显示托盘图标
+
     system_tray_icon_->show();
     
-    // 延迟重置标志，确保托盘图标完全初始化后再响应用户点击
+
     QTimer::singleShot(500, this, [this]() {
         tray_icon_initializing_ = false;
         LOG_INFO("Tray icon initialized, ready to respond to user clicks");
@@ -4670,27 +4617,27 @@ void MainWindow::setupSystemTray() {
 }
 
 void MainWindow::setupNetworkConnections() {
-    // 连接 NetworkManager 的信号
+
     NetworkManager* networkManager = NetworkManager::instance();
 
-    // 插播视频转码完成通知
+
     connect(networkManager, &NetworkManager::insertVideoTranscoded,
             this, [this](const QString& fileId, int fileState) {
         LOG_INFO(QString("Insert video transcoded: fileId=%1, state=%2").arg(fileId).arg(fileState).toStdString());
-        // 刷新插播列表
+
         InsertFileManager::instance()->refreshInsertFiles(current_live_item_.liveId);
     });
 
-    // 开始执行插播视频
+
     connect(networkManager, &NetworkManager::startInsertVideo,
             this, [this](const QString& fileId) {
         LOG_INFO(QString("Received start insert video command: fileId=%1").arg(fileId).toStdString());
-        // 检查是否已开始插播
+
         if (!is_insert_video_playing_) {
-            // 检查文件是否已下载
+
             auto fileItem = InsertFileManager::instance()->getFile(fileId);
             if (fileItem && fileItem->isDownloaded()) {
-                // 从 InsertFileItem 读取循环播放设置
+
                 bool loopEnabled = fileItem->loopEnabled;
                 startInsertVideoPlayback(fileId, loopEnabled);
             } else {
@@ -4699,7 +4646,7 @@ void MainWindow::setupNetworkConnections() {
         }
     });
 
-    // 停止插播视频
+
     connect(networkManager, &NetworkManager::stopInsertVideo,
             this, [this](const QString& fileId) {
         LOG_INFO(QString("Received stop insert video command: fileId=%1").arg(fileId).toStdString());
@@ -4728,7 +4675,7 @@ void MainWindow::cleanupSystemTray() {
 }
 
 void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
-    // 忽略初始化期间的托盘激活事件，防止窗口闪烁
+
     if (tray_icon_initializing_) {
         LOG_DEBUG("Ignoring tray icon activation during initialization");
         return;
@@ -4737,11 +4684,11 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
     switch (reason) {
     case QSystemTrayIcon::Trigger:
     case QSystemTrayIcon::DoubleClick:
-        // 双击或单击显示窗口
+
         onTrayShowAction();
         break;
     case QSystemTrayIcon::MiddleClick:
-        // 中键点击最小化到托盘
+
         showMinimized();
         break;
     default:
@@ -4754,7 +4701,7 @@ void MainWindow::onTrayShowAction() {
     activateWindow();
     raise();
     
-    // 确保窗口在最前端显示
+
     setWindowFlags(windowFlags() & ~Qt::Tool);
     show();
 }
@@ -4762,17 +4709,17 @@ void MainWindow::onTrayShowAction() {
 void MainWindow::onTrayExitAction() {
     is_exiting_ = true;
     
-    // 停止所有定时器
+
     if (live_duration_timer_) live_duration_timer_->stop();
     if (system_info_timer_) system_info_timer_->stop();
     if (encoding_timer_) encoding_timer_->stop();
     
-    // 停止推流
+
     if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
         encoder_bridge_->stop_streaming();
     }
     
-    // 清理资源并退出
+
     cleanupSystemTray();
     QMainWindow::close();
 }
@@ -4780,7 +4727,7 @@ void MainWindow::onTrayExitAction() {
 void MainWindow::handleExit() {
     LOG_INFO("User requested to exit live room");
 
-    // 🔧 检查是否正在推流
+
     if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
         int ret = QMessageBox::question(this, "推流进行中",
             "当前正在推流直播中，确定要退出吗？\n退出后将中断直播推流。",
@@ -4788,22 +4735,22 @@ void MainWindow::handleExit() {
         if (ret == QMessageBox::No) {
             return;
         }
-        // 用户确认停止推流
+
         encoder_bridge_->stop_streaming();
     }
 
-    // 保存场景配置（返回直播列表时也保存）
+
     save_scenes_config();
 
-    // 停止所有采集源（摄像头、屏幕共享等）
+
     stop_all_capture_sources();
 
-    // 停止音频采集
+
     if (audio_engine_) {
         audio_engine_->stop_capture();
     }
 
-    // 发射信号通知 main.cpp 用户想要返回直播列表
+
     emit request_return_to_live_list();
 }
 
@@ -4836,26 +4783,36 @@ void MainWindow::loadAudioVolumeSettings() {
     float micVolume;
     float speakerVolume;
 
-    // 首次启动没有保存的值时，使用系统当前音量作为初始值
-    if (!settings.contains("audio/micVolume")) {
-        if (audio_engine_) {
-            micVolume    = audio_engine_->get_microphone_volume();
-            speakerVolume = audio_engine_->get_speaker_volume();
-        } else {
-            micVolume    = 0.4f;
-            speakerVolume = 0.4f;
-        }
-        LOG_INFO("No saved volume settings, using system current volume");
+    
+    float sysMicVol     = audio_engine_ ? audio_engine_->get_system_microphone_volume() : -1.0f;
+    float sysSpeakerVol = audio_engine_ ? audio_engine_->get_system_speaker_volume()    : -1.0f;
+
+    if (sysMicVol >= 0.0f) {
+        micVolume = sysMicVol;
+        LOG_INFO("Loaded microphone volume from system: " + std::to_string(static_cast<int>(micVolume * 100)) + "%");
+    } else if (settings.contains("audio/micVolume")) {
+        micVolume = app_settings_.audio.mic_volume;
+        LOG_INFO("Loaded microphone volume from user config: " + std::to_string(static_cast<int>(micVolume * 100)) + "%");
     } else {
-        micVolume    = app_settings_.audio.mic_volume;
+        micVolume = 0.5f;
+        LOG_INFO("Microphone volume: using default 50%");
+    }
+
+    if (sysSpeakerVol >= 0.0f) {
+        speakerVolume = sysSpeakerVol;
+        LOG_INFO("Loaded speaker volume from system: " + std::to_string(static_cast<int>(speakerVolume * 100)) + "%");
+    } else if (settings.contains("audio/speakerVolume")) {
         speakerVolume = app_settings_.audio.speaker_volume;
-        LOG_INFO("Using saved volume settings");
+        LOG_INFO("Loaded speaker volume from user config: " + std::to_string(static_cast<int>(speakerVolume * 100)) + "%");
+    } else {
+        speakerVolume = 0.5f;
+        LOG_INFO("Speaker volume: using default 50%");
     }
 
     microphone_enabled_ = app_settings_.audio.mic_enabled;
     speaker_enabled_    = app_settings_.audio.speaker_enabled;
 
-    // 同步回 app_settings_（首次启动时写入系统音量）
+
     app_settings_.audio.mic_volume      = micVolume;
     app_settings_.audio.speaker_volume  = speakerVolume;
     app_settings_.audio.mic_enabled     = microphone_enabled_;
@@ -4878,16 +4835,16 @@ void MainWindow::loadAudioVolumeSettings() {
 }
 
 void MainWindow::playVolumeFeedbackSound() {
-    // 静音处理，不再播放音量反馈声音
+
 }
 
 // static
 VideoEncoderConfig MainWindow::build_video_config_from_settings(const AppSettings& s) {
     VideoEncoderConfig cfg = s.video;
-    // canvas 是分辨率的权威来源，覆盖 video 里的 width/height
+
     cfg.width  = s.canvas.get_width();
     cfg.height = s.canvas.get_height();
-    // 竖屏时码率上限 2Mbps
+
     if (cfg.height > cfg.width && cfg.bitrate > 2000000) {
         cfg.bitrate = 2000000;
     }

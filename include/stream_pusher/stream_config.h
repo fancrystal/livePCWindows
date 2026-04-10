@@ -44,6 +44,37 @@ struct StreamConfig {
     // true = av_interleaved_write_frame (默认，更稳定，有延迟)
     // false = av_write_frame (更低延迟，可能不稳定)
     bool use_interleaved_write = true;
+
+    // 验证配置是否有效
+    bool is_valid() const {
+        // 检查服务器URL是否为空
+        if (server_url.empty()) {
+            return false;
+        }
+
+        // 检查是否以rtmp://或rtmps://开头
+        if (server_url.find("rtmp://") != 0 && server_url.find("rtmps://") != 0) {
+            return false;
+        }
+
+        // 检查stream_key是否为空
+        if (stream_key.empty()) {
+            return false;
+        }
+
+        // 基本的URL格式检查：应该包含至少一个点（域名）
+        std::string full_url = server_url + "/" + stream_key;
+        if (full_url.find('.') == std::string::npos) {
+            return false;
+        }
+
+        return true;
+    }
+
+    // 获取完整的推流URL
+    std::string get_full_url() const {
+        return server_url + "/" + stream_key;
+    }
 };
 
 } // namespace live_assistant

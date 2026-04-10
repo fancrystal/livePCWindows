@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 #include <queue>
 #include <atomic>
 #include <functional>
@@ -80,11 +81,13 @@ public:
     std::vector<AudioDeviceInfo> get_available_microphones();
     bool select_microphone(const std::string& mic_id);
     std::string get_selected_microphone_id();
+    std::string refresh_microphone_to_system_default();
 
     // Speaker device methods
     std::vector<AudioDeviceInfo> get_available_speakers();
     bool select_speaker(const std::string& speaker_id);
     std::string get_selected_speaker_id();
+    std::string refresh_speaker_to_system_default();
 
     bool enable_noise_suppression(bool enable);
     bool enable_echo_cancellation(bool enable);
@@ -108,9 +111,13 @@ public:
     bool set_noise_suppression_level(float level);  // 0.0 - 1.0
     float get_noise_suppression_level() const;
 
-    // Speaker volume control (system level)
+    // Speaker volume control (mix level, 0.0 to 1.0)
     bool set_speaker_volume(float volume);
     float get_speaker_volume();
+
+    // 读取当前系统音量（WASAPI），失败返回 -1.0f
+    float get_system_microphone_volume();
+    float get_system_speaker_volume();
 
     bool set_speaker_mute(bool mute);
     bool get_speaker_mute();
@@ -273,7 +280,7 @@ private:
     int channels_ = 0;
     int sample_size_ = 16;  // 16-bit PCM
 
-    bool is_capturing_ = false;
+    std::atomic<bool> is_capturing_{false};
     std::string selected_microphone_id_;
     std::string selected_speaker_id_;
 
@@ -303,6 +310,12 @@ private:
     std::queue<std::shared_ptr<AudioFrame>> microphone_queue_;
     std::queue<std::shared_ptr<AudioFrame>> media_queue_;
     std::queue<std::shared_ptr<AudioFrame>> speaker_queue_;
+    std::mutex timestamp_sync_mutex_;
+    int64_t microphone_timestamp_anchor_ms_ = -1;
+    int64_t speaker_timestamp_anchor_ms_ = -1;
+    int64_t microphone_clock_anchor_ms_ = 0;
+    int64_t speaker_clock_anchor_ms_ = 0;
+    std::chrono::steady_clock::time_point capture_clock_epoch_;
     
     // 队列互斥锁
     std::mutex microphone_mutex_;
@@ -330,6 +343,10 @@ private:
         std::mutex& mutex,
         std::shared_ptr<AudioFrame> frame
     );
+
+    int64_t mapCaptureTimestampToEngineClock(
+        int64_t source_timestamp_ms,
+        bool is_speaker_source);
 
     // Protects state variables that may be accessed from multiple threads
     mutable std::mutex state_mutex_;

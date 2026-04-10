@@ -156,12 +156,12 @@ private:
     std::shared_ptr<AudioEngine> audio_engine_;
 
 
-    // 定时器
-    //QTimer* encode_timer_;  // 已移除，改用工作线程定时器
-    
     // 工作线程定时器（避免阻塞主线程）
     std::unique_ptr<std::thread> capture_thread_;
     std::atomic<bool> capture_thread_stop_{false};
+    // 捕获线程投递给主线程的帧是否还未被处理。
+    // 防止主线程繁忙时多个 QueuedConnection 积压，导致帧突发/PTS 抖动。
+    std::atomic<bool> frame_pending_{false};
     std::chrono::steady_clock::time_point last_capture_time_;
     std::atomic<int> capture_fps_{30};
 
@@ -170,9 +170,9 @@ private:
     int width_ = 1920;
     int height_ = 1080;
 
-    // 状态
-    bool running_ = false;
-    bool streaming_ = false;
+    // 状态（running_ 跨线程访问，必须原子）
+    std::atomic<bool> running_{false};
+    std::atomic<bool> streaming_{false};
     std::string stream_url_;
     MediaClock media_clock_;
     bool silent_audio_enabled_ = false;
@@ -228,9 +228,22 @@ private:
     
     // 🔧 第一帧音频的时间戳偏移（毫秒），用于让时间戳从0开始
     int64_t first_audio_timestamp_ms_ = -1;
-    
+
     // 🔧 记录 media_clock 在推流开始时的起始时间戳（微秒）
     int64_t media_clock_start_us_ = 0;
+
+    // steady_clock absolute microseconds when start_streaming() was called.
+    // Used to convert the mixer's emit-time steady_clock timestamp back to
+    // bridge-relative PTS even when the slot runs later (QueuedConnection).
+    int64_t streaming_start_steady_us_ = 0;
+
+    // Audio PTS alignment: offset (ms) subtracted from media_clock to align
+    // first audio packet with first video packet. INT64_MIN = not yet computed.
+    // Protected by audio_pts_mutex_ because on_audio_data_ready now runs in the
+    // mixer thread (DirectConnection) while first_video_pts_ms_ is written by
+    // the video capture thread.
+    std::mutex audio_pts_mutex_;
+    int64_t audio_pts_clock_offset_ms_ = INT64_MIN;
 
     // SWS 上下文缓存（用于 RGBA 到 NV12 转换）
     void* sws_context_ = nullptr;

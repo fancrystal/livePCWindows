@@ -227,23 +227,29 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         }
 #endif
 
-        // Build candidates order based on GPU detection (智能选择策略)
-        // 策略：无独显时 AMF(AMD集显) > x264 > QSV(Intel集显)
-        //        有独显时 NVENC/AMF(独显) > x264 > QSV(集显)
+        // Build candidates order based on GPU/CPU detection (智能选择策略)
+        // 有独显时：独显硬编 > x264(软编) > 集显硬编
+        // 无独显时：
+        //   AMD CPU  → AMF(AMD集显) > x264 > QSV（AMD iGPU 支持 AMF 硬编）
+        //   Intel/其他 → x264 > QSV(Intel集显) > AMF（无 AMD GPU，AMF 必然失败放最后）
         int gpu_type = detect_discrete_gpu();
 
         if (gpu_type & 1) {
-            // NVIDIA 独显存在：优先使用 NVENC（独显），QSV 放 x264 后面
+            // NVIDIA 独显：NVENC(独显) → x264(软编) → QSV(集显)
             candidates = {"h264_nvenc", "libx264", "h264_qsv"};
             LOG_INFO("[H264Encoder] NVIDIA dGPU detected → Priority: NVENC(dGPU) → Software → QSV(iGPU)");
         } else if (gpu_type & 2) {
-            // AMD 独显存在：优先使用 AMF（独显），QSV 放 x264 后面
+            // AMD 独显：AMF(独显) → x264(软编) → QSV(集显)
             candidates = {"h264_amf", "libx264", "h264_qsv"};
             LOG_INFO("[H264Encoder] AMD dGPU detected → Priority: AMF(dGPU) → Software → QSV(iGPU)");
-        } else {
-            // 无独显：AMD 集显 AMF > x264 > Intel QSV
+        } else if (cpu_vendor.find("AuthenticAMD") != std::string::npos) {
+            // 无独显 + AMD CPU：AMD iGPU 支持 AMF 硬编，优先使用
             candidates = {"h264_amf", "libx264", "h264_qsv"};
-            LOG_INFO("[H264Encoder] No discrete GPU → Priority: AMF(iGPU) → Software → QSV(iGPU)");
+            LOG_INFO("[H264Encoder] AMD iGPU (no dGPU) → Priority: AMF(iGPU) → Software → QSV");
+        } else {
+            // 无独显 + Intel/未知 CPU：默认 x264 软编（稳定），再试 QSV(Intel集显)，AMF 无 AMD GPU 必然失败放最后
+            candidates = {"libx264", "h264_qsv", "h264_amf"};
+            LOG_INFO("[H264Encoder] Intel/unknown iGPU (no dGPU) → Priority: Software → QSV(iGPU) → AMF");
         }
 
         // 硬件编码器按优先级自动探测，支持回退到软件编码
@@ -409,8 +415,7 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     // Fallback to software encoder (libx264) if no hardware encoder was selected/found
     if (!codec_) {
         LOG_INFO("[H264Encoder] ========================================");
-        LOG_INFO("[H264Encoder] All hardware encoders failed!");
-        LOG_INFO("[H264Encoder] Probing sequence: QSV -> AMF -> NVENC");
+        LOG_INFO("[H264Encoder] All hardware encoders failed (probed in priority order above)!");
         LOG_INFO("[H264Encoder] Fallback to software encoder (libx264)");
         LOG_INFO("[H264Encoder] ========================================");
         codec_ = avcodec_find_encoder(AV_CODEC_ID_H264);
@@ -545,23 +550,26 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         std::string enc_name = codec_->name;
 
         if (enc_name.find("nvenc") != std::string::npos) {
-            // NVENC: 强制 avcC 输出格式（设置 h264_demuxer 为 avcC）
-            av_opt_set(codec_ctx_->priv_data, "h264_demuxer", "avc", 0);
-            // 低延迟配置
-            av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
-            av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);
+            // NVENC extradata 格式：AV_CODEC_FLAG_GLOBAL_HEADER（已设置）会使 FFmpeg 的
+            // NVENC 封装器将 SPS/PPS 输出到 extradata（avcC 格式）。
+            // 注意：FFmpeg NVENC 封装器不存在 h264_demuxer 选项，设置它会静默失效。
+            // 若 extradata 仍为 Annex-B，rtmp_pusher 的 convert_annexb_to_avcc() 会兜底转换。
+            av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);    // 零延迟：不缓冲帧
+            av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0);  // 低延迟模式
+            av_opt_set(codec_ctx_->priv_data, "bf", "0", 0);       // 禁用 B 帧（NVENC 专用选项）
             codec_ctx_->max_b_frames = 0;
-            LOG_INFO("H264Encoder: configured NVENC: avcC format, low-latency");
+            LOG_INFO("H264Encoder: configured NVENC: zero-latency, no B-frames");
         } else if (enc_name.find("amf") != std::string::npos) {
             // AMF: usage=transcoding 产出 avcC 格式 extradata
             av_opt_set(codec_ctx_->priv_data, "usage", "transcoding", 0);
             codec_ctx_->max_b_frames = 0;
             LOG_INFO("H264Encoder: configured AMF: avcC format (usage=transcoding)");
         } else if (enc_name.find("qsv") != std::string::npos) {
-            // QSV: h264_demuxer=avc 强制 avcC 格式 extradata
-            av_opt_set(codec_ctx_->priv_data, "h264_demuxer", "avc", 0);
+            // QSV: AV_CODEC_FLAG_GLOBAL_HEADER（已设置）会将 SPS/PPS 写入 extradata（avcC 格式）。
+            // async_depth=1 减少内部流水线延迟（默认为 4）。
+            av_opt_set(codec_ctx_->priv_data, "async_depth", "1", 0);
             codec_ctx_->max_b_frames = 0;
-            LOG_INFO("H264Encoder: configured QSV: avcC format (h264_demuxer=avc)");
+            LOG_INFO("H264Encoder: configured QSV: async_depth=1, no B-frames");
         }
     }
 
@@ -830,6 +838,17 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
             // Y 平面：逐行复制，处理 src/dst stride 不同的情况
             const int copy_w = std::min(in->width, sw_frame_->width);
             const int copy_h = std::min(in->height, sw_frame_->height);
+
+            // 诊断日志：检查 stride 是否匹配
+            if (in->stride != sw_frame_->linesize[0] || in->stride_uv != sw_frame_->linesize[1]) {
+                LOG_WARNING("[H264Encoder] NV12 stride mismatch! "
+                            "in->stride=" + std::to_string(in->stride) +
+                            ", sw_linesize[0]=" + std::to_string(sw_frame_->linesize[0]) +
+                            ", in->stride_uv=" + std::to_string(in->stride_uv) +
+                            ", sw_linesize[1]=" + std::to_string(sw_frame_->linesize[1]));
+            }
+
+            // Y 平面
             for (int y = 0; y < copy_h; ++y) {
                 memcpy(sw_frame_->data[0] + y * sw_frame_->linesize[0],
                        in->data.get() + y * in->stride, copy_w);
@@ -838,6 +857,23 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
             for (int y = 0; y < copy_h / 2; ++y) {
                 memcpy(sw_frame_->data[1] + y * sw_frame_->linesize[1],
                        in->data_uv.get() + y * in->stride_uv, copy_w);
+            }
+
+            // 诊断：检查 UV 数据是否有效（绿屏可能是 UV 全 0x80）
+            if (copy_h >= 2 && in->stride_uv > 0) {
+                const uint8_t* uv = in->data_uv.get();
+                int zero_uv = 0, neutral_uv = 0;
+                const int check_bytes = std::min(64, copy_w * 2);
+                for (int i = 0; i < check_bytes; i++) {
+                    if (uv[i] == 0) zero_uv++;
+                    if (uv[i] == 0x80) neutral_uv++;
+                }
+                if (zero_uv > check_bytes / 4 || neutral_uv > check_bytes / 4) {
+                    LOG_WARNING("[H264Encoder] Input NV12 UV suspicious! "
+                                "zero=" + std::to_string(zero_uv) +
+                                ", neutral(0x80)=" + std::to_string(neutral_uv) +
+                                " (in first " + std::to_string(check_bytes) + " bytes)");
+                }
             }
         } else {
             // 非 NV12 输入：使用 sws 转换
@@ -1081,12 +1117,14 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
             LOG_WARNING("av_packet_make_refcounted failed for received packet; proceeding but this may risk buffer lifetime issues");
         }
 
-        // QSV 硬件编码器输出可能带 Annex-B start code，在此归一化为 AVCC
-        //if (!normalize_h264_packet_to_avcc(pkt)) {
-        //    LOG_WARNING("[H264Encoder] Failed to normalize packet to AVCC, dropping");
-        //    av_packet_free(&pkt);
-        //    continue;
-        //}
+        // 所有硬件编码器（NVENC/QSV/AMF）输出的帧数据均为 Annex-B 格式；
+        // libx264 因 annexb=0 参数已原生输出 AVCC，normalize 会直接跳过。
+        // 统一在编码器出口归一化为 AVCC，下游 rtmp_pusher 无需再做任何格式转换。
+        if (!normalize_h264_packet_to_avcc(pkt)) {
+            LOG_WARNING("[H264Encoder] Failed to normalize packet to AVCC, dropping");
+            av_packet_free(&pkt);
+            continue;
+        }
 
         // 🔧 修复：强制第一帧为关键帧（IDR）
         // 即使 x264 参数设置了 forced-idr=1，编码器输出可能仍不包含关键帧标志

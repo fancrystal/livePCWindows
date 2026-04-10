@@ -1,6 +1,7 @@
 #include "audio_engine/audio_engine.h"
 #include "audio_engine/audio_capturer.h"
 #include "common/log.h"
+#include "common/media_clock.h"
 
 #include <QMediaDevices>
 #include <QAudioDevice>
@@ -29,6 +30,104 @@ static QFile* g_media_audio_file = nullptr;
 static QFile* g_mixed_audio_file = nullptr;
 static int g_media_audio_save_count = 0;
 static int g_mixed_audio_save_count = 0;
+
+static bool is_filtered_audio_device_name(const QString& device_name) {
+    const QString normalized = device_name.trimmed().toLower();
+    static const QStringList blocked_patterns = {
+        "usb camera audio",
+        "virtual",
+        "虚拟",
+        "todesk"
+    };
+
+    for (const QString& pattern : blocked_patterns) {
+        if (normalized.contains(pattern)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::string choose_preferred_audio_device_id(
+    const QList<QAudioDevice>& devices,
+    const QAudioDevice& system_default_device,
+    const char* log_prefix
+) {
+    const auto is_usable = [](const QAudioDevice& device) {
+        return !device.isNull() && !is_filtered_audio_device_name(device.description());
+    };
+
+    if (is_usable(system_default_device)) {
+        LOG_INFO(std::string(log_prefix) + " using system default device: " +
+                 system_default_device.description().toStdString());
+        return system_default_device.id().toStdString();
+    }
+
+    if (!system_default_device.isNull()) {
+        LOG_WARNING(std::string(log_prefix) + " system default device filtered out: " +
+                    system_default_device.description().toStdString());
+    }
+
+    for (const QAudioDevice& device : devices) {
+        if (is_usable(device)) {
+            LOG_INFO(std::string(log_prefix) + " falling back to preferred device: " +
+                     device.description().toStdString());
+            return device.id().toStdString();
+        }
+    }
+
+    LOG_WARNING(std::string(log_prefix) + " no usable audio devices found after filtering");
+    return "default";
+}
+
+static std::shared_ptr<AudioFrame> make_frame_from_interleaved_float(
+    const QByteArray& data,
+    int src_sample_rate,
+    int src_channels,
+    int dst_sample_rate,
+    int dst_channels,
+    int64_t timestamp_ms) {
+    if (data.isEmpty() || src_channels <= 0 || dst_channels <= 0) {
+        return nullptr;
+    }
+
+    const int bytes_per_sample = static_cast<int>(sizeof(float));
+    const int src_samples = data.size() / (src_channels * bytes_per_sample);
+    if (src_samples <= 0) {
+        return nullptr;
+    }
+
+    auto frame = std::make_shared<AudioFrame>(dst_sample_rate, dst_channels, src_samples);
+    if (!frame || !frame->data) {
+        return nullptr;
+    }
+
+    const float* src = reinterpret_cast<const float*>(data.constData());
+
+    if (src_channels == dst_channels) {
+        std::copy_n(src, src_samples * dst_channels, frame->data);
+    } else if (src_channels == 1 && dst_channels == 2) {
+        for (int i = 0; i < src_samples; ++i) {
+            const float sample = src[i];
+            frame->data[i * 2] = sample;
+            frame->data[i * 2 + 1] = sample;
+        }
+    } else if (src_channels == 2 && dst_channels == 1) {
+        for (int i = 0; i < src_samples; ++i) {
+            frame->data[i] = 0.5f * (src[i * 2] + src[i * 2 + 1]);
+        }
+    } else {
+        for (int i = 0; i < src_samples; ++i) {
+            for (int ch = 0; ch < dst_channels; ++ch) {
+                const int src_ch = (ch < src_channels) ? ch : (src_channels - 1);
+                frame->data[i * dst_channels + ch] = src[i * src_channels + src_ch];
+            }
+        }
+    }
+
+    frame->timestamp_ms = timestamp_ms;
+    return frame;
+}
 
 static void save_audio_to_file(const float* data, int samples, int channels, QFile*& file, const char* filename, int& save_count, int max_save) {
     if (!file) {
@@ -61,13 +160,17 @@ AudioEngine::AudioEngine() : QObject(nullptr) {
     // 创建音频捕获器
     audio_capturer_ = std::make_unique<AudioCapturer>(this);
 
-    // 连接信号（麦克风数据）
+    // Use Qt::DirectConnection so on_data_captured runs immediately in the
+    // WASAPI capture thread instead of being queued through the Qt event loop.
+    // Without this, there is a 30-50ms startup delay where the mixer can't find
+    // frames and fills the audio stream with silence, causing audible A/V desync.
+    // on_data_captured is thread-safe: is_capturing_ is atomic, and the queue
+    // write is protected by microphone_mutex_.
     connect(audio_capturer_.get(), &AudioCapturer::data_captured,
-            this, &AudioEngine::on_data_captured);
-    
-    // 连接信号（扬声器/桌面音频数据）
+            this, &AudioEngine::on_data_captured, Qt::DirectConnection);
+
     connect(audio_capturer_.get(), &AudioCapturer::speaker_data_captured,
-            this, &AudioEngine::on_speaker_data_captured);
+            this, &AudioEngine::on_speaker_data_captured, Qt::DirectConnection);
 
     LOG_INFO("[AudioEngine] Created (using AudioCapturer)");
 }
@@ -115,10 +218,13 @@ bool AudioEngine::start_capture() {
 
     // 设置音频设备（如果已选择）
     if (!selected_microphone_id_.empty() && selected_microphone_id_ != "default") {
+        // Pass the WASAPI device ID directly so WASAPICapturer opens the correct
+        // device instead of always falling back to the system default.
+        audio_capturer_->set_wasapi_device_id(selected_microphone_id_);
+        // Also log the friendly name for diagnostics.
         QList<QAudioDevice> devices = QMediaDevices::audioInputs();
         for (const QAudioDevice& device : devices) {
             if (device.id().toStdString() == selected_microphone_id_) {
-                audio_capturer_->set_audio_device(device);
                 LOG_INFO("[AudioEngine] Using selected device: " + device.description().toStdString());
                 break;
             }
@@ -130,9 +236,17 @@ bool AudioEngine::start_capture() {
 
     if (result) {
         is_capturing_ = true;
+        {
+            std::lock_guard<std::mutex> lock(timestamp_sync_mutex_);
+            capture_clock_epoch_ = std::chrono::steady_clock::now();
+            microphone_timestamp_anchor_ms_ = -1;
+            speaker_timestamp_anchor_ms_ = -1;
+            microphone_clock_anchor_ms_ = 0;
+            speaker_clock_anchor_ms_ = 0;
+        }
         // 更新实际的采样率和声道数（可能与期望值不同）
-        sample_rate_ = audio_capturer_->get_sample_rate();
-        channels_ = audio_capturer_->get_channels();
+        const int capture_sample_rate = audio_capturer_->get_sample_rate();
+        const int capture_channels = audio_capturer_->get_channels();
 
         float volume = get_microphone_volume();
         bool muted = get_microphone_mute();
@@ -140,6 +254,9 @@ bool AudioEngine::start_capture() {
         LOG_INFO("[AudioEngine] Capture STARTED successfully!");
         LOG_INFO("[AudioEngine]   Format: " + std::to_string(sample_rate_) + "Hz, " +
                  std::to_string(channels_) + " ch, Int16");
+        LOG_INFO("[AudioEngine]   Capture source format: " +
+                 std::to_string(capture_sample_rate) + "Hz, " +
+                 std::to_string(capture_channels) + " ch, Float32");
         LOG_INFO("[AudioEngine]   Volume: " + std::to_string(volume * 100) + "%, Muted: " + (muted ? "YES" : "NO"));
 
         // 🔧 修复：混音线程在音频引擎初始化时就启动，不依赖是否推流
@@ -181,27 +298,17 @@ void AudioEngine::on_data_captured(QByteArray data, int64_t timestamp) {
         return;
     }
 
-    // 数据格式：32-bit Float (从 WASAPI 传来)
-    int bytes_per_sample = sizeof(float);
-    int total_samples = data.size() / (channels_ * bytes_per_sample);
+    const int src_sample_rate = audio_capturer_ ? audio_capturer_->get_sample_rate() : sample_rate_;
+    const int src_channels = audio_capturer_ ? audio_capturer_->get_channels() : channels_;
+    auto frame = make_frame_from_interleaved_float(
+        data,
+        src_sample_rate,
+        src_channels,
+        sample_rate_,
+        channels_,
+        mapCaptureTimestampToEngineClock(timestamp, false));
 
-    // 创建音频帧
-    auto frame = std::make_shared<AudioFrame>(sample_rate_, channels_, total_samples);
-
-    if (frame->data) {
-        // 复制数据
-        const float* src_data = reinterpret_cast<const float*>(data.constData());
-        int total = total_samples * channels_;
-
-        for (int i = 0; i < total; ++i) {
-            float float_sample = src_data[i];
-            frame->data[i] = float_sample;
-        }
-
-        // 设置时间戳
-        frame->timestamp_ms = timestamp;
-
-        // 推入麦克风队列
+    if (frame) {
         pushFrameToQueue(microphone_queue_, microphone_mutex_, frame);
     }
 }
@@ -216,27 +323,17 @@ void AudioEngine::on_speaker_data_captured(QByteArray data, int64_t timestamp) {
         return;
     }
 
-    // 数据格式：32-bit Float (从 WASAPI 传来)
-    int bytes_per_sample = sizeof(float);
-    int total_samples = data.size() / (channels_ * bytes_per_sample);
+    const int src_sample_rate = audio_capturer_ ? audio_capturer_->get_speaker_sample_rate() : sample_rate_;
+    const int src_channels = audio_capturer_ ? audio_capturer_->get_speaker_channels() : channels_;
+    auto frame = make_frame_from_interleaved_float(
+        data,
+        src_sample_rate > 0 ? src_sample_rate : sample_rate_,
+        src_channels > 0 ? src_channels : channels_,
+        sample_rate_,
+        channels_,
+        mapCaptureTimestampToEngineClock(timestamp, true));
 
-    // 创建音频帧
-    auto frame = std::make_shared<AudioFrame>(sample_rate_, channels_, total_samples);
-
-    if (frame->data) {
-        // 复制数据
-        const float* src_data = reinterpret_cast<const float*>(data.constData());
-        int total = total_samples * channels_;
-
-        for (int i = 0; i < total; ++i) {
-            float float_sample = src_data[i];
-            frame->data[i] = float_sample;
-        }
-
-        // 设置时间戳
-        frame->timestamp_ms = timestamp;
-
-        // 推入扬声器队列
+    if (frame) {
         pushFrameToQueue(speaker_queue_, speaker_mutex_, frame);
     }
 }
@@ -249,6 +346,11 @@ std::vector<AudioEngine::AudioDeviceInfo> AudioEngine::get_available_microphones
 
     for (int i = 0; i < audio_devices.size(); ++i) {
         const QAudioDevice& device = audio_devices[i];
+        if (is_filtered_audio_device_name(device.description())) {
+            LOG_INFO("[AudioEngine]   [filtered] " + device.description().toStdString() +
+                     " (id: " + device.id().toStdString() + ")");
+            continue;
+        }
         AudioDeviceInfo info;
         info.id = device.id().toStdString();
         info.name = device.description().toStdString();
@@ -278,11 +380,34 @@ std::string AudioEngine::get_selected_microphone_id() {
     return selected_microphone_id_;
 }
 
+std::string AudioEngine::refresh_microphone_to_system_default() {
+    // Always use whatever Windows reports as the current default input device.
+    // No filtering or fallback — the user controls their default device in the
+    // system sound settings; we should respect that choice unconditionally.
+    const QAudioDevice default_device = QMediaDevices::defaultAudioInput();
+    std::string selected_id;
+    if (!default_device.isNull()) {
+        selected_id = default_device.id().toStdString();
+        LOG_INFO("[AudioEngine][MicSync] Using system default microphone: " +
+                 default_device.description().toStdString());
+    } else {
+        selected_id = "default";
+        LOG_WARNING("[AudioEngine][MicSync] No default microphone found, using 'default'");
+    }
+    select_microphone(selected_id);
+    return selected_id;
+}
+
 std::vector<AudioEngine::AudioDeviceInfo> AudioEngine::get_available_speakers() {
     std::vector<AudioDeviceInfo> devices;
 
     QList<QAudioDevice> audio_devices = QMediaDevices::audioOutputs();
     for (const QAudioDevice& device : audio_devices) {
+        if (is_filtered_audio_device_name(device.description())) {
+            LOG_INFO("[AudioEngine]   [filtered speaker] " + device.description().toStdString() +
+                     " (id: " + device.id().toStdString() + ")");
+            continue;
+        }
         AudioDeviceInfo info;
         info.id = device.id().toStdString();
         info.name = device.description().toStdString();
@@ -302,6 +427,22 @@ bool AudioEngine::select_speaker(const std::string& speaker_id) {
 std::string AudioEngine::get_selected_speaker_id() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return selected_speaker_id_;
+}
+
+std::string AudioEngine::refresh_speaker_to_system_default() {
+    // Always use whatever Windows reports as the current default output device.
+    const QAudioDevice default_device = QMediaDevices::defaultAudioOutput();
+    std::string selected_id;
+    if (!default_device.isNull()) {
+        selected_id = default_device.id().toStdString();
+        LOG_INFO("[AudioEngine][SpeakerSync] Using system default speaker: " +
+                 default_device.description().toStdString());
+    } else {
+        selected_id = "default";
+        LOG_WARNING("[AudioEngine][SpeakerSync] No default speaker found, using 'default'");
+    }
+    select_speaker(selected_id);
+    return selected_id;
 }
 
 bool AudioEngine::enable_noise_suppression(bool enable) {
@@ -421,47 +562,77 @@ float AudioEngine::get_noise_suppression_level() const {
 }
 
 bool AudioEngine::set_speaker_volume(float volume) {
-#ifdef _WIN32
-    HRESULT hr = S_OK;
-    IMMDeviceEnumerator* pEnumerator = nullptr;
-    IMMDevice* pDevice = nullptr;
-    IAudioEndpointVolume* pEndpointVolume = nullptr;
-
-    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                          __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
-    if (SUCCEEDED(hr)) {
-        if (!selected_speaker_id_.empty() && selected_speaker_id_ != "default") {
-            std::wstring w_id(selected_speaker_id_.begin(), selected_speaker_id_.end());
-            hr = pEnumerator->GetDevice(w_id.c_str(), &pDevice);
-        } else {
-            hr = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
-        }
-
-        if (SUCCEEDED(hr)) {
-            hr = pDevice->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL,
-                                   nullptr, (void**)&pEndpointVolume);
-            if (SUCCEEDED(hr)) {
-                hr = pEndpointVolume->SetMasterVolumeLevelScalar(volume, nullptr);
-                pEndpointVolume->Release();
-            }
-            pDevice->Release();
-        }
-        pEnumerator->Release();
-    }
-
-    if (SUCCEEDED(hr)) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        speaker_volume_ = volume;
-        LOG_INFO("[AudioEngine] Speaker volume set to " + std::to_string(static_cast<int>(volume * 100)) + "%");
-        return true;
-    }
-    LOG_ERROR("[AudioEngine] Failed to set speaker volume");
-    return false;
-#else
+    // Only control the software-level mix flag. Do NOT touch the system audio
+    // endpoint volume — that would change the user's system speaker volume.
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
     std::lock_guard<std::mutex> lock(state_mutex_);
     speaker_volume_ = volume;
-    LOG_INFO("[AudioEngine] Speaker volume set to " + std::to_string(static_cast<int>(volume * 100)) + "%");
+    LOG_INFO("[AudioEngine] Speaker mix volume set to " + std::to_string(static_cast<int>(volume * 100)) + "%");
     return true;
+}
+
+float AudioEngine::get_system_microphone_volume() {
+#ifdef _WIN32
+    IMMDeviceEnumerator* pEnumerator = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
+    if (FAILED(hr)) return -1.0f;
+
+    IMMDevice* pDevice = nullptr;
+    if (!selected_microphone_id_.empty() && selected_microphone_id_ != "default") {
+        std::wstring w_id(selected_microphone_id_.begin(), selected_microphone_id_.end());
+        hr = pEnumerator->GetDevice(w_id.c_str(), &pDevice);
+    } else {
+        hr = pEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &pDevice);
+    }
+    pEnumerator->Release();
+    if (FAILED(hr) || !pDevice) return -1.0f;
+
+    IAudioEndpointVolume* pEndpointVolume = nullptr;
+    hr = pDevice->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL,
+                           nullptr, (void**)&pEndpointVolume);
+    pDevice->Release();
+    if (FAILED(hr) || !pEndpointVolume) return -1.0f;
+
+    float vol = -1.0f;
+    hr = pEndpointVolume->GetMasterVolumeLevelScalar(&vol);
+    pEndpointVolume->Release();
+    return SUCCEEDED(hr) ? vol : -1.0f;
+#else
+    return -1.0f;
+#endif
+}
+
+float AudioEngine::get_system_speaker_volume() {
+#ifdef _WIN32
+    IMMDeviceEnumerator* pEnumerator = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
+    if (FAILED(hr)) return -1.0f;
+
+    IMMDevice* pDevice = nullptr;
+    if (!selected_speaker_id_.empty() && selected_speaker_id_ != "default") {
+        std::wstring w_id(selected_speaker_id_.begin(), selected_speaker_id_.end());
+        hr = pEnumerator->GetDevice(w_id.c_str(), &pDevice);
+    } else {
+        hr = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+    }
+    pEnumerator->Release();
+    if (FAILED(hr) || !pDevice) return -1.0f;
+
+    IAudioEndpointVolume* pEndpointVolume = nullptr;
+    hr = pDevice->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL,
+                           nullptr, (void**)&pEndpointVolume);
+    pDevice->Release();
+    if (FAILED(hr) || !pEndpointVolume) return -1.0f;
+
+    float vol = -1.0f;
+    hr = pEndpointVolume->GetMasterVolumeLevelScalar(&vol);
+    pEndpointVolume->Release();
+    return SUCCEEDED(hr) ? vol : -1.0f;
+#else
+    return -1.0f;
 #endif
 }
 
@@ -471,48 +642,13 @@ float AudioEngine::get_speaker_volume() {
 }
 
 bool AudioEngine::set_speaker_mute(bool mute) {
-#ifdef _WIN32
-    HRESULT hr = S_OK;
-    IMMDeviceEnumerator* pEnumerator = nullptr;
-    IMMDevice* pDevice = nullptr;
-    IAudioEndpointVolume* pEndpointVolume = nullptr;
-
-    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                          __uuidof(IMMDeviceEnumerator), (void**)&pEnumerator);
-    if (SUCCEEDED(hr)) {
-        if (!selected_speaker_id_.empty() && selected_speaker_id_ != "default") {
-            std::wstring w_id(selected_speaker_id_.begin(), selected_speaker_id_.end());
-            hr = pEnumerator->GetDevice(w_id.c_str(), &pDevice);
-        } else {
-            hr = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
-        }
-
-        if (SUCCEEDED(hr)) {
-            hr = pDevice->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL,
-                                   nullptr, (void**)&pEndpointVolume);
-            if (SUCCEEDED(hr)) {
-                pEndpointVolume->SetMute(mute, nullptr);
-                pEndpointVolume->Release();
-            }
-            pDevice->Release();
-        }
-        pEnumerator->Release();
-    }
-
-    if (SUCCEEDED(hr)) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        speaker_muted_ = mute;
-        LOG_INFO("[AudioEngine] Speaker " + std::string(mute ? "MUTED" : "UNMUTED"));
-        return true;
-    }
-    LOG_ERROR("[AudioEngine] Failed to set speaker mute");
-    return false;
-#else
+    // Only control the software-level mix flag. Do NOT touch the system audio
+    // endpoint volume — modifying IAudioEndpointVolume::SetMute would silence
+    // the user's system speakers, which is never the intent here.
     std::lock_guard<std::mutex> lock(state_mutex_);
     speaker_muted_ = mute;
-    LOG_INFO("[AudioEngine] Speaker " + std::string(mute ? "MUTED" : "UNMUTED"));
+    LOG_INFO("[AudioEngine] Speaker mix " + std::string(mute ? "MUTED" : "UNMUTED"));
     return true;
-#endif
 }
 
 bool AudioEngine::get_speaker_mute() {
@@ -781,6 +917,9 @@ std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
         }
     }
 
+    // Timestamp is intentionally NOT derived from source frames here.
+    // It will be overridden by MediaClock::get_elapsed_time_us() in mixThreadFunc
+    // so that audio and video share the same reference frame.
     return output;
 }
 
@@ -948,17 +1087,21 @@ void AudioEngine::mixThreadFunc() {
                     mixed_frame->data,
                     mixed_frame->samples * mixed_frame->channels,
                     0.0f);
-                int64_t current_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count();
-                mixed_frame->timestamp_ms = current_time_ms;
                 emitted_samples = mixed_frame->samples;
             }
         }
 
         if (mixed_frame && mixed_frame->data) {
+            // Pass steady_clock absolute microseconds at emit time so the bridge
+            // can reconstruct an accurate PTS even when the slot runs later in the
+            // main thread (QueuedConnection).  The bridge subtracts its own
+            // streaming_start_steady_us_ to get elapsed time in the bridge's domain.
+            int64_t emit_steady_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+
             int data_size = mixed_frame->samples * mixed_frame->channels * sizeof(float);
             QByteArray data(reinterpret_cast<const char*>(mixed_frame->data), data_size);
-            emit audio_data_ready(data, mixed_frame->timestamp_ms);
+            emit audio_data_ready(data, emit_steady_us);
         }
 
         int pacing_sample_rate = sample_rate_ > 0 ? sample_rate_ : 48000;
@@ -995,9 +1138,48 @@ std::shared_ptr<AudioFrame> AudioEngine::getFrameFromQueue(
         return nullptr;
     }
 
+    // Take the front (oldest) frame. The mix-thread pacing already ensures the
+    // queue stays near-empty during normal streaming.  Unbounded growth is
+    // prevented by the MAX_QUEUE_SIZE cap in pushFrameToQueue.
+    // Draining to the newest frame is intentionally avoided because it causes
+    // non-monotonic source timestamps when two sources (mic + speaker) are
+    // mixed, leading to repeated "Large timestamp regression" warnings in the
+    // AAC encoder.  Timestamps are now derived from MediaClock in mixThreadFunc,
+    // so source frame timestamps are no longer critical.
     auto frame = queue.front();
     queue.pop();
     return frame;
+}
+
+int64_t AudioEngine::mapCaptureTimestampToEngineClock(
+    int64_t source_timestamp_ms,
+    bool is_speaker_source
+) {
+    if (source_timestamp_ms < 0) {
+        source_timestamp_ms = 0;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(timestamp_sync_mutex_);
+
+    if (capture_clock_epoch_ == std::chrono::steady_clock::time_point{}) {
+        capture_clock_epoch_ = now;
+    }
+
+    int64_t& source_anchor_ms = is_speaker_source
+        ? speaker_timestamp_anchor_ms_
+        : microphone_timestamp_anchor_ms_;
+    int64_t& clock_anchor_ms = is_speaker_source
+        ? speaker_clock_anchor_ms_
+        : microphone_clock_anchor_ms_;
+
+    if (source_anchor_ms < 0) {
+        source_anchor_ms = source_timestamp_ms;
+        clock_anchor_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - capture_clock_epoch_).count();
+    }
+
+    return clock_anchor_ms + (source_timestamp_ms - source_anchor_ms);
 }
 
 void AudioEngine::pushFrameToQueue(

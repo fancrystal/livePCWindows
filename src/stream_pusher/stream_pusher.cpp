@@ -221,9 +221,24 @@ void StreamPusher::push_thread_func() {
 
                             if (reconnect_result == ErrorCode::SUCCESS) {
                                 Log::info("[PUSH] Reconnected to RTMP server successfully, clearing queue");
+                                if (reconnect_attempts_ > static_cast<int>(config_.max_reconnect_attempts) * 3) {
+                                    Log::error("[PUSH] Total reconnect attempts (" +
+                                        std::to_string(reconnect_attempts_.load()) +
+                                        ") exceeded limit (" +
+                                        std::to_string(config_.max_reconnect_attempts * 3) +
+                                        "), giving up - likely invalid stream URL");
+                                    set_state(StreamState::ERR);
+                                    push_queue_.clear();
+                                    stop_thread_ = true;
+                                    break;
+                                }
                                 set_state(StreamState::PUSHING);
                                 consecutive_reconnect_failures = 0;
                                 push_queue_.clear();
+                                if (reconnect_callback_) {
+                                    reconnect_callback_();
+                                    Log::info("[PUSH] Reconnect callback invoked (force IDR keyframe)");
+                                }
                             } else {
                                 Log::error("[PUSH] Reconnect attempt #" + std::to_string(reconnect_attempts_) +
                                            " failed (result=" + std::to_string(static_cast<int>(reconnect_result)) +
@@ -259,6 +274,10 @@ void StreamPusher::push_thread_func() {
     }
 
     Log::info("Push thread exited");
+}
+
+void StreamPusher::set_reconnect_callback(std::function<void()> callback) {
+    reconnect_callback_ = std::move(callback);
 }
 
 // Note: try_reconnect() has been replaced with non-blocking reconnection logic

@@ -276,9 +276,6 @@
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_video_widget.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_item.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_list_window.h">
       <Filter>Header Files</Filter>
     </ClInclude>

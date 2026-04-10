@@ -108,6 +108,7 @@ private:
     // send_packet 诊断计数（成员变量，重连时可重置）
     int send_frame_count_ = 0;
     int64_t av_sync_offset_ms_ = 0;            // 音视频同步偏移量：第一个实际发出的音频包 PTS
+    bool av_sync_offset_initialized_ = false;  // 偏移量是否已初始化（用 flag 替代 pts>0 检查以覆盖 pts==0 边界）
     int64_t video_pts_base_ = -1;              // 视频 PTS 归一化基准（修正 QSV 内部计数器偏移）
     int audio_packet_count_ = 0;
     int write_frame_count_ = 0;

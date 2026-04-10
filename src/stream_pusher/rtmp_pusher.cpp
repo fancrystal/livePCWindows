@@ -99,6 +99,9 @@ static bool convert_annexb_to_avcc(AVCodecParameters* par)
     return true;
 }
 
+// 注：Annex-B → AVCC 的逐帧转换已移至 video_encoder.cpp::normalize_h264_packet_to_avcc()，
+// 在编码器出口统一处理，rtmp_pusher 收到的视频包已经是 AVCC 格式，无需再做转换。
+
 // ─── SEH 保护 wrapper ────────────────────────────────────────────────────────
 // av_interleaved_write_frame / av_write_frame 在服务端突然关闭 TCP 连接时，
 // 可能在 FFmpeg 内部触发 Access Violation（SEH）而不是返回错误码，
@@ -149,6 +152,15 @@ RTMPPusher::~RTMPPusher() {
 
 ErrorCode RTMPPusher::initialize(const StreamConfig& config) {
     LOG_INFO("Initializing RTMP pusher");
+    
+    // 验证配置
+    if (!config.is_valid()) {
+        LOG_ERROR("Invalid RTMP configuration: server_url=" + config.server_url + 
+                  ", stream_key=" + config.stream_key);
+        return ErrorCode::INVALID_PARAM;
+    }
+
+    LOG_INFO("RTMP configuration validated: " + config.get_full_url());
     
     // If already initialized (format_ctx_ exists), skip re-initialization to avoid
     // clearing previously registered streams.
@@ -313,19 +325,20 @@ ErrorCode RTMPPusher::open_output() {
         return ErrorCode::INIT_FAILED;
     }
 
+
     std::string full_url = config_.server_url + "/" + config_.stream_key;
     // 调试模式：可选择输出到本地文件进行测试
     //// 要测试本地文件，请取消下面一行的注释：
     //full_url = "D:/test.flv";
     //// 正常推流时，请确保这一行被注释掉
 
-    //// 对于本地文件测试，先删除已存在的文件以确保干净输出
-    //// RTMP 推流时服务器会自动处理
-    //if (full_url.find(".flv") != std::string::npos) {
-    //    std::remove(full_url.c_str());  // 删除已存在的文件
-    //}
-
-    int ret = avio_open(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE);
+    // 使用 avio_open2 并设置 rw_timeout（单位：微秒），防止连接不可达时主线程无限阻塞。
+    // Windows TCP 默认超时约 20 秒，会导致 UI 冻结；此处限制为 8 秒。
+    // 写帧超时同样受此限制，服务器停止消费数据时写操作将超时失败而不是永远阻塞。
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "rw_timeout", "8000000", 0);  // 8 秒，单位微秒
+    int ret = avio_open2(&format_ctx_->pb, full_url.c_str(), AVIO_FLAG_WRITE, nullptr, &opts);
+    av_dict_free(&opts);
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -396,6 +409,7 @@ ErrorCode RTMPPusher::connect_and_write_header() {
     have_sent_first_key_ = false;
     send_frame_count_ = 0;
     av_sync_offset_ms_ = 0;
+    av_sync_offset_initialized_ = false;       // 每次连接/重连后重新等待第一个音频包来设定偏移
     video_pts_base_ = -1;  // 每次重连重置，重新校准 QSV 内部 PTS 偏移
     audio_packet_count_ = 0;
     write_frame_count_ = 0;
@@ -634,14 +648,18 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     // 减去自身 PTS 后音频从 0ms 开始，与视频 IDR（也是 0ms）精确对齐。
     // 对重连场景同样有效：audio 在 IDR 后首次发出时 pts 约为 301600ms，
     // offset=301600ms，音视频均归零，消除 ~1730ms 的偏移。
-    if (packet->type == MediaType::AUDIO && av_sync_offset_ms_ == 0 && avpkt->pts > 0) {
+    // 以第一个实际发出的音频包（IDR 之后）的 PTS 作为同步基准。
+    // 用 initialized flag 而非 pts>0 检查，覆盖 pts==0 的边界情况
+    // （极低概率：音频包恰好与视频 IDR 同时到达，PTS 已归零为 0ms）。
+    if (packet->type == MediaType::AUDIO && !av_sync_offset_initialized_) {
         av_sync_offset_ms_ = avpkt->pts;
+        av_sync_offset_initialized_ = true;
         LOG_INFO("[RTMP] AV Sync Offset set from first sent audio: " +
                  std::to_string(av_sync_offset_ms_) + "ms");
     }
 
     // 音视频同步：如果音频延迟，调整音频时间戳
-    if (packet->type == MediaType::AUDIO && av_sync_offset_ms_ > 0) {
+    if (packet->type == MediaType::AUDIO && av_sync_offset_initialized_) {
         int64_t old_pts = avpkt->pts;
         int64_t old_dts = avpkt->dts;
         avpkt->pts -= av_sync_offset_ms_;
@@ -665,6 +683,10 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                  ", dts=" + std::to_string(packet->dts) +
                  ", size=" + std::to_string(write_pkt->size));
     }
+
+    // 视频包格式说明：
+    // Annex-B → AVCC 转换已在 video_encoder.cpp::normalize_h264_packet_to_avcc() 完成，
+    // 此处收到的视频包已经是 AVCC 格式，可直接写入 FLV/RTMP。
 
     // 在 write 前保存 size：av_interleaved_write_frame 会消费 packet，调用后 size 归零
     int packet_size = write_pkt->size;

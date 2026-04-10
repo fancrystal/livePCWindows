@@ -2,6 +2,7 @@
 
 #include <thread>
 #include <atomic>
+#include <functional>
 #include "common/error.h"
 #include "stream_pusher/stream_config.h"
 #include "stream_pusher/push_queue.h"
@@ -71,7 +72,10 @@ public:
     
     // 重置统计信息
     void reset_stats();
-    
+
+    // 重连成功后在推流线程中调用（需线程安全）；用于通知编码器强制 IDR。
+    void set_reconnect_callback(std::function<void()> callback);
+
 private:
     // 推流线程函数
     void push_thread_func();
@@ -102,6 +106,8 @@ private:
     
     // 重新连接尝试次数
     std::atomic<int> reconnect_attempts_;
+
+    std::function<void()> reconnect_callback_;
 };
 
 } // namespace live_assistant

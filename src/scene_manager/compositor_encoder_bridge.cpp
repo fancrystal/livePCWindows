@@ -1,4 +1,5 @@
 #define NOMINMAX
+#include <cmath>
 #include "scene_manager/compositor_encoder_bridge.h"
 #include "common/log.h"
 #include "common/error.h"
@@ -43,10 +44,16 @@ CompositorEncoderBridge::CompositorEncoderBridge(QObject* parent)
                 std::this_thread::sleep_for(next_tick - thread_now);
             }
             
-            if (!bridge->capture_thread_stop_ && bridge->running_) {
-                bridge->last_capture_time_ = std::chrono::steady_clock::now();
-                // 使用 QueuedConnection 确保在主线程执行
-                QMetaObject::invokeMethod(bridge, "on_encode_timer", Qt::QueuedConnection);
+            if (!bridge->capture_thread_stop_ && bridge->running_.load(std::memory_order_acquire)) {
+                // 仅在上一帧已被主线程消费后才投递新帧。
+                // 若主线程繁忙（UI/事件处理），跳过本次投递以避免 QueuedConnection 积压：
+                // 积压会导致两帧在极短时间内连续编码，产生 PTS 突刺和播放端卡顿。
+                bool expected = false;
+                if (bridge->frame_pending_.compare_exchange_strong(
+                        expected, true, std::memory_order_acq_rel)) {
+                    bridge->last_capture_time_ = std::chrono::steady_clock::now();
+                    QMetaObject::invokeMethod(bridge, "on_encode_timer", Qt::QueuedConnection);
+                }
             } else {
                 // 如果没有运行，稍作等待避免忙轮询
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -136,6 +143,16 @@ void CompositorEncoderBridge::set_encoder(std::shared_ptr<Encoder> encoder) {
 
 void CompositorEncoderBridge::set_stream_pusher(std::shared_ptr<StreamPusher> stream_pusher) {
     stream_pusher_ = stream_pusher;
+    if (stream_pusher_) {
+        // 重连成功后通知视频编码器立刻强制输出 IDR 关键帧。
+        // callback 在 StreamPusher 的推流线程中调用，force_keyframe() 是线程安全的原子操作。
+        stream_pusher_->set_reconnect_callback([this]() {
+            if (encoder_) {
+                encoder_->force_keyframe();
+                LOG_INFO("[BRIDGE] Forced IDR keyframe after RTMP reconnect");
+            }
+        });
+    }
     LOG_INFO("Stream pusher set for encoder bridge");
 }
 
@@ -148,9 +165,13 @@ void CompositorEncoderBridge::set_audio_engine(std::shared_ptr<AudioEngine> audi
     audio_engine_ = audio_engine;
 
     if (audio_engine_) {
+        // Use QueuedConnection so the mixer thread is never blocked by audio
+        // encoding work.  The PTS is now captured at emit time in the mixer
+        // thread and passed as the timestamp argument, so the slot can use it
+        // directly instead of reading media_clock_ at (later) slot-execution time.
         connect(audio_engine_.get(), &AudioEngine::audio_data_ready,
                 this, &CompositorEncoderBridge::on_audio_data_ready);
-        LOG_INFO("Audio engine set for encoder bridge and signal connected");
+        LOG_INFO("Audio engine set for encoder bridge and signal connected (QueuedConnection)");
     } else {
         LOG_INFO("Audio engine set for encoder bridge (null)");
     }
@@ -258,13 +279,45 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     if (encoder_) {
         AVCodecParameters* a_par = encoder_->get_audio_codec_parameters();
         AVRational a_tb = encoder_->get_audio_time_base();
-        ErrorCode video_init_result = encoder_->ensure_video_encoder_initialized();
-        if (video_init_result != ErrorCode::SUCCESS) {
-            if (a_par) avcodec_parameters_free(&a_par);
-            LOG_ERROR("[BRIDGE] Failed to initialize video encoder for streaming");
-            emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(video_init_result)));
-            return false;
+        
+        // 🔧 修复竖屏推流绿屏问题：确保视频编码器使用最新的分辨率配置
+        // 问题：ensure_video_encoder_initialized() 可能使用过期的 video_config_
+        // 导致 SPS/PPS 中的分辨率与实际画面不符，拉流端解码失败显示绿屏
+        VideoEncoderConfig current_video_config = encoder_->get_video_config();
+        if (current_video_config.width != width_ || current_video_config.height != height_) {
+            // 分辨率配置已变更（如横屏→竖屏切换），需要重新初始化编码器
+            LOG_INFO("[BRIDGE] Video config mismatch: encoder=" + std::to_string(current_video_config.width) + "x" + 
+                     std::to_string(current_video_config.height) + ", current=" + std::to_string(width_) + "x" + std::to_string(height_));
+            current_video_config.width = width_;
+            current_video_config.height = height_;
+            ErrorCode reinit_result = encoder_->reinitialize_video_encoder(current_video_config);
+            if (reinit_result != ErrorCode::SUCCESS) {
+                if (a_par) avcodec_parameters_free(&a_par);
+                LOG_ERROR("[BRIDGE] Failed to reinitialize video encoder with updated resolution");
+                emit streaming_error(QString("Failed to reinitialize video encoder: %1").arg(static_cast<int>(reinit_result)));
+                return false;
+            }
+            LOG_INFO("[BRIDGE] Video encoder reinitialized with resolution: " + std::to_string(width_) + "x" + std::to_string(height_));
+            // reinitialize_video_encoder() only stores config when encoder is not yet
+            // active; call ensure_video_encoder_initialized() to actually create it.
+            ErrorCode ensure_result = encoder_->ensure_video_encoder_initialized();
+            if (ensure_result != ErrorCode::SUCCESS) {
+                if (a_par) avcodec_parameters_free(&a_par);
+                LOG_ERROR("[BRIDGE] Failed to initialize video encoder after resolution update");
+                emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(ensure_result)));
+                return false;
+            }
+        } else {
+            // 配置匹配，只需确保编码器已初始化
+            ErrorCode video_init_result = encoder_->ensure_video_encoder_initialized();
+            if (video_init_result != ErrorCode::SUCCESS) {
+                if (a_par) avcodec_parameters_free(&a_par);
+                LOG_ERROR("[BRIDGE] Failed to initialize video encoder for streaming");
+                emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(video_init_result)));
+                return false;
+            }
         }
+        
         AVCodecParameters* v_par = encoder_->get_video_codec_parameters();
         AVRational v_tb = encoder_->get_video_time_base();
 
@@ -275,6 +328,10 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
             vc.prefer_hw = false;
             vc.hw_accel = HWAccelerationType::NONE;
             ErrorCode r = encoder_->reinitialize_video_encoder(vc);
+            if (r == ErrorCode::SUCCESS) {
+                // Force actual creation if encoder was not yet active
+                r = encoder_->ensure_video_encoder_initialized();
+            }
             if (r == ErrorCode::SUCCESS) {
                 v_par = encoder_->get_video_codec_parameters();
                 v_tb = encoder_->get_video_time_base();
@@ -334,33 +391,48 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     video_frame_count_ = 0;
     
     // 🔧 OBS 风格 PTS 偏移归零：重置偏移变量，等待第一帧到达时重新记录
-    first_video_pts_ms_ = -1;
-    streaming_pts_initialized_ = false;
+    {
+        std::lock_guard<std::mutex> alock(audio_pts_mutex_);
+        first_video_pts_ms_ = -1;
+        streaming_pts_initialized_ = false;
+        audio_pts_clock_offset_ms_ = INT64_MIN;
+    }
     // 视频帧计数器 PTS 基准
     video_pts_base_us_ = -1;
     video_pts_initial_frame_ = -1;
     // 重置漂移监控状态
     audio_total_samples_received_ = 0;
     last_drift_check_ms_ = 0;
+    first_audio_timestamp_ms_ = -1;
+    media_clock_start_us_ = 0;
     // 🔧 重置音频诊断计数（原来是 static 本地变量，每次推流必须重置）
     diag_first_audio_pts_ = -1;
     diag_audio_count_ = 0;
     LOG_INFO("[BRIDGE] PTS offset reset, waiting for first frame");
 
     media_clock_.start();
-    LOG_INFO("[BRIDGE] Media clock started");
+    // Record steady_clock epoch that matches media_clock_.start() so we can
+    // convert mixer emit-time steady_clock timestamps to bridge PTS later.
+    streaming_start_steady_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    LOG_INFO("[BRIDGE] Media clock started, streaming_start_steady_us=" +
+             std::to_string(streaming_start_steady_us_));
 
     start_encoder_threads();
 
     ErrorCode start_result = stream_pusher_->start();
     if (start_result != ErrorCode::SUCCESS) {
         LOG_ERROR("Failed to start streaming to: " + url);
-        emit streaming_error(QString("Failed to start streaming: %1").arg(static_cast<int>(start_result)));
+        // Clean up before emitting the error signal.  The signal is connected with
+        // QueuedConnection so on_streaming_error runs after we return and release
+        // state_mutex_, but emit the error AFTER cleanup to keep state consistent.
         stop_encoder_threads();
         if (encoder_) {
             encoder_->shutdown_video_encoder();
         }
         media_clock_.stop();
+        QString err_msg = QString("Failed to start streaming: %1").arg(static_cast<int>(start_result));
+        emit streaming_error(err_msg);
         return false;
     }
 
@@ -371,7 +443,7 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
 
     LOG_INFO("[BRIDGE] Encoding restarted, media_clock: " + std::to_string(media_clock_.get_elapsed_time_us() / 1000) + "ms");
 
-    streaming_ = true;
+    streaming_.store(true);
     stream_url_ = url;
     emit streaming_started();
     LOG_INFO("Streaming started to: " + url);
@@ -386,7 +458,7 @@ void CompositorEncoderBridge::stop_streaming() {
     }
 
     // 先将 streaming_ 置为 false，阻止 on_audio_data_ready 继续向音频编码器投递数据
-    streaming_ = false;
+    streaming_.store(false);
 
     // ═══════════════════════════════════════════════════════════════
     // 🔧 停止编码线程池（队列已在 stop_encoder_threads 内预先清空）
@@ -440,6 +512,12 @@ void CompositorEncoderBridge::on_compositor_frame_ready() {
 }
 
 void CompositorEncoderBridge::on_encode_timer() {
+    // 无论 streaming_ 状态如何，立刻清除 pending 标志。
+    // 必须在函数最顶部清除：若 streaming_=false 时触发（start_streaming() 临时将 running_
+    // 置 false 的窗口期），capture_and_queue_frame() 不会被调用，flag 会永久卡在 true，
+    // 导致捕获线程再也不投递新帧（视频完全停止）。
+    frame_pending_.store(false, std::memory_order_release);
+
     if (!running_) {
         return;
     }
@@ -485,36 +563,48 @@ void CompositorEncoderBridge::on_encode_timer() {
 }
 
 void CompositorEncoderBridge::capture_and_queue_frame() {
+    // 主线程已接收到本帧投递，允许捕获线程发出下一帧。
+    frame_pending_.store(false, std::memory_order_release);
+
     try {
-        int64_t frame_duration_ms = 1000 / fps_;
+        // Use microsecond precision to avoid integer truncation drift.
+        // 1000 / 30 = 33 ms/frame → video PTS grows at 990 ms/s instead of 1000 ms/s
+        // → audio drifts 10 ms/s behind video (600 ms after 1 minute).
+        // 1000000 / 30 = 33333 us/frame; divide after multiply to keep full precision.
+        const int64_t frame_duration_us = (fps_ > 0) ? (1000000LL / fps_) : 33333LL;
 
         // [DIAG] Frame capture start time
         auto frame_start = std::chrono::high_resolution_clock::now();
-        
+
         video_frame_count_++;
-        
+
         auto current_pts_ms = media_clock_.get_elapsed_time_us() / 1000;
         
         // 🔧 视频 PTS 计算改用帧计数器，避免 QTimer 抖动导致帧间隔不规则
         // 帧号 × 帧时长，保证每个编码帧 PTS 等间隔（30fps = 33.33ms）
         // first_video_pts_ms_ 仅用于与音频的相对同步（第一帧对齐）
-        if (first_video_pts_ms_ == -1) {
-            first_video_pts_ms_ = current_pts_ms;
-            video_pts_base_us_ = current_pts_ms * 1000LL;
-            video_pts_initial_frame_ = video_frame_count_;
-            LOG_INFO("[BRIDGE] First video PTS recorded: " + std::to_string(first_video_pts_ms_) + "ms");
+        // Protected by audio_pts_mutex_ because on_audio_data_ready (mixer thread)
+        // reads this value concurrently.
+        {
+            std::lock_guard<std::mutex> alock(audio_pts_mutex_);
+            if (first_video_pts_ms_ == -1) {
+                first_video_pts_ms_ = current_pts_ms;
+                video_pts_base_us_ = current_pts_ms * 1000LL;
+                video_pts_initial_frame_ = video_frame_count_;
+                LOG_INFO("[BRIDGE] First video PTS recorded: " + std::to_string(first_video_pts_ms_) + "ms");
+            }
+
+            // 如果 streaming_pts_initialized_ 还未初始化（音频未到达），现在初始化
+            if (!streaming_pts_initialized_) {
+                streaming_pts_initialized_ = true;
+                LOG_INFO("[BRIDGE] Streaming PTS initialized by video at: " + std::to_string(current_pts_ms) + "ms");
+            }
         }
 
-        // 如果 streaming_pts_initialized_ 还未初始化（音频未到达），现在初始化
-        if (!streaming_pts_initialized_) {
-            streaming_pts_initialized_ = true;
-            LOG_INFO("[BRIDGE] Streaming PTS initialized by video at: " + std::to_string(current_pts_ms) + "ms");
-        }
-
-        // 🔧 帧计数器 PTS = (frame_number - initial_frame) × frame_duration_ms
-        // 帧号偏移确保首帧为 0，后续帧严格等间隔
+        // 🔧 帧计数器 PTS：用微秒精度，乘后再除，避免累积截断误差
+        // 30fps: frame_offset × 33333us / 1000 = 33.333ms/frame，与音频时钟一致
         int64_t frame_offset = video_frame_count_ - video_pts_initial_frame_;
-        int64_t adjusted_pts_ms = static_cast<int64_t>(frame_offset) * frame_duration_ms;
+        int64_t adjusted_pts_ms = (frame_offset * frame_duration_us) / 1000LL;
 
         // raw_pts 仅用于诊断，不参与实际 PTS 计算
         if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
@@ -626,6 +716,24 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::convert_qimage_to_video_fra
         return nullptr;
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // 诊断日志：检查 QImage stride 是否与预期一致
+    // QImage::Format_ARGB32 每个像素 4 字节，所以 bytesPerLine 应该等于 width * 4
+    // 但某些情况下 Qt 会自动对齐到特定边界，导致 bytesPerLine > width * 4
+    // 这可能导致 sws_scale 读取到错误的内存数据（绿屏问题）
+    // ═══════════════════════════════════════════════════════════════════
+    const int expected_stride = width_ * 4;
+    const int actual_stride = img.bytesPerLine();
+    if (actual_stride != expected_stride) {
+        LOG_WARNING("[BRIDGE] QImage stride mismatch! width_=" + std::to_string(width_) +
+                    ", img.width()=" + std::to_string(img.width()) +
+                    ", expected_stride=" + std::to_string(expected_stride) +
+                    ", actual_stride=" + std::to_string(actual_stride) +
+                    ", diff=" + std::to_string(actual_stride - expected_stride));
+    } else {
+        LOG_DEBUG("[BRIDGE] QImage stride OK: " + std::to_string(actual_stride));
+    }
+
     // Convert composed RGBA image to NV12 for (future) HW-friendly pipeline.
     auto frame = std::make_shared<VideoFrame>();
     frame->format = VideoFrame::PixelFormat::NV12;
@@ -649,8 +757,9 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::convert_qimage_to_video_fra
         return nullptr;
     }
 
+    // 使��� img.bytesPerLine() 作为源 stride（可能大于 width * 4）
     const uint8_t* src_slices[1] = { reinterpret_cast<const uint8_t*>(img.constBits()) };
-    int src_strides[1] = { static_cast<int>(img.bytesPerLine()) };
+    int src_strides[1] = { actual_stride };
 
     uint8_t* dst_slices[2] = { frame->data.get(), frame->data_uv.get() };
     int dst_strides[2] = { frame->stride, frame->stride_uv };
@@ -661,8 +770,26 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::convert_qimage_to_video_fra
     auto sws_end = std::chrono::high_resolution_clock::now();
     auto sws_us = std::chrono::duration_cast<std::chrono::microseconds>(sws_end - sws_start).count();
     LOG_DEBUG("[BRIDGE] SWS RGBA->NV12: " + std::to_string(sws_us) + "us, " +
-              std::to_string(width_) + "x" + std::to_string(height_));
-    // Note: sws_freeContext() is no longer called here - context is cached and released in destructor
+              std::to_string(width_) + "x" + std::to_string(height_) +
+              ", src_stride=" + std::to_string(actual_stride));
+
+    // 诊断：检查 NV12 数据的 UV 平面是否有效（竖屏绿屏可能是 UV 数据全为 0x80）
+    // UV 平面的每个字节应该是 [0, 255]，全 0x80(128) 表示"无色"，看起来就是绿色
+    if (frame->data_uv && uv_size > 0) {
+        uint32_t zero_count = 0;
+        uint32_t invalid_count = 0;
+        const uint8_t* uv_data = frame->data_uv.get();
+        // NV12 UV 交错存储，每 2 个像素共用一组 UV，所以只需检查前几个字节
+        for (int i = 0; i < std::min(uv_size, 64); i++) {
+            if (uv_data[i] == 0) zero_count++;
+            if (uv_data[i] == 0x80) invalid_count++;  // 0x80 是"中性灰"色
+        }
+        if (zero_count > 32 || invalid_count > 32) {
+            LOG_WARNING("[BRIDGE] NV12 UV data suspicious! zero_count=" + std::to_string(zero_count) +
+                        ", neutral_gray_count=" + std::to_string(invalid_count) +
+                        " (in first 64 bytes)");
+        }
+    }
 
     return frame;
 }
@@ -714,16 +841,47 @@ void CompositorEncoderBridge::release_sws_context() {
 }
 
 // 新增：处理音频引擎的原始数据（使用 media_clock 确保与视频同步）
+// NOTE: runs in the mixer thread via Qt::DirectConnection — all accesses to
+// shared state must be protected by audio_pts_mutex_.
 void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_t timestamp) {
-    if (!streaming_ || !encoder_) {
+    if (!streaming_.load() || !encoder_) {
         return;
     }
 
-    // 🔧 使用 media_clock 获取相对时间戳（与视频使用同一个时钟）
-    // 这样可以确保音视频时间戳同步
-    // 注意：传入的 timestamp 参数被忽略，使用 media_clock_ 的值
-    auto current_timestamp_us = media_clock_.get_elapsed_time_us();
-    auto current_timestamp_ms = current_timestamp_us / 1000;
+    // Convert the mixer's emit-time steady_clock timestamp (absolute microseconds)
+    // to bridge-relative milliseconds.  This is accurate even with QueuedConnection
+    // because we use the time when audio was *produced* (emit time in mixer thread),
+    // not when this slot runs (which could be ms later in the main thread).
+    int64_t current_timestamp_ms = 0;
+    if (streaming_start_steady_us_ > 0 && timestamp > 0) {
+        current_timestamp_ms = (timestamp - streaming_start_steady_us_) / 1000LL;
+        if (current_timestamp_ms < 0) {
+            current_timestamp_ms = 0;  // guard against tiny clock skew at startup
+        }
+    } else {
+        // Fallback: read bridge clock (only happens if start_streaming not yet called)
+        current_timestamp_ms = media_clock_.get_elapsed_time_us() / 1000;
+    }
+
+    std::unique_lock<std::mutex> audio_lock(audio_pts_mutex_);
+
+    // Lock PTS alignment on the FIRST audio frame (including any WASAPI warm-up
+    // silence).  Previously we skipped silent frames until real signal arrived,
+    // but that caused content misalignment: video PTS=0 captured real-world
+    // moment T, while audio PTS=0 captured moment T+150ms.  The WASAPI warm-up
+    // silence is at most a few frames and is imperceptible; encoding it is far
+    // better than a 100-300 ms A/V content offset.
+    if (audio_pts_clock_offset_ms_ == INT64_MIN) {
+        if (first_video_pts_ms_ >= 0) {
+            audio_pts_clock_offset_ms_ = current_timestamp_ms - first_video_pts_ms_;
+            LOG_INFO("[BRIDGE] Audio PTS aligned: clock=" + std::to_string(current_timestamp_ms) +
+                     "ms, video_origin=" + std::to_string(first_video_pts_ms_) +
+                     "ms, offset=" + std::to_string(audio_pts_clock_offset_ms_) + "ms");
+        } else {
+            audio_pts_clock_offset_ms_ = 0;
+        }
+    }
+    current_timestamp_ms -= audio_pts_clock_offset_ms_;
 
     // 🔧 OBS 风格 PTS 偏移归零：记录第一帧音频 PTS 并应用偏移
     // 注意：音频和视频必须使用同一个 PTS 基准（first_video_pts_ms_），确保音视频同步
@@ -731,12 +889,12 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
         first_video_pts_ms_ = current_timestamp_ms;
         LOG_INFO("[BRIDGE] First audio PTS recorded (video_pts): " + std::to_string(first_video_pts_ms_) + "ms");
     }
-    
+
     if (!streaming_pts_initialized_) {
         streaming_pts_initialized_ = true;
         LOG_INFO("[BRIDGE] Streaming PTS initialized by audio at: " + std::to_string(current_timestamp_ms) + "ms");
     }
-    
+
     // 应用 PTS 偏移，确保音视频使用同一个基准
     int64_t adjusted_timestamp_ms = current_timestamp_ms - first_video_pts_ms_;
 
@@ -744,7 +902,9 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
     // 音视频 PTS 均来自同一个 media_clock，天然同步，无需 PTS 层面的修正。
     // 修正 PTS 会导致时间戳回退，触发 AACEncoder 清空缓冲区和 EINVAL 错误。
     {
-        int channels = 2;
+        // 使用 AudioEngine 的实际声道数，避免 channels 硬编码导致漂移误报
+        int channels = (audio_engine_ && audio_engine_->get_channels() > 0)
+                       ? audio_engine_->get_channels() : 1;
         int bytes_per_sample = sizeof(float);
         int64_t samples_in_this_chunk = data.size() / (channels * bytes_per_sample);
         audio_total_samples_received_ += samples_in_this_chunk;
@@ -794,34 +954,12 @@ void CompositorEncoderBridge::on_audio_encoded(const QByteArray& encoded, int64_
     }
     const int size = encoded.size();
 
-    // 过滤起播阶段的损坏帧：FFmpeg native AAC 编码器在 flush 后前几帧会输出
-    // 极小的无效包（6字节全零或随机垃圾），解码时产生 "Input buffer exhausted"
-    // 和 "channel element X.Y is not allocated" 等错误。有效的 AAC-LC 立体声帧
-    // 即使完全静音也至少需要 8 字节，小于此阈值的包直接丢弃。
-    if (size < 8) {
+    // Only drop truly empty packets. Small AAC packets are valid here; logs show
+    // regular 6-byte packets after startup, and discarding them starves the muxer
+    // so playback buffers forever.
+    if (size <= 0) {
         return;
     }
-
-    // 🔇 检测静音帧：检查前64字节，如果90%以上都是静音则过滤
-    // if (size > 32) {
-    //     int check_bytes = (size < 64) ? size : 64;
-    //     int near_zero_count = 0;
-    //     for (int i = 0; i < check_bytes; i++) {
-    //         // 检查是否为0或接近0（小于5）
-    //         if (data[i] == 0 || data[i] < 5) {
-    //             near_zero_count++;
-    //         }
-    //     }
-    //     int silence_percent = (near_zero_count * 100) / check_bytes;
-    //     if (silence_percent > 90) {
-    //         static int silent_frame_count = 0;
-    //         if (++silent_frame_count <= 5) {
-    //             LOG_DEBUG("[BRIDGE] Filtered silent frame: " + std::to_string(silence_percent) +
-    //                      "% silent, size=" + std::to_string(size));
-    //         }
-    //         return;
-    //     }
-    // }
 
     // 🔧 诊断音频包（使用成员变量，每次推流重置，避免 static 跨会话污染）
     diag_audio_count_++;

@@ -1005,7 +1005,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_file_item.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_file_manager.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\insert_video_widget.h" />
-    <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_item.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\live_list_window.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\login_service.h" />
     <ClInclude Include="D:\work\project\LiveAssistant\include\app\login_window.h" />
