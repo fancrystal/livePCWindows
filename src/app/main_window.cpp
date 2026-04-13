@@ -1355,9 +1355,9 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
         }
     }
 
-    QString canvasOrientation = liveItem.isVerticalScreen ? "portrait" : "landscape";
-    LOG_INFO(QString("Server canvas orientation: %1 (isVerticalScreen=%2)")
-        .arg(canvasOrientation).arg(liveItem.isVerticalScreen).toStdString());
+    QString canvasOrientation = liveItem.isPortraitMode() ? "portrait" : "landscape";
+    LOG_INFO(QString("Server canvas orientation: %1 (isPortraitMode=%2)")
+        .arg(canvasOrientation).arg(liveItem.isPortraitMode()).toStdString());
     apply_server_canvas_config(canvasOrientation);
 
 
@@ -1611,7 +1611,6 @@ void MainWindow::setup_ui_connections() {
     }
 
     if (ui->pushButton_startLive) {
-        ui->pushButton_startLive->setObjectName("btnStartLive");
         connect(ui->pushButton_startLive, &QPushButton::clicked, this, [this]() {
             if (!encoder_bridge_) {
                 QMessageBox::warning(this, "错误", "推流系统未初始化");
@@ -1683,62 +1682,34 @@ void MainWindow::setup_ui_connections() {
 
                 QString url = rtmp_server_url_;
                 if (url.isEmpty()) {
-
-                    url = "rtmp://47.92.156.37:1935/live/aaa";
+                    QMessageBox::warning(this, "错误", "推流地址未配置，请先选择直播间");
+                    ui->pushButton_startLive->setEnabled(true);
+                    ui->pushButton_startLive->setText("开始直播");
+                    if (ui->label_status) ui->label_status->setText("");
+                    return;
                 }
 
-                if (encoder_bridge_->start_streaming(url.toStdString())) {
-
-                    if (audio_engine_ && !audio_engine_->is_capturing()) {
-                        LOG_INFO("Starting audio capture for live streaming");
-                        update_audio_status("初始化中...", "orange");
-                        bool audio_started = false;
-                        int retry_count = 3;
-                        for (int i = 0; i < retry_count && !audio_started; ++i) {
-                            if (i > 0) {
-                                QThread::msleep(500);
-                            }
-                            if (audio_engine_->start_capture()) {
-                                audio_started = true;
-                            }
-                        }
-                        if (!audio_started) {
-                            LOG_WARNING("Failed to start audio capture for live streaming");
-                            update_audio_status("故障", "red");
-                        } else {
-
-                            if (encoder_bridge_) {
-                                encoder_bridge_->set_silent_audio(false);
-                            }
-                            update_audio_status("正常", "green");
-                        }
-                    }
-
-                    ui->pushButton_startLive->setText("停止直播");
-
-                    if (ui->pushButton_toggleOrientation) {
-                        ui->pushButton_toggleOrientation->setEnabled(false);
-                        ui->pushButton_toggleOrientation->setStyleSheet(
-                            "QPushButton { background: #666666; color: #999999; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; }"
-                        );
-                    }
-                    if (ui->label_status) {
-                        ui->label_status->setText("正在推流");
-                    }
-
-                    streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
-
-                    if (live_duration_timer_) {
-                        live_duration_timer_->start(200);
-                    }
-
-                    if (system_info_timer_) {
-                        system_info_timer_->start(2000);
-                    }
-                    LOG_INFO("推流已启动: " + url.toStdString());
-                } else {
-                    QMessageBox::warning(this, "错误", "开始推流失败，请检查推流地址");
+                // Disable button immediately so UI stays responsive while
+                // avio_open2 (RTMP connect, up to 8s timeout) runs in background.
+                ui->pushButton_startLive->setEnabled(false);
+                ui->pushButton_startLive->setText("正在连接...");
+                if (ui->label_status) {
+                    ui->label_status->setText("正在连接...");
+                    ui->label_status->setStyleSheet("color: orange; font-weight: bold;");
                 }
+
+                QString url_copy = url;
+                QThread* worker = QThread::create([this, url_copy]() {
+                    bool ok = encoder_bridge_->start_streaming(url_copy.toStdString());
+                    // Marshal result back to main thread
+                    QMetaObject::invokeMethod(this, "on_start_streaming_finished",
+                                             Qt::QueuedConnection,
+                                             Q_ARG(bool, ok),
+                                             Q_ARG(QString, url_copy));
+                });
+                worker->setParent(this);
+                connect(worker, &QThread::finished, worker, &QThread::deleteLater);
+                worker->start();
             }
 
         });
@@ -2990,6 +2961,19 @@ void MainWindow::setup_canvas_widget() {
             this, &MainWindow::on_streaming_error,
             Qt::QueuedConnection);
 
+    connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_reconnecting,
+            this, [this](int attempt, int max_attempts) {
+                if (ui->pushButton_startLive) {
+                    ui->pushButton_startLive->setText(
+                        QString("正在重连 (%1/%2)").arg(attempt).arg(max_attempts));
+                    ui->pushButton_startLive->setEnabled(false);
+                }
+                if (ui->label_status) {
+                    ui->label_status->setText("断线重连中...");
+                    ui->label_status->setStyleSheet("color: orange; font-weight: bold;");
+                }
+            }, Qt::QueuedConnection);
+
     // To avoid crashes from dangling event filters or transient stageContainer_, insert the canvas
     // directly into the layout so it is managed by the UI layout system (stable and predictable).
     if (ui->label_livePreview) {
@@ -4086,17 +4070,73 @@ void MainWindow::on_streaming_error(const QString& error) {
 
     if (ui->pushButton_startLive) {
         ui->pushButton_startLive->setText("开始直播");
-        ui->pushButton_startLive->setStyleSheet("");
+        ui->pushButton_startLive->setEnabled(true);
     }
     if (ui->label_status) {
         ui->label_status->setText("推流失败");
         ui->label_status->setStyleSheet("color: red; font-weight: bold;");
     }
 
-
-    QMessageBox::warning(this, "推流错误", error);
+    // 显示中文错误提示，隐藏内部错误码
+    QString userMsg;
+    if (error.contains("reconnect") || error.contains("重连") || error.contains("断线")) {
+        userMsg = "推流断线，重连失败，请检查网络后重新开播";
+    } else if (error.contains("connect") || error.contains("NOT_CONNECTED") || error.contains("server")) {
+        userMsg = "连接推流服务器失败，请检查推流地址和网络";
+    } else {
+        userMsg = "推流出现错误，请重新开播";
+    }
+    QMessageBox::warning(this, "推流错误", userMsg);
 }
 
+void MainWindow::on_start_streaming_finished(bool ok, const QString& url) {
+    if (!ok) {
+        // Restore button immediately so the UI doesn't stay stuck on "正在连接..."
+        // even if the streaming_error QueuedConnection signal is slightly delayed.
+        if (ui->pushButton_startLive) {
+            ui->pushButton_startLive->setText("开始直播");
+            ui->pushButton_startLive->setEnabled(true);
+        }
+        // streaming_error signal (QueuedConnection) handles the popup and full cleanup.
+        return;
+    }
+
+    if (audio_engine_ && !audio_engine_->is_capturing()) {
+        LOG_INFO("Starting audio capture for live streaming");
+        update_audio_status("初始化中...", "orange");
+        bool audio_started = false;
+        for (int i = 0; i < 3 && !audio_started; ++i) {
+            if (i > 0) QThread::msleep(500);
+            if (audio_engine_->start_capture()) audio_started = true;
+        }
+        if (!audio_started) {
+            LOG_WARNING("Failed to start audio capture for live streaming");
+            update_audio_status("故障", "red");
+        } else {
+            if (encoder_bridge_) encoder_bridge_->set_silent_audio(false);
+            update_audio_status("正常", "green");
+        }
+    }
+
+    ui->pushButton_startLive->setEnabled(true);
+    ui->pushButton_startLive->setText("停止直播");
+
+    if (ui->pushButton_toggleOrientation) {
+        ui->pushButton_toggleOrientation->setEnabled(false);
+        ui->pushButton_toggleOrientation->setStyleSheet(
+            "QPushButton { background: #666666; color: #999999; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; }"
+        );
+    }
+    if (ui->label_status) {
+        ui->label_status->setText("正在推流");
+        ui->label_status->setStyleSheet("");
+    }
+
+    streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
+    if (live_duration_timer_) live_duration_timer_->start(200);
+    if (system_info_timer_) system_info_timer_->start(2000);
+    LOG_INFO("推流已启动: " + url.toStdString());
+}
 
 void MainWindow::set_canvas_config(const CanvasConfig& config) {
     LOG_INFO("========== set_canvas_config START ==========");

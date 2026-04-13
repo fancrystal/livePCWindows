@@ -123,6 +123,8 @@ signals:
     void streaming_started();
     void streaming_stopped();
     void streaming_error(const QString& error);
+    // 正在重连（attempt=当前次数, max=最大次数）
+    void streaming_reconnecting(int attempt, int max_attempts);
 
 private slots:
     void on_encode_timer();
@@ -173,6 +175,7 @@ private:
     // 状态（running_ 跨线程访问，必须原子）
     std::atomic<bool> running_{false};
     std::atomic<bool> streaming_{false};
+    std::atomic<bool> streaming_error_emitted_{false};  // 防止重复弹窗
     std::string stream_url_;
     MediaClock media_clock_;
     bool silent_audio_enabled_ = false;
@@ -274,6 +277,7 @@ private:
     // 音频时钟漂移监控（仅诊断，不修正 PTS）
     int64_t audio_total_samples_received_ = 0;  // 从声卡实际收到的总采样数
     int64_t last_drift_check_ms_ = 0;           // 上次漂移检查的 media_clock 时间
+    int audio_frame_count_ = 0;                 // 本次推流收到的音频帧数（重连时重置）
     static constexpr int64_t DRIFT_CHECK_INTERVAL_MS = 10000;   // 每 10 秒检测一次
     static constexpr int64_t DRIFT_THRESHOLD_US = 40000;        // 日志输出阈值
 

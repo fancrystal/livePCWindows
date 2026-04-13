@@ -107,6 +107,7 @@ private slots:
     void on_streaming_started();
     void on_streaming_stopped();
     void on_streaming_error(const QString& error);
+    Q_INVOKABLE void on_start_streaming_finished(bool ok, const QString& url);
 
     // 场景配置保存/加载（需要在外部调用）
 public:

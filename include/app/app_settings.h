@@ -17,7 +17,7 @@ struct AudioSettings {
     float mic_volume     = 0.4f;
     float speaker_volume = 0.4f;
     bool  mic_enabled    = true;
-    bool  speaker_enabled = true;
+    bool  speaker_enabled = false;
 };
 
 // 摄像头相关设置

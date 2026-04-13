@@ -57,7 +57,7 @@ void AppSettings::load() {
     audio.mic_volume           = s.value("audio/micVolume", 0.4f).toFloat();
     audio.speaker_volume       = s.value("audio/speakerVolume", 0.4f).toFloat();
     audio.mic_enabled          = s.value("audio/micEnabled", true).toBool();
-    audio.speaker_enabled      = s.value("audio/speakerEnabled", true).toBool();
+    audio.speaker_enabled      = s.value("audio/speakerEnabled", false).toBool();
 
     // --- 摄像头 ---
     camera.device_id  = s.value("camera/deviceId", "").toString().toStdString();

@@ -73,15 +73,18 @@ public:
     // 重置统计信息
     void reset_stats();
 
-    // 重连成功后在推流线程中调用（需线程安全）；用于通知编码器强制 IDR。
+    // 重连成功后在推流线程中调用；用于通知编码器强制 IDR。
+    // 必须在 start() 之前调用，不得在推流线程运行期间并发调用。
     void set_reconnect_callback(std::function<void()> callback);
+
+    // 每次重连尝试开始时调用（参数：当前尝试次数, 最大次数）。
+    // 必须在 start() 之前调用，不得在推流线程运行期间并发调用。
+    void set_reconnecting_callback(std::function<void(int attempt, int max_attempts)> callback);
 
 private:
     // 推流线程函数
     void push_thread_func();
     
-    // 尝试重新连接
-    ErrorCode try_reconnect();
     
     // 设置推流状态
     void set_state(StreamState state);
@@ -108,6 +111,7 @@ private:
     std::atomic<int> reconnect_attempts_;
 
     std::function<void()> reconnect_callback_;
+    std::function<void(int, int)> reconnecting_callback_;
 };
 
 } // namespace live_assistant

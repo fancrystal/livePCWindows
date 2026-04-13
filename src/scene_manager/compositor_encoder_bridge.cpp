@@ -16,7 +16,6 @@
 #include <QPainter>
 #include <cstring>
 #include <chrono>
-#include <cmath>
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -151,6 +150,11 @@ void CompositorEncoderBridge::set_stream_pusher(std::shared_ptr<StreamPusher> st
                 encoder_->force_keyframe();
                 LOG_INFO("[BRIDGE] Forced IDR keyframe after RTMP reconnect");
             }
+        });
+        stream_pusher_->set_reconnecting_callback([this](int attempt, int max_attempts) {
+            QMetaObject::invokeMethod(this, [this, attempt, max_attempts]() {
+                emit streaming_reconnecting(attempt, max_attempts);
+            }, Qt::QueuedConnection);
         });
     }
     LOG_INFO("Stream pusher set for encoder bridge");
@@ -403,6 +407,8 @@ bool CompositorEncoderBridge::start_streaming(const std::string& url) {
     // 重置漂移监控状态
     audio_total_samples_received_ = 0;
     last_drift_check_ms_ = 0;
+    audio_frame_count_ = 0;
+    streaming_error_emitted_.store(false);
     first_audio_timestamp_ms_ = -1;
     media_clock_start_us_ = 0;
     // 🔧 重置音频诊断计数（原来是 static 本地变量，每次推流必须重置）
@@ -567,20 +573,14 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
     frame_pending_.store(false, std::memory_order_release);
 
     try {
-        // Use microsecond precision to avoid integer truncation drift.
-        // 1000 / 30 = 33 ms/frame → video PTS grows at 990 ms/s instead of 1000 ms/s
-        // → audio drifts 10 ms/s behind video (600 ms after 1 minute).
-        // 1000000 / 30 = 33333 us/frame; divide after multiply to keep full precision.
-        const int64_t frame_duration_us = (fps_ > 0) ? (1000000LL / fps_) : 33333LL;
-
         // [DIAG] Frame capture start time
         auto frame_start = std::chrono::high_resolution_clock::now();
 
         video_frame_count_++;
 
         auto current_pts_ms = media_clock_.get_elapsed_time_us() / 1000;
-        
-        // 🔧 视频 PTS 计算改用帧计数器，避免 QTimer 抖动导致帧间隔不规则
+
+        // Video PTS uses wall-clock elapsed time (same source as audio PTS).
         // 帧号 × 帧时长，保证每个编码帧 PTS 等间隔（30fps = 33.33ms）
         // first_video_pts_ms_ 仅用于与音频的相对同步（第一帧对齐）
         // Protected by audio_pts_mutex_ because on_audio_data_ready (mixer thread)
@@ -601,10 +601,12 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
             }
         }
 
-        // 🔧 帧计数器 PTS：用微秒精度，乘后再除，避免累积截断误差
-        // 30fps: frame_offset × 33333us / 1000 = 33.333ms/frame，与音频时钟一致
-        int64_t frame_offset = video_frame_count_ - video_pts_initial_frame_;
-        int64_t adjusted_pts_ms = (frame_offset * frame_duration_us) / 1000LL;
+        // Use wall-clock elapsed time for video PTS so that video and audio
+        // share the same time reference (both derived from media_clock_ / steady_clock).
+        // Frame-counter PTS (frame_offset × 33333μs) drifts whenever the compositor
+        // drops or delays a frame — audio keeps running at real speed, causing
+        // long-term A/V desync (~12 ms/s observed over 4 minutes).
+        int64_t adjusted_pts_ms = media_clock_.get_elapsed_time_us() / 1000LL;
 
         // raw_pts 仅用于诊断，不参与实际 PTS 计算
         if (video_frame_count_ <= 3 || video_frame_count_ % 100 == 0) {
@@ -929,10 +931,9 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
         }
     }
 
-    static int audio_frame_count = 0;
-    audio_frame_count++;
-    if (audio_frame_count <= 3) {
-        LOG_INFO("[BRIDGE] on_audio_data_ready #" + std::to_string(audio_frame_count) + 
+    audio_frame_count_++;
+    if (audio_frame_count_ <= 3) {
+        LOG_INFO("[BRIDGE] on_audio_data_ready #" + std::to_string(audio_frame_count_) +
                  ": raw_pts=" + std::to_string(current_timestamp_ms) + "ms, " +
                  "adjusted_pts=" + std::to_string(adjusted_timestamp_ms) + "ms, " +
                  "offset=" + std::to_string(first_video_pts_ms_) + "ms, " +
@@ -1154,13 +1155,16 @@ void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
                 }
             }
 
-            // 🔧 检查推流器是否进入错误状态（重连失败等）
+            // 检查推流器是否进入错误状态（重连失败等）
             if (stream_pusher_ && stream_pusher_->is_in_error()) {
                 LOG_ERROR("[BRIDGE] Stream pusher entered error state, stopping streaming");
-                QMetaObject::invokeMethod(this, [this]() {
-                    emit streaming_error(QString::fromUtf8("推流失败：连接服务器失败，已停止推流"));
-                    stop_streaming();
-                }, Qt::QueuedConnection);
+                bool expected = false;
+                if (streaming_error_emitted_.compare_exchange_strong(expected, true)) {
+                    QMetaObject::invokeMethod(this, [this]() {
+                        emit streaming_error(QString::fromUtf8("推流断线重连失败，已停止推流"));
+                        stop_streaming();
+                    }, Qt::QueuedConnection);
+                }
                 break;
             }
         } catch (const std::exception& ex) {
@@ -1195,13 +1199,8 @@ void CompositorEncoderBridge::encoder_thread_func(int thread_id) {
             }
         }
 
-        // 🔧 检查推流器是否进入错误状态
+        // drain 阶段已经在停止流程中，不再重复 emit error
         if (stream_pusher_ && stream_pusher_->is_in_error()) {
-            LOG_ERROR("[BRIDGE] Stream pusher entered error state during drain, stopping streaming");
-            QMetaObject::invokeMethod(this, [this]() {
-                emit streaming_error(QString::fromUtf8("推流失败：连接服务器失败，已停止推流"));
-                stop_streaming();
-            }, Qt::QueuedConnection);
             break;
         }
         drained++;

@@ -216,6 +216,11 @@ void StreamPusher::push_thread_func() {
                             last_reconnect_attempt = now;
                             Log::info("[PUSH] Starting reconnect attempt #" + std::to_string(reconnect_attempts_));
 
+                            if (reconnecting_callback_) {
+                                reconnecting_callback_(reconnect_attempts_.load(),
+                                                       config_.max_reconnect_attempts);
+                            }
+
                             ErrorCode reconnect_result = rtmp_pusher_.connect_and_write_header();
                             Log::info("[PUSH] Reconnect result: " + std::to_string(static_cast<int>(reconnect_result)));
 
@@ -280,12 +285,8 @@ void StreamPusher::set_reconnect_callback(std::function<void()> callback) {
     reconnect_callback_ = std::move(callback);
 }
 
-// Note: try_reconnect() has been replaced with non-blocking reconnection logic
-// directly in push_thread_func() to avoid blocking the push thread
-ErrorCode StreamPusher::try_reconnect() {
-    // This function is kept for potential future use but is not called anymore
-    // The new non-blocking reconnection logic is in push_thread_func()
-    return ErrorCode::FAILURE;
+void StreamPusher::set_reconnecting_callback(std::function<void(int, int)> callback) {
+    reconnecting_callback_ = std::move(callback);
 }
 
 StreamState StreamPusher::get_state() const {
