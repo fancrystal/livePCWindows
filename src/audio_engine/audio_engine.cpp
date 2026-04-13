@@ -323,8 +323,8 @@ void AudioEngine::on_speaker_data_captured(QByteArray data, int64_t timestamp) {
         return;
     }
 
-    const int src_sample_rate = audio_capturer_ ? audio_capturer_->get_speaker_sample_rate() : sample_rate_;
-    const int src_channels = audio_capturer_ ? audio_capturer_->get_speaker_channels() : channels_;
+    const int src_sample_rate = sample_rate_;
+    const int src_channels = channels_;
     auto frame = make_frame_from_interleaved_float(
         data,
         src_sample_rate > 0 ? src_sample_rate : sample_rate_,
