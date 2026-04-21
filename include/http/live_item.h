@@ -88,13 +88,18 @@ struct InsertFileItem {
 // 直播列表项结构体
 struct LiveItem {
     QString liveId;                     // 直播ID（关键标识）
+    QString roomNumber;                 // 房间号
     QString title;                      // 直播标题
     QDateTime createTime;               // 创建时间
     QDateTime startTime;                // 开播时间
     QDateTime endTime;                  // 结束时间
     QVector<QString> pushUrl;           // 推流地址
+    QString horizontalImageUrl;         // 横屏封面图
+    QString verticalImageUrl;           // 竖屏封面图
     QString type;                       // 直播类型（视频直播/回放直播）
     LiveStatus status;                  // 直播状态
+    int roomState = 0;                  // 服务端原始状态
+    int videoScreenMode = 0;            // 1=横屏 2=竖屏
     int reserveCount;                   // 预约人数
     int viewCount;                      // 观看人数
     bool isSelected = false;            // 是否被勾选

@@ -113,52 +113,33 @@ ErrorCode StreamPusher::start() {
 ErrorCode StreamPusher::stop() {
     Log::info("Stopping stream pusher");
 
-    if (state_ == StreamState::IDLE || state_ == StreamState::ERR) {
+    StreamState current_state = state_.load();
+    if (current_state == StreamState::IDLE && !push_thread_.joinable()) {
         return ErrorCode::SUCCESS;
     }
 
-    set_state(StreamState::STOPPING);
+    if (current_state != StreamState::IDLE && current_state != StreamState::STOPPING) {
+        set_state(StreamState::STOPPING);
+    }
 
     // Signal the thread to stop
     stop_thread_ = true;
 
-    // Wait for queue to drain before forcing stop (graceful shutdown)
-    const int max_wait_ms = 2000;  // Wait up to 2 seconds
-    const int check_interval_ms = 50;
-    int total_waited = 0;
-
-    size_t initial_queue_size = push_queue_.size();
-    if (initial_queue_size > 0) {
-        Log::info("Waiting for queue to drain: " + std::to_string(initial_queue_size) + " packets remaining");
+    // Low-latency stop: discard queued history immediately instead of pretending
+    // to drain it after the worker has already been asked to exit.
+    size_t pending_packets = push_queue_.size();
+    if (pending_packets > 0) {
+        Log::warn("Discarding queued packets during stop: " + std::to_string(pending_packets));
+        push_queue_.clear();
     }
 
-    while (total_waited < max_wait_ms && !push_queue_.empty()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(check_interval_ms));
-        total_waited += check_interval_ms;
-
-        // Log progress every 500ms
-        if (total_waited % 500 == 0) {
-            Log::info("Still waiting for queue: " + std::to_string(push_queue_.size()) + " packets remaining");
-        }
-    }
-
-    size_t final_queue_size = push_queue_.size();
-    if (final_queue_size > 0) {
-        Log::warn("Queue not fully drained, " + std::to_string(final_queue_size) + " packets will be discarded");
-    } else {
-        Log::info("Queue fully drained before stop");
-    }
-
-    // Now join the thread
     if (push_thread_.joinable()) {
         push_thread_.join();
     }
 
     rtmp_pusher_.disconnect();
 
-    // Clear any remaining packets in queue
     push_queue_.clear();
-
     set_state(StreamState::IDLE);
 
     Log::info("Stream pusher stopped successfully");

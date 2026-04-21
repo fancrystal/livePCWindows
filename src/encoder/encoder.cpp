@@ -231,6 +231,7 @@ const AudioEncoderConfig& Encoder::get_audio_config() const {
 }
 
 AVCodecParameters* Encoder::get_video_codec_parameters() const {
+    std::lock_guard<std::mutex> lock(video_mutex_);
     if (!video_encoder_) {
         return nullptr;
     }
@@ -238,6 +239,7 @@ AVCodecParameters* Encoder::get_video_codec_parameters() const {
 }
 
 AVRational Encoder::get_video_time_base() const {
+    std::lock_guard<std::mutex> lock(video_mutex_);
     if (!video_encoder_) {
         return AVRational{0, 1};
     }
@@ -245,6 +247,7 @@ AVRational Encoder::get_video_time_base() const {
 }
 
 AVCodecParameters* Encoder::get_audio_codec_parameters() const {
+    std::lock_guard<std::mutex> lock(audio_mutex_);
     if (!audio_encoder_) {
         return nullptr;
     }
@@ -252,6 +255,7 @@ AVCodecParameters* Encoder::get_audio_codec_parameters() const {
 }
 
 AVRational Encoder::get_audio_time_base() const {
+    std::lock_guard<std::mutex> lock(audio_mutex_);
     if (!audio_encoder_) {
         return AVRational{0, 1};
     }

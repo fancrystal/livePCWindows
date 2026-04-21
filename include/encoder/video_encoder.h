@@ -98,7 +98,6 @@ private:
     bool initialized_ = false;
     bool force_keyframe_ = false;
     int64_t total_frames_ = 0;
-    bool first_keyframe_sent_ = false;
 
     std::vector<std::string> encoder_candidates_;
     int current_encoder_index_ = 0;

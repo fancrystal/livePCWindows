@@ -14,8 +14,11 @@
 #include <QLabel>
 #include <QEvent>
 #include <QResizeEvent>
+#include <QNetworkRequest>
+#include <QNetworkReply>
 #include <QGraphicsDropShadowEffect>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QPoint>
 #include <QPainter>
 #include <QPainterPath>
@@ -23,8 +26,170 @@
 #include <QTextLayout>
 #include <QFontMetrics>
 #include <QLinearGradient>
+#include <QCryptographicHash>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QStandardPaths>
+#include <memory>
 
 namespace live_assistant {
+
+namespace {
+
+QPixmap makeRoundedPixmap(const QPixmap& source, const QSize& targetSize, int radius)
+{
+    if (source.isNull() || !targetSize.isValid()) {
+        return QPixmap();
+    }
+
+    QPixmap scaled = source.scaled(targetSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    QPixmap rounded(targetSize);
+    rounded.fill(Qt::transparent);
+
+    QPainter painter(&rounded);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath path;
+    path.addRoundedRect(QRectF(0, 0, targetSize.width(), targetSize.height()), radius, radius);
+    painter.setClipPath(path);
+
+    const int x = (targetSize.width() - scaled.width()) / 2;
+    const int y = (targetSize.height() - scaled.height()) / 2;
+    painter.drawPixmap(x, y, scaled);
+    return rounded;
+}
+
+QSize coverTargetSize()
+{
+    return QSize(264, 140);
+}
+
+QString coverCacheDir()
+{
+    const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString dir = QDir::cleanPath(cacheRoot + "/live_list_covers");
+    QDir().mkpath(dir);
+    return dir;
+}
+
+QString coverCachePathForUrl(const QString& url)
+{
+    if (url.isEmpty()) {
+        return QString();
+    }
+
+    const QByteArray hash = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Sha1).toHex();
+    QString suffix = QFileInfo(QUrl(url).path()).suffix().toLower();
+    if (suffix.isEmpty()) {
+        suffix = "img";
+    }
+    return QDir::cleanPath(coverCacheDir() + "/" + QString::fromLatin1(hash) + "." + suffix);
+}
+
+bool loadCachedCoverPixmap(const QString& url, const QSize& targetSize, QLabel* label)
+{
+    if (!label || url.isEmpty()) {
+        return false;
+    }
+
+    const QString cachePath = coverCachePathForUrl(url);
+    if (cachePath.isEmpty() || !QFileInfo::exists(cachePath)) {
+        return false;
+    }
+
+    QPixmap pixmap(cachePath);
+    if (pixmap.isNull()) {
+        return false;
+    }
+
+    label->setPixmap(makeRoundedPixmap(pixmap, targetSize, 8));
+    label->setScaledContents(false);
+    return true;
+}
+
+void saveCoverBytesToCache(const QString& url, const QByteArray& bytes)
+{
+    const QString cachePath = coverCachePathForUrl(url);
+    if (cachePath.isEmpty() || bytes.isEmpty()) {
+        return;
+    }
+
+    QFile file(cachePath);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(bytes);
+    }
+}
+
+QString statusTextForItem(const LiveItem& item)
+{
+    return liveStatusToString(item.status);
+}
+
+QString orientationTextForItem(const LiveItem& item)
+{
+    return item.isPortraitMode() ? QStringLiteral("竖屏") : QStringLiteral("横屏");
+}
+
+QString coverUrlForItem(const LiveItem& item)
+{
+    if (!item.horizontalImageUrl.isEmpty()) {
+        return item.horizontalImageUrl;
+    }
+    if (item.isPortraitMode() && !item.verticalImageUrl.isEmpty()) {
+        return item.verticalImageUrl;
+    }
+    return item.verticalImageUrl;
+}
+
+QString streamStateText(int streamState, bool hasUsableAddress)
+{
+    switch (streamState) {
+    case 0:
+        return QStringLiteral("● 未开始推流");
+    case 1:
+        return QStringLiteral("● 推流中");
+    case 2:
+        return QStringLiteral("● 推流已禁止");
+    case 3:
+        return QStringLiteral("● 直播已结束");
+    case 4:
+        return QStringLiteral("● 直播已过期");
+    case -1:
+        return QStringLiteral("● 推流状态获取失败");
+    default:
+        return hasUsableAddress ? QStringLiteral("● 推流地址可用") : QStringLiteral("● 推流地址不可用");
+    }
+}
+
+QString streamStateStyle(int streamState, bool hasUsableAddress)
+{
+    QString color = "#9CA3AF";
+    switch (streamState) {
+    case 0:
+        color = "#2AA7FF";
+        break;
+    case 1:
+        color = "#22C55E";
+        break;
+    case 2:
+        color = "#F59E0B";
+        break;
+    case 3:
+    case 4:
+        color = "#FF5A5A";
+        break;
+    case -1:
+        color = "#9CA3AF";
+        break;
+    default:
+        color = hasUsableAddress ? "#22C55E" : "#9CA3AF";
+        break;
+    }
+
+    return QString("color: %1; font-size: 12px;").arg(color);
+}
+
+}
 
 LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWidget *parent) :
     QMainWindow(parent),
@@ -34,7 +199,11 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     current_page_(1),
     total_pages_(5),
     current_status_index_(0),
-    current_search_keyword_() {  // 初始化为空字符串
+    current_search_keyword_(),
+    dragging_(false),
+    dragStartPos_(),
+    combo_updating_(false),
+    image_network_manager_(new QNetworkAccessManager(this)) {
     ui->setupUi(this);
     
     // 初始化服务器地址
@@ -313,12 +482,15 @@ void LiveListWindow::setup_live_list() {
     int start = (current_page_ - 1) * page_size;
     int end = qMin(start + page_size, total_items);
 
+    ensure_stream_status_for_page(start, end);
+
     for (int idx = start; idx < end; ++idx) {
         int i = idx;
         int pageSlot = idx - start;
         QWidget* card = new QWidget(this);
         card->setFixedSize(280, 250);
         card->setStyleSheet("background-color: rgba(8,6,8,0.6); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;");
+        const QSize targetCoverSize = coverTargetSize();
 
         QVBoxLayout* vbox = new QVBoxLayout(card);
         vbox->setContentsMargins(8, 8, 8, 8);
@@ -326,21 +498,11 @@ void LiveListWindow::setup_live_list() {
 
         QLabel* thumb = new QLabel(card);
         thumb->setFixedHeight(140);
+        thumb->setFixedWidth(targetCoverSize.width());
+        thumb->setAlignment(Qt::AlignCenter);
         QPixmap pixmap(":/images/Frame back.png");
         if (!pixmap.isNull()) {
-            QPixmap scaled = pixmap.scaled(thumb->size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-            QPixmap rounded(scaled.size());
-            rounded.fill(Qt::transparent);
-            {
-                QPainter painter(&rounded);
-                painter.setRenderHint(QPainter::Antialiasing);
-                QPainterPath path;
-                const int radius = 8;
-                path.addRoundedRect(QRectF(0, 0, scaled.width(), scaled.height()), radius, radius);
-                painter.setClipPath(path);
-                painter.drawPixmap(0, 0, scaled);
-            }
-            thumb->setPixmap(rounded);
+            thumb->setPixmap(makeRoundedPixmap(pixmap, targetCoverSize, 8));
             thumb->setScaledContents(false);
         } else {
             thumb->setStyleSheet("background-color: rgba(255,255,255,0.06); border-radius:4px;");
@@ -350,28 +512,66 @@ void LiveListWindow::setup_live_list() {
         // if live_list_ has data, use it
         QString titleText = QString("测试直播间%1").arg(i+1);
         QString metaText = QString("房间号: %1   %2").arg(100000 + i).arg("2026-01-04 14:00:00");
-        QString typeText = QString("类型: 未知");
+        QString typeText = QString("画面: 未知");
         QString countText = QString("预约: 0  观看: 0");
+        QString status = QStringLiteral("未知");
 
-        if (i < live_list_.size()) {
-            QJsonObject obj = live_list_.at(i).toObject();
-            titleText = obj.value("name").toString();
-            metaText = QString("房间号: %1   %2").arg(obj.value("id").toString()).arg(obj.value("startTime").toString());
+        QString streamStatusText;
+        QString streamStatusStyle = QStringLiteral("color: #9CA3AF; font-size: 12px;");
 
-            // 直播类型
-            int roomType = obj.value("type").toString().toInt();
-            QString typeName;
-            switch (roomType) {
-            case 1: typeName = "横屏直播"; break;
-            case 2: typeName = "竖屏直播"; break;
-            default: typeName = "普通直播"; break;
+        if (i < current_live_items_.size()) {
+            const LiveItem& item = current_live_items_.at(i);
+            const QString roomNumber = item.roomNumber.isEmpty() ? item.liveId : item.roomNumber;
+            const QString timeText = item.startTime.isValid()
+                ? item.startTime.toString("yyyy-MM-dd HH:mm:ss")
+                : item.createTime.toString("yyyy-MM-dd HH:mm:ss");
+
+            titleText = item.title;
+            metaText = QString("房间号: %1   %2").arg(roomNumber, timeText);
+            typeText = QString("画面: %1").arg(orientationTextForItem(item));
+            countText = QString("预约: %1  观看: %2").arg(item.reserveCount).arg(item.viewCount);
+            status = statusTextForItem(item);
+
+            if (stream_info_cache_.contains(item.liveId)) {
+                const StreamNameInfo streamInfo = stream_info_cache_.value(item.liveId);
+                const bool hasUsableAddress = !streamInfo.obsServer.isEmpty() || !streamInfo.obsStreamKey.isEmpty();
+                streamStatusText = streamStateText(streamInfo.streamState, hasUsableAddress);
+                streamStatusStyle = streamStateStyle(streamInfo.streamState, hasUsableAddress);
             }
-            typeText = QString("类型: %1").arg(typeName);
 
-            // 预约人数和观看人数
-            int reserveCount = obj.value("reserveCount").toInt();
-            int viewCount = obj.value("viewCount").toInt();
-            countText = QString("预约: %1  观看: %2").arg(reserveCount).arg(viewCount);
+            const QString coverUrl = coverUrlForItem(item);
+            if (!coverUrl.isEmpty() && image_network_manager_) {
+                if (!loadCachedCoverPixmap(coverUrl, targetCoverSize, thumb)) {
+                    QPointer<QLabel> thumbGuard(thumb);
+                    QNetworkReply* reply = image_network_manager_->get(QNetworkRequest(QUrl(coverUrl)));
+                    connect(reply, &QNetworkReply::finished, this, [reply, thumbGuard, coverUrl, targetCoverSize]() {
+                        if (!thumbGuard) {
+                            reply->deleteLater();
+                            return;
+                        }
+
+                        std::unique_ptr<QNetworkReply, void(*)(QNetworkReply*)> replyGuard(reply, [](QNetworkReply* r) {
+                            if (r) {
+                                r->deleteLater();
+                            }
+                        });
+
+                        if (reply->error() != QNetworkReply::NoError) {
+                            return;
+                        }
+
+                        const QByteArray bytes = reply->readAll();
+                        QPixmap remotePixmap;
+                        if (!remotePixmap.loadFromData(bytes)) {
+                            return;
+                        }
+
+                        saveCoverBytesToCache(coverUrl, bytes);
+                        thumbGuard->setPixmap(makeRoundedPixmap(remotePixmap, targetCoverSize, 8));
+                        thumbGuard->setScaledContents(false);
+                    });
+                }
+            }
         }
 
         QLabel* title = new QLabel(card);
@@ -427,6 +627,12 @@ void LiveListWindow::setup_live_list() {
         countLabel->setStyleSheet("color: rgba(255,255,255,0.6); font-size: 10px;");
         vbox->addWidget(countLabel);
 
+        QLabel* streamStatusLabel = new QLabel(streamStatusText, card);
+        streamStatusLabel->setAlignment(Qt::AlignCenter);
+        streamStatusLabel->setFixedHeight(22);
+        streamStatusLabel->setStyleSheet(streamStatusStyle);
+        vbox->addWidget(streamStatusLabel);
+
         // Overlay transparent button to handle clicks
         QPushButton* overlay = new QPushButton(card);
         overlay->setFlat(true);
@@ -454,11 +660,6 @@ void LiveListWindow::setup_live_list() {
 
         // Status badge (top-right)
         QLabel* badge = new QLabel(card);
-        QString status = "未知";
-        if (i < live_list_.size()) {
-            QJsonObject obj = live_list_.at(i).toObject();
-            status = obj.value("status").toString();
-        }
         badge->setText(status);
         if (status == QStringLiteral("直播中")) {
             badge->setStyleSheet("background: rgba(34,197,94,0.18); color: white; padding: 4px 6px; border-radius: 10px; font-size:11px;");
@@ -504,6 +705,7 @@ void LiveListWindow::setup_live_list() {
 }
 
 void LiveListWindow::load_live_list() {
+    stream_info_cache_.clear();
     LOG_INFO("开始加载直播列表...");
 
     // 清除搜索关键字和搜索框
@@ -554,17 +756,14 @@ void LiveListWindow::load_live_list() {
         formatted["id"] = item.liveId;
         formatted["name"] = item.title;
         formatted["startTime"] = item.createTime.toString("yyyy-MM-dd HH:mm:ss");
+        formatted["roomNumber"] = item.roomNumber;
+        formatted["orientation"] = orientationTextForItem(item);
         formatted["type"] = item.type;
+        formatted["coverUrl"] = coverUrlForItem(item);
+        formatted["roomState"] = item.roomState;
 
         // 状态映射
-        QString statusText;
-        switch (item.status) {
-        case LiveStatus::PENDING: statusText = "待开播"; break;
-        case LiveStatus::LIVE: statusText = "直播中"; break;
-        case LiveStatus::ENDED: statusText = "已结束"; break;
-        default: statusText = "未知"; break;
-        }
-        formatted["status"] = statusText;
+        formatted["status"] = statusTextForItem(item);
 
         formatted["viewCount"] = item.viewCount;
         formatted["reserveCount"] = item.reserveCount;
@@ -677,10 +876,12 @@ void LiveListWindow::filter_live_list(const QString& keyword) {
         QJsonObject obj = full_live_list_.at(i).toObject();
         QString name = obj.value("name").toString();
         QString id = obj.value("id").toString();
+        QString roomNumber = obj.value("roomNumber").toString();
 
         // 不完全匹配：只要包含关键字即可
         if (name.contains(keyword, Qt::CaseInsensitive) ||
-            id.contains(keyword, Qt::CaseInsensitive)) {
+            id.contains(keyword, Qt::CaseInsensitive) ||
+            roomNumber.contains(keyword, Qt::CaseInsensitive)) {
             live_list_.append(obj);
             // 同时保存对应的 LiveItem（确保索引对应）
             if (i < full_live_items_.size()) {
@@ -694,6 +895,36 @@ void LiveListWindow::filter_live_list(const QString& keyword) {
         .arg(full_live_list_.size())
         .arg(live_list_.size())
         .toStdString());
+}
+
+void LiveListWindow::ensure_stream_status_for_page(int start, int end) {
+    const QString liveUrl = ::ConfigManager::instance().getLiveUrl();
+    if (liveUrl.isEmpty()) {
+        return;
+    }
+
+    const int safeStart = qMax(0, start);
+    const int safeEnd = qMin(end, current_live_items_.size());
+    for (int i = safeStart; i < safeEnd; ++i) {
+        const LiveItem& item = current_live_items_.at(i);
+        if (item.liveId.isEmpty() || stream_info_cache_.contains(item.liveId)) {
+            continue;
+        }
+
+        StreamNameInfo streamInfo;
+        QString errMsg;
+        if (ClientService::instance()->getStreamName(liveUrl, token_, item.liveId, streamInfo, errMsg)) {
+            stream_info_cache_.insert(item.liveId, streamInfo);
+        } else {
+            StreamNameInfo failedInfo;
+            failedInfo.streamState = -1;
+            stream_info_cache_.insert(item.liveId, failedInfo);
+            LOG_WARNING(QString("Failed to get StreamName for roomInfoId %1: %2")
+                        .arg(item.liveId)
+                        .arg(errMsg)
+                        .toStdString());
+        }
+    }
 }
 
 void LiveListWindow::on_prevPageButton_clicked() {
@@ -866,10 +1097,13 @@ int LiveListWindow::getCurrentRoomState() const {
 // 状态筛选下拉框切换
 void LiveListWindow::on_categoryComboBox_currentIndexChanged(int index) {
     if (index < 0 || index > 2) return;
+    if (combo_updating_) return;  // 防止 setup_live_list 期间的布局事件触发重复请求
 
+    combo_updating_ = true;
     current_status_index_ = index;
     current_page_ = 1;  // 切换状态时重置到第一页
     load_live_list();
+    combo_updating_ = false;
 
     QString statusNames[] = {"待开播", "直播中", "已结束"};
     LOG_INFO(QString("切换状态筛选: %1").arg(statusNames[index]).toStdString());

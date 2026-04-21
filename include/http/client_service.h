@@ -2,10 +2,24 @@
 #ifndef CLIENT_SERVICE_H
 #define CLIENT_SERVICE_H
 #include <QString>
+#include <QStringList>
 #include <QMutex>
 #include <QList>
 #include "live_item.h"
 #include "http/http_client.h"
+
+struct StreamNameInfo
+{
+    int isOpen = 0;
+    QString livePartnerUrl;
+    QString obsServer;
+    QString obsStreamKey;
+    QStringList pullStreamUrlList;
+    QString pushStreamId;
+    QString streamName;
+    int streamState = 0;
+    QString time;
+};
 
 class ClientService
 {
@@ -25,6 +39,8 @@ public:
                            int pageNum, int pageSize, QList<InsertFileItem>& insertFileList, int& totalCount, QString& errMessage);
     bool getInsertFile(const QString& sassUrl, const QString& userId, const QString& token, const QString& videoRoomId,
                       const QString& roomInfoId, InsertFileItem& fileItem, QString& errMessage);
+    bool getStreamName(const QString& sassUrl, const QString& token, const QString& roomInfoId,
+                      StreamNameInfo& streamInfo, QString& errMessage);
     bool genOnceLoginKey(const QString& baseUrl, const QString& userId, const QString& token, QString& loginKey, QString& errMessage);
     bool downloadFile(const QString& url, const QString& saveAsFilePath, QString& errMsg, bool resume = true);
     bool downloadFileWithProgress(const QString& url, const QString& saveAsFilePath, QString& errMsg, DownloadProgressCallback progressCallback, bool resume = true);

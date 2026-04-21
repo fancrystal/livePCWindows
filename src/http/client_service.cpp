@@ -21,34 +21,28 @@ ClientService* ClientService::instance()
 
 bool ClientService::login(const QString &logUrl,  const QString &key, const QString &username, const QString &password, QString &userID, QString &token)
 {
-    // 分别对用户名和密码进行AES128_ECB加密
     QString encryptedUserTel = EncryptionUtils::encryptAES128_ECB(username, key);
     QString encryptedUserPwd = EncryptionUtils::encryptAES128_ECB(password, key);
 
-    // 检查加密结果
     if (logUrl.isEmpty() || encryptedUserTel.isEmpty() || encryptedUserPwd.isEmpty()) {
         LOG_WARNING("Failed to encrypt login data (logUrl, username or password)");
         return false;
     }
 
-    // 构造POST请求的JSON数据
     QJsonObject postData;
     postData["userTel"] = encryptedUserTel;
     postData["userPwd"] = encryptedUserPwd;
     QString url = QString("%1/auth/ClientPwdLogin").arg(logUrl);
 
-    // 发送POST请求
     HttpClient* client = HttpClient::instance();
     QString httpErrMsg;
     QJsonObject response = client->post(url, postData, httpErrMsg);
 
-    // 如果HTTP请求失败，返回HTTP错误信息
     if (!httpErrMsg.isEmpty()) {
         LOG_WARNING(QString("Login HTTP request failed: %1").arg(httpErrMsg).toStdString());
         return false;
     }
 
-    // 处理响应结果
     if(response["code"].toInt() == 200) {
         token = response["data"].toObject()["token"].toString();
         userID = response["data"].toObject()["userId"].toString();
@@ -134,7 +128,6 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
     liveList.clear();
     totalCount = 0;
 
-    // 构造请求参数
     QJsonObject reqData;
     reqData["pageNum"] = pageNum;
     reqData["pageSize"] = pageSize;
@@ -143,21 +136,20 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
     // reqData["roomState"] = 3;
     reqData["roomVerifyStatusAdmin"] = reviewStatus;
 
-    // 发送POST请求
     QString url = QString("%1/livesaas/ListActivityAPI").arg(sassUrl);
     HttpClient* client = HttpClient::instance();
     LOG_DEBUG(QString("获取直播列表请求URL: %1").arg(url).toStdString());
-    // 为这个请求创建独立的headers
+    
     struct curl_slist* headers = client->createHeaders();
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
     client->addHeader(&headers, "Content-Type", "application/json");
     
-    // 使用带自定义headers的post方法
+    
     QString httpErrMsg;
     QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
     client->freeHeaders(headers);
 
-    // 如果HTTP请求失败，返回HTTP错误信息
+    
     if (!httpErrMsg.isEmpty()) {
         errMessage = httpErrMsg;
         LOG_WARNING(QString("获取直播列表HTTP请求失败: %1").arg(errMessage).toStdString());
@@ -166,14 +158,14 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
 
     QJsonDocument doc(response);
     LOG_DEBUG(QString("获取直播列表响应: %1").arg(QString(doc.toJson(QJsonDocument::Compact))).toStdString());
-    // 解析响应状态
+    
     if (response["code"].toInt() != 200) {
         errMessage = response["msg"].toString();
         LOG_WARNING(QString("获取直播列表失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
-    // 解析直播列表数据（适配新的响应结构）
+    
     parseLiveListJson(response["data"].toObject(), liveList, totalCount);
     return true;
 }
@@ -201,7 +193,7 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     LOG_INFO(QString("getInsertVideolist ENTER - sassUrl: %1, roomId: %2, videoName: %3, transState: %4, verifyStatus: %5, originType: %6")
              .arg(sassUrl).arg(roomId).arg(videoName).arg(videoTransState).arg(verifyStatus).arg(originType).toStdString());
 
-    // 构造请求参数
+    
     QJsonObject reqData;
     reqData["roomInfoId"] = roomId;
     reqData["videoName"] = videoName;
@@ -211,46 +203,46 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     reqData["pageNum"] = pageNum;
     reqData["pageSize"] = pageSize;
 
-    // 发送POST请求
+    
     QString url = QString("%1/livesaas/ListVideoRoom").arg(sassUrl);
     HttpClient* client = HttpClient::instance();
 
     LOG_INFO(QString("getInsertVideolist - Request URL: %1").arg(url).toStdString());
 
-    // 打印完整的请求 body 用于调试
+    
     QJsonDocument reqDoc(reqData);
     LOG_INFO(QString("getInsertVideolist - Request body: %1").arg(reqDoc.toJson(QJsonDocument::Compact)).toStdString());
 
-    // 为这个请求创建独立的headers
+    
     struct curl_slist* headers = client->createHeaders();
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
     client->addHeader(&headers, "Content-Type", "application/json");
 
-    // 使用带自定义headers的post方法
+    
     QString httpErrMsg;
     QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
     client->freeHeaders(headers);
 
-    // 如果HTTP请求失败，返回HTTP错误信息
+    
     if (!httpErrMsg.isEmpty()) {
         errMessage = httpErrMsg;
         LOG_WARNING(QString("获取插播视频列表HTTP请求失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
-    // 打印响应
+    
     QJsonDocument doc(response);
     QString responseStr = doc.toJson(QJsonDocument::Compact);
     LOG_INFO(QString("getInsertVideolist - Response: %1").arg(responseStr).toStdString());
 
-    // 解析响应状态
+    
     if (response["code"].toInt() != 200) {
         errMessage = response["msg"].toString();
         LOG_WARNING(QString("获取插播视频列表失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
-    // 解析插播视频列表数据
+    
     parseInsertVideolistJson(response["data"].toObject(), insertFileList, totalCount);
 
     LOG_INFO(QString("getInsertVideolist EXIT - Parsed %1 files, totalCount: %2").arg(insertFileList.size()).arg(totalCount).toStdString());
@@ -258,13 +250,13 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     return true;
 }
 
-// 解析单个插播视频JSON
+
 void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFileItem& fileItem)
 {
     LOG_INFO(QString("parseInsertFileJson ENTER - recordJson keys: %1")
              .arg(QStringList(recordJson.keys()).join(",")).toStdString());
 
-    // 基础字段映射
+    
     fileItem.fileId = recordJson["videoRoomId"].toString();
     fileItem.fileName = recordJson["videoName"].toString();
     fileItem.videoRoomId = recordJson["videoRoomId"].toString();
@@ -274,23 +266,22 @@ void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFil
     LOG_INFO(QString("parseInsertFileJson - fileId: %1, fileName: %2, fileKey: %3")
              .arg(fileItem.fileId).arg(fileItem.fileName).arg(fileItem.fileKey).toStdString());
 
-    // 检查是否有 transcodingFileMp4Url
+    
     bool hasTranscodingUrl = recordJson.contains("transcodingFileMp4Url") && !recordJson["transcodingFileMp4Url"].toString().isEmpty();
     LOG_INFO(QString("parseInsertFileJson - has transcodingFileMp4Url: %1").arg(hasTranscodingUrl).toStdString());
 
-    // 设置下载URL - 优先使用 transcodingFileMp4Url，否则使用 fileKey 构造
+    
     if (hasTranscodingUrl) {
         fileItem.downloadUrl = recordJson["transcodingFileMp4Url"].toString();
         LOG_INFO(QString("parseInsertFileJson - downloadUrl from transcodingFileMp4Url: %1")
                  .arg(fileItem.downloadUrl).toStdString());
     } else if (recordJson.contains("fileKey") && !recordJson["fileKey"].toString().isEmpty()) {
-        // 如果没有直接的下载URL，使用 fileKey 构造
-        // fileKey 格式可能是完整的URL或者需要配合基础URL
+        
         QString fileKey = recordJson["fileKey"].toString();
         if (fileKey.startsWith("http://") || fileKey.startsWith("https://")) {
             fileItem.downloadUrl = fileKey;
         } else {
-            // 构造下载URL - 假设存储服务基础URL
+            
             fileItem.downloadUrl = QString("https://stor.lxi-tech.com/%1").arg(fileKey);
         }
         LOG_INFO(QString("parseInsertFileJson - downloadUrl constructed: %1")
@@ -311,28 +302,28 @@ void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFil
     fileItem.fileKeyTransTs = recordJson["fileKeyTransTs"].toString();
     fileItem.createTime = recordJson["createTime"].toString();
 
-    // 根据视频转码状态设置InsertFileStatus
+    
     int transState = recordJson["videoTransState"].toInt();
     if (transState == 1) {
-        fileItem.status = InsertFileStatus::TRANSCODING;  // 转码中
+        fileItem.status = InsertFileStatus::TRANSCODING;  
     } else if (transState == 2) {
-        fileItem.status = InsertFileStatus::TRANSCODE_SUCCEEDED;  // 转码成功
+        fileItem.status = InsertFileStatus::TRANSCODE_SUCCEEDED;  
     } else {
-        fileItem.status = InsertFileStatus::TRANSCODE_FAILED;  // 其他状态视为转码失败
+        fileItem.status = InsertFileStatus::TRANSCODE_FAILED;  
     }
 
-    // 转换时长为毫秒
+    
     QString durationStr = recordJson["videoDuration"].toString();
     QStringList parts = durationStr.split(":");
     qint64 durationMs = 0;
     if (parts.size() == 3) {
-        // 格式: HH:MM:SS
+        
         int hours = parts[0].toInt();
         int minutes = parts[1].toInt();
         int seconds = parts[2].toInt();
         durationMs = (hours * 3600 + minutes * 60 + seconds) * 1000;
     } else if (parts.size() == 2) {
-        // 格式: MM:SS
+        
         int minutes = parts[0].toInt();
         int seconds = parts[1].toInt();
         durationMs = (minutes * 60 + seconds) * 1000;
@@ -342,7 +333,7 @@ void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFil
 
 void ClientService::parseInsertVideolistJson(const QJsonObject& json, QList<InsertFileItem>& insertFileList, int& totalCount)
 {
-    totalCount = json["totalCount"].toInt();  // 总条数
+    totalCount = json["totalCount"].toInt();  
     QJsonArray records = json["records"].toArray();
 
     for (const auto& recordVal : records) {
@@ -358,79 +349,138 @@ bool ClientService::getInsertFile(const QString& sassUrl, const QString& userId,
 {
     errMessage.clear();
 
-    // 构造请求参数
+    
     QJsonObject reqData;
     reqData["videoRoomId"] = videoRoomId;
     reqData["roomInfoId"] = roomInfoId;
 
-    // 发送POST请求
     QString url = QString("%1/livesaas/SelectVideoRoomById").arg(sassUrl);
     HttpClient* client = HttpClient::instance();
     
-    // 为这个请求创建独立的headers
+    
     struct curl_slist* headers = client->createHeaders();
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
     client->addHeader(&headers, "Content-Type", "application/json");
     
-    // 使用带自定义headers的post方法
+    
     QString httpErrMsg;
     QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
     client->freeHeaders(headers);
 
-    // 如果HTTP请求失败，返回HTTP错误信息
+    
     if (!httpErrMsg.isEmpty()) {
         errMessage = httpErrMsg;
         LOG_WARNING(QString("获取插播视频详情HTTP请求失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
-    // 解析响应状态
+    
     if (response["code"].toInt() != 200) {
         errMessage = response["msg"].toString();
         LOG_WARNING(QString("获取插播视频详情失败: %1").arg(errMessage).toStdString());
         return false;
     }
 
-    // 解析插播视频详情数据
+    
     QJsonObject dataJson = response["data"].toObject();
     parseInsertFileJson(dataJson, fileItem);
     return true;
 }
 
+bool ClientService::getStreamName(const QString& sassUrl, const QString& token, const QString& roomInfoId,
+                                  StreamNameInfo& streamInfo, QString& errMessage)
+{
+    errMessage.clear();
+    streamInfo = StreamNameInfo{};
+
+    QJsonObject reqData;
+    reqData["roomInfoId"] = roomInfoId;
+
+    QString url = QString("%1/livesaas/StreamName").arg(sassUrl);
+    HttpClient* client = HttpClient::instance();
+
+    struct curl_slist* headers = client->createHeaders();
+    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Content-Type", "application/json");
+
+    QString httpErrMsg;
+    QJsonObject response = client->post(url, reqData, headers, httpErrMsg);
+    client->freeHeaders(headers);
+
+    if (!httpErrMsg.isEmpty()) {
+        errMessage = httpErrMsg;
+        LOG_WARNING(QString("Get StreamName HTTP request failed: %1").arg(errMessage).toStdString());
+        return false;
+    }
+
+    if (response["code"].toInt() != 200) {
+        errMessage = response["msg"].toString();
+        LOG_WARNING(QString("Get StreamName failed: %1").arg(errMessage).toStdString());
+        return false;
+    }
+
+    QJsonObject dataJson = response["data"].toObject();
+    streamInfo.isOpen = dataJson["isOpen"].toInt();
+    streamInfo.livePartnerUrl = dataJson["livePartnerUrl"].toString();
+    streamInfo.obsServer = dataJson["obsServer"].toString();
+    streamInfo.obsStreamKey = dataJson["obsStreamKey"].toString();
+    streamInfo.pushStreamId = dataJson["pushStreamId"].toString();
+    streamInfo.streamName = dataJson["streamName"].toString();
+    streamInfo.streamState = dataJson["streamState"].toInt();
+    streamInfo.time = dataJson["time"].toString();
+
+    const QJsonArray pullStreamArray = dataJson["pullStreamUrlList"].toArray();
+    for (const auto& pullStreamValue : pullStreamArray) {
+        if (pullStreamValue.isString()) {
+            streamInfo.pullStreamUrlList.append(pullStreamValue.toString());
+        }
+    }
+
+    LOG_INFO(QString("Get StreamName succeed - roomInfoId: %1, obsServer: %2, streamName: %3, streamState: %4")
+             .arg(roomInfoId)
+             .arg(streamInfo.obsServer)
+             .arg(streamInfo.streamName)
+             .arg(streamInfo.streamState)
+             .toStdString());
+    return true;
+}
 void ClientService::parseLiveListJson(const QJsonObject& json, QList<LiveItem>& liveList, int& totalCount)
 {
-    totalCount = json["totalCount"].toInt();  // 总条数对应totalCount
-    QJsonArray records = json["records"].toArray();
+    totalCount = json["totalCount"].toInt();  QJsonArray records = json["records"].toArray();
 
     for (const auto& recordVal : records) {
         QJsonObject recordJson = recordVal.toObject();
         LiveItem liveItem;
 
-        // 基础字段映射
+        
         liveItem.liveId =  recordJson["roomInfoId"].toString();/*recordJson["id"].toString();*/
-        liveItem.title = recordJson["roomTitle"].toString();  // 标题
+        liveItem.roomNumber = recordJson["roomNumber"].toString();
+        liveItem.title = recordJson["roomTitle"].toString();  
         liveItem.createTime = QDateTime::fromString(recordJson["createTime"].toString(), Qt::ISODate);
         liveItem.startTime = QDateTime::fromString(recordJson["liveStartTime"].toString(), Qt::ISODate);
         liveItem.endTime = QDateTime::fromString(recordJson["liveEndTime"].toString(), Qt::ISODate);
         liveItem.type = recordJson["roomType"].toString();
+        liveItem.horizontalImageUrl = recordJson["horizontalImageUrl"].toString();
+        liveItem.verticalImageUrl = recordJson["verticalImageUrl"].toString();
 
-        // 推流地址
+        
         if (recordJson.contains("pushStreamNameUrl") && recordJson["pushStreamNameUrl"].isString()) {
             liveItem.pushUrl.push_back(recordJson["pushStreamNameUrl"].toString());
         }
 
-        // 状态映射
+        
         int statusCode = recordJson["roomState"].toInt();
-        if (statusCode == 1) liveItem.status = LiveStatus::PENDING;         // 1=待开播
-        else if (statusCode == 2) liveItem.status = LiveStatus::LIVE;       // 2=直播中
-        else if (statusCode == 3) liveItem.status = LiveStatus::ENDED;      // 3=已结束
+        liveItem.roomState = statusCode;
+        if (statusCode == 1) liveItem.status = LiveStatus::PENDING;
+        else if (statusCode == 2) liveItem.status = LiveStatus::LIVE;
+        else if (statusCode == 3) liveItem.status = LiveStatus::ENDED;
         else liveItem.status = LiveStatus::PENDING;
+        liveItem.reserveCount = recordJson["bookingNum"].toInt();           
+        liveItem.viewCount = recordJson["viewerNum"].toInt();               
 
-        liveItem.reserveCount = recordJson["bookingNum"].toInt();           // 预约数
-        liveItem.viewCount = recordJson["viewerNum"].toInt();               // 观看数
-
-        int videoScreenMode = recordJson["videoScreenMode"].toInt();        // 1=横屏
-        if (videoScreenMode == 2) {                                         // 2=竖屏
+        int videoScreenMode = recordJson["videoScreenMode"].toInt();
+        liveItem.videoScreenMode = videoScreenMode;
+        if (videoScreenMode == 1) {
             liveItem.canvasOrientation = "portrait";
         } else {
             liveItem.canvasOrientation = "landscape";
@@ -453,32 +503,31 @@ bool ClientService::genOnceLoginKey(const QString& baseUrl, const QString& userI
     
     QJsonObject reqData;
     reqData["userId"] = userId;
-    // 构造API请求URL
+    
     QString url = QString("%1/accounts/GenUserOnceLoginKey?userId=%2").arg(baseUrl).arg(userId);
     
-    // 发送GET请求
     HttpClient* client = HttpClient::instance();
     
-    // 为这个请求创建独立的headers
+    
     struct curl_slist* headers = client->createHeaders();
     client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
     client->addHeader(&headers, "Content-Type", "application/json");
     
-    // 使用带自定义headers的get方法
+    
     QString httpErrMsg;
     QJsonObject response = client->get(url, headers, httpErrMsg);
     client->freeHeaders(headers);
 
-    // 如果HTTP请求失败，返回HTTP错误信息
+    
     if (!httpErrMsg.isEmpty()) {
         errMessage = httpErrMsg;
         LOG_WARNING(QString("Generate once login key HTTP request failed: %1").arg(errMessage).toStdString());
         return false;
     }
 
-    // 处理响应结果
+    
     if (response["code"].toInt() == 200) {
-        // 从响应数据中获取一次性登录密钥
+        
         loginKey = response["data"].toString();
         LOG_INFO(QString("Generate once login key succeed, key:%1").arg(loginKey).toStdString());
         return true;

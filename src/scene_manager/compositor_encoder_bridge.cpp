@@ -169,13 +169,9 @@ void CompositorEncoderBridge::set_audio_engine(std::shared_ptr<AudioEngine> audi
     audio_engine_ = audio_engine;
 
     if (audio_engine_) {
-        // Use QueuedConnection so the mixer thread is never blocked by audio
-        // encoding work.  The PTS is now captured at emit time in the mixer
-        // thread and passed as the timestamp argument, so the slot can use it
-        // directly instead of reading media_clock_ at (later) slot-execution time.
         connect(audio_engine_.get(), &AudioEngine::audio_data_ready,
-                this, &CompositorEncoderBridge::on_audio_data_ready);
-        LOG_INFO("Audio engine set for encoder bridge and signal connected (QueuedConnection)");
+                this, &CompositorEncoderBridge::on_audio_data_ready, Qt::DirectConnection);
+        LOG_INFO("Audio engine set for encoder bridge and signal connected (DirectConnection)");
     } else {
         LOG_INFO("Audio engine set for encoder bridge (null)");
     }
@@ -851,9 +847,9 @@ void CompositorEncoderBridge::on_audio_data_ready(const QByteArray& data, int64_
     }
 
     // Convert the mixer's emit-time steady_clock timestamp (absolute microseconds)
-    // to bridge-relative milliseconds.  This is accurate even with QueuedConnection
-    // because we use the time when audio was *produced* (emit time in mixer thread),
-    // not when this slot runs (which could be ms later in the main thread).
+    // to bridge-relative milliseconds.  With DirectConnection this conversion stays
+    // on the mixer thread, so the timestamp remains aligned with the production time
+    // of the audio block instead of a later delivery time on another thread.
     int64_t current_timestamp_ms = 0;
     if (streaming_start_steady_us_ > 0 && timestamp > 0) {
         current_timestamp_ms = (timestamp - streaming_start_steady_us_) / 1000LL;

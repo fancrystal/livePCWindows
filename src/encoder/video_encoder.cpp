@@ -769,7 +769,6 @@ ErrorCode H264Encoder::shutdown() {
 
     codec_ = nullptr;
     force_keyframe_ = false;
-    first_keyframe_sent_ = false;  // 🔧 重置第一帧标记
     is_qsv_encoder_ = false;
 
     return ErrorCode::SUCCESS;
@@ -1126,15 +1125,6 @@ ErrorCode H264Encoder::receive_packets(std::vector<EncodedPacketPtr>& packets) {
             continue;
         }
 
-        // 🔧 修复：强制第一帧为关键帧（IDR）
-        // 即使 x264 参数设置了 forced-idr=1，编码器输出可能仍不包含关键帧标志
-        // 这里我们强制第一帧为关键帧，确保 RTMP 推流不会丢弃第一帧视频
-        if (!first_keyframe_sent_) {
-            pkt->flags |= AV_PKT_FLAG_KEY;
-            first_keyframe_sent_ = true;
-            LOG_INFO("[H264Encoder] Force first encoded frame as keyframe, pts=" + std::to_string(pkt->pts));
-        }
-
         auto out = std::make_shared<EncodedPacket>();
         out->type = MediaType::VIDEO;
         out->pts = pkt->pts;
@@ -1396,7 +1386,6 @@ ErrorCode H264Encoder::reset() {
 
     // 重置状态标记
     force_keyframe_ = true;  // 重置后第一帧强制为关键帧
-    first_keyframe_sent_ = false;
     total_frames_ = 0;
 
     // 刷新编码器缓冲区

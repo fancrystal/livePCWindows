@@ -5,7 +5,10 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QComboBox>
+#include <QHash>
+#include <QNetworkAccessManager>
 #include <QPoint>
+#include "http/client_service.h"
 #include "http/live_item.h"
 namespace Ui {
 class LiveListWindow;
@@ -40,6 +43,7 @@ namespace live_assistant {
         void add_live_item(const QJsonObject& live_info);
         void update_pagination();
         int getCurrentRoomState() const;
+        void ensure_stream_status_for_page(int start, int end);
         void filter_live_list(const QString& keyword);  // 根据关键字过滤直播列表
 
     protected:
@@ -61,6 +65,9 @@ namespace live_assistant {
         QString current_search_keyword_;  // 当前搜索关键字
         bool dragging_;
         QPoint dragStartPos_;
+        bool combo_updating_;  // 防止 categoryComboBox 重复触发
+        QNetworkAccessManager* image_network_manager_;
+        QHash<QString, StreamNameInfo> stream_info_cache_;
     };
 }
 

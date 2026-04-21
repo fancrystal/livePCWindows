@@ -132,7 +132,7 @@ private:
     QByteArray input_buffer_;
     int64_t last_audio_timestamp_ = -1;  // 用于单调递增保护和时间戳回绕检测
     // 首包输出时间基准（微秒），与 process_audio_data 内 PTS 推导一致
-    int64_t first_output_timestamp_us_ = -1;
+    int64_t buffered_start_timestamp_us_ = -1;
 
     // 🔧 新增：输出帧计数器，用于计算单调递增的 PTS
     // AAC 编码器可能有缓冲/延迟，不能依赖输入 timestamp 或编码器返回的 PTS

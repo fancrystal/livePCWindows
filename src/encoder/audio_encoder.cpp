@@ -111,7 +111,7 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
 
     config_ = config;
     last_audio_timestamp_ = -1;
-    first_output_timestamp_us_ = -1;
+    buffered_start_timestamp_us_ = -1;
 
     codec_ = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!codec_) {
@@ -340,8 +340,9 @@ ErrorCode AACEncoder::shutdown() {
 
     codec_ = nullptr;
     last_audio_timestamp_ = -1;
-    first_output_timestamp_us_ = -1;
+    buffered_start_timestamp_us_ = -1;
     input_buffer_.clear();
+    buffered_start_timestamp_us_ = -1;
     output_frame_count_ = 0;
 
     return ErrorCode::SUCCESS;
@@ -359,29 +360,21 @@ void AACEncoder::encode_audio_data(const QByteArray& data, int64_t timestamp) {
     if (!initialized_ || data.isEmpty()) {
         return;
     }
-
-    // 将数据放入编码队列
     {
         std::lock_guard<std::mutex> lock(encode_queue_mutex_);
-
-        // 🔧 限制队列大小，避免内存无限增长
-        static constexpr size_t MAX_QUEUE_SIZE = 30;  // 约 630ms 的音频数据
+        static constexpr size_t MAX_QUEUE_SIZE = 30;
         if (encode_queue_.size() >= MAX_QUEUE_SIZE) {
-            // 丢弃最旧的数据
             encode_queue_.pop();
             static int drop_count = 0;
             if (++drop_count <= 10) {
                 LOG_WARNING("[AACEncoder] Encode queue full, dropping oldest frame");
             }
         }
-
         AudioEncodeJob job;
         job.data = data;
         job.timestamp_ms = timestamp;
         encode_queue_.push(std::move(job));
     }
-
-    // 通知编码线程有新数据
     encode_cv_.notify_one();
 }
 
@@ -474,6 +467,7 @@ void AACEncoder::process_audio_data(const QByteArray& data, int64_t timestamp) {
             LOG_WARNING("[AACEncoder] Large timestamp regression: " +
                         std::to_string(regression) + "ms, clearing input buffer only");
             input_buffer_.clear();
+            buffered_start_timestamp_us_ = -1;
         }
     }
     last_audio_timestamp_ = timestamp;
@@ -499,45 +493,26 @@ void AACEncoder::process_audio_data(const QByteArray& data, int64_t timestamp) {
     // 直接编码一帧。AAC 编码器本身有 frame_size=1024 的缓冲需求，
     // 我们利用编码器内部的 1024-sample 缓冲来吸收余数，而非在应用层累积 buffer。
     // 这样 emit 时的 output_frame_count_ 与输入顺序严格对应。
-    int data_samples = data.size() / (sizeof(float) * config_.channels);
-    if (data_samples < frame_samples) {
-        // 🔧 不足一帧的数据暂存到 input_buffer_，等下一帧凑满 frame_samples 再编码
-        input_buffer_.append(data.constData(), data.size());
-        int buffered_samples = input_buffer_.size() / (sizeof(float) * config_.channels);
-        if (buffered_samples >= frame_samples) {
-            // 凑满一帧，编码并清空 buffer
-            QByteArray to_encode = input_buffer_.left(bytes_per_frame);
-            input_buffer_.remove(0, bytes_per_frame);
-            encode_one_frame(to_encode, timestamp);
-        }
-        return;
+        if (input_buffer_.isEmpty()) {
+        buffered_start_timestamp_us_ = timestamp * 1000LL;
     }
-
-    // 🔧 数据量等于或超过一帧：先编码第一个完整帧（使用当前时间戳）
+    input_buffer_.append(data);
     int64_t frame_duration_us = frame_duration_us_;
-    if (first_output_timestamp_us_ < 0) {
-        first_output_timestamp_us_ = timestamp * 1000LL;
-    }
     if (frame_duration_us <= 0) {
         frame_duration_us = frame_duration_ms_ * 1000LL;
     }
-
-    // 第一帧使用 timestamp，后续帧基于 frame_count 递增
-    encode_one_frame(data.left(bytes_per_frame), timestamp);
-
-    // 🔧 剩余数据放入 buffer
-    int consumed = bytes_per_frame;
-    if (data.size() > consumed) {
-        input_buffer_.append(data.constData() + consumed, data.size() - consumed);
-    }
-
-    // 🔧 处理 buffer 中剩余的数据（最多消费一帧，避免累积）
     while (input_buffer_.size() >= bytes_per_frame) {
+        if (buffered_start_timestamp_us_ < 0) {
+            buffered_start_timestamp_us_ = timestamp * 1000LL;
+        }
         QByteArray buffered_frame = input_buffer_.left(bytes_per_frame);
         input_buffer_.remove(0, bytes_per_frame);
-        // 后续帧的 PTS = 首帧 timestamp + frame_count * frame_duration
-        int64_t pts_ms = timestamp + static_cast<int64_t>(output_frame_count_) * frame_duration_ms_;
+        const int64_t pts_ms = buffered_start_timestamp_us_ / 1000LL;
         encode_one_frame(buffered_frame, pts_ms);
+        buffered_start_timestamp_us_ += frame_duration_us;
+    }
+    if (input_buffer_.isEmpty()) {
+        buffered_start_timestamp_us_ = -1;
     }
 }
 
@@ -560,16 +535,7 @@ int64_t AACEncoder::encode_one_frame(const QByteArray& frame_data, int64_t times
 
     // 🔧 PTS 计算：始终基于 output_frame_count_，与输入 timestamp 脱钩
     // timestamp 仅用于初始化首帧基准
-    if (first_output_timestamp_us_ < 0) {
-        first_output_timestamp_us_ = timestamp * 1000LL;
-    }
-    int64_t frame_duration_us = frame_duration_us_;
-    if (frame_duration_us <= 0) {
-        frame_duration_us = frame_duration_ms_ * 1000LL;
-    }
-    int64_t pts_to_emit = (first_output_timestamp_us_ +
-                          static_cast<int64_t>(output_frame_count_) * frame_duration_us) / 1000;
-
+        const int64_t pts_to_emit = timestamp;
     frame_->pts = pts_to_emit;
 
     // 发送帧到编码器
@@ -955,7 +921,7 @@ ErrorCode AACEncoder::reset() {
     // reset() 的目标只是清空输入缓冲和 swr 状态，编解码器内部状态保持不变。
 
     last_audio_timestamp_ = -1;
-    first_output_timestamp_us_ = -1;
+    buffered_start_timestamp_us_ = -1;
     output_frame_count_ = 0;
 
     frame_offset_in_batch_ = 0;

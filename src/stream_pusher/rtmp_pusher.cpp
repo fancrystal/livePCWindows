@@ -132,6 +132,68 @@ static int safe_write_frame(AVFormatContext* fmt_ctx, AVPacket* pkt, bool interl
 #endif
 }
 
+static bool packet_contains_h264_idr(const AVPacket* pkt)
+{
+    if (!pkt || !pkt->data || pkt->size <= 0) {
+        return false;
+    }
+
+    const uint8_t* data = pkt->data;
+    const int size = pkt->size;
+
+    auto nal_is_idr = [](uint8_t nal_header) {
+        return (nal_header & 0x1F) == 5;
+    };
+
+    // Annex-B: 00 00 01 / 00 00 00 01 + NAL payload.
+    bool looks_like_annexb =
+        (size >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) ||
+        (size >= 3 && data[0] == 0 && data[1] == 0 && data[2] == 1);
+    if (looks_like_annexb) {
+        for (int i = 0; i < size - 4; ++i) {
+            int start_code_size = 0;
+            if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+                start_code_size = 3;
+            } else if (i + 3 < size &&
+                       data[i] == 0 && data[i + 1] == 0 &&
+                       data[i + 2] == 0 && data[i + 3] == 1) {
+                start_code_size = 4;
+            }
+
+            if (start_code_size > 0) {
+                const int nal_pos = i + start_code_size;
+                if (nal_pos < size && nal_is_idr(data[nal_pos])) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // AVCC: repeated [4-byte big endian length][NAL].
+    int offset = 0;
+    while (offset + 4 <= size) {
+        const int nal_size =
+            (static_cast<int>(data[offset]) << 24) |
+            (static_cast<int>(data[offset + 1]) << 16) |
+            (static_cast<int>(data[offset + 2]) << 8) |
+            static_cast<int>(data[offset + 3]);
+        offset += 4;
+
+        if (nal_size <= 0 || offset + nal_size > size) {
+            return false;
+        }
+
+        if (nal_is_idr(data[offset])) {
+            return true;
+        }
+
+        offset += nal_size;
+    }
+
+    return false;
+}
+
 RTMPPusher::RTMPPusher() {
     avformat_network_init();
     LOG_INFO("RTMPPusher constructor");
@@ -577,18 +639,21 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             video_packets_in_window_++;
         }
 
-        // If caller marked packet as keyframe, respect it
+        // Preserve encoder-side keyframe metadata for downstream muxing, but do
+        // not treat the flag alone as proof that this packet is a true IDR.
         if (packet->is_keyframe) {
             avpkt->flags |= AV_PKT_FLAG_KEY;
         }
 
-        // 确保推流的第一帧视频是 IDR 关键帧。
+        const bool is_real_idr = packet_contains_h264_idr(avpkt);
+
+        // 确保推流的第一帧视频是真实 IDR。
         // 注意：不能设超时接受非关键帧——预览阶段 QSV 编码器已运行很长时间，
         // 推流开始时 clear_queue() 与编码线程存在竞态，可能有 PTS 极大的陈旧包残留。
         // 若以该陈旧包设置 video_pts_base_（如 14493ms），所有新帧 pts 均被 clamp 到 0，
         // 导致视频 PTS 比音频 PTS 快 ~14s，即音频慢 7-8 秒的音画不同步问题。
         if (packet->type == MediaType::VIDEO && !have_sent_first_key_) {
-            if (!(avpkt->flags & AV_PKT_FLAG_KEY)) {
+            if (!is_real_idr) {
                 // 初始化等待计时器（仅用于日志）
                 if (!first_video_wait_initialized_) {
                     first_video_wait_start_ = std::chrono::steady_clock::now();
@@ -596,13 +661,13 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
                 }
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - first_video_wait_start_).count();
-                LOG_WARNING("[RTMP] Dropping non-key video packet, waiting for IDR keyframe (" +
+                LOG_WARNING("[RTMP] Dropping video packet before first real IDR (" +
                            std::to_string(elapsed_ms) + "ms elapsed)");
                 // 释放克隆包，避免内存泄漏
                 av_packet_free(&pkt_to_free);
                 return ErrorCode::SUCCESS;
             } else {
-                LOG_INFO("[RTMP] First IDR keyframe received, size=" + std::to_string(avpkt->size));
+                LOG_INFO("[RTMP] First real IDR received, size=" + std::to_string(avpkt->size));
                 have_sent_first_key_ = true;
                 first_video_wait_initialized_ = false;
             }
