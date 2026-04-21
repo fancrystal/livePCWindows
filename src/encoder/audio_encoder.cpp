@@ -151,7 +151,6 @@ ErrorCode AACEncoder::initialize(const AudioEncoderConfig& config) {
     // 🔧 关键：使用编码器选项强制指定 AAC-LC profile（放在最前面）
     av_dict_set(&opts, "profile", "aac_low", 0);
     av_dict_set(&opts, "aac_coder", "twoloop", 0);
-    av_dict_set(&opts, "cutoff", "18000", 0);
     // 注意：移除 prediction/aac_pred，因为它们是 AAC Main profile 特性
 
     if (avcodec_open2(codec_ctx_, codec_, &opts) < 0) {

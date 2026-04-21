@@ -376,25 +376,12 @@ void Compositor::render(QPainter* painter, const QRect& target_rect) {
                 // Use the layer's dest_rect for positioning and scaling
                 QRectF target_rect_in_canvas = layer.dest_rect;
 
-                // Scale to fit the dest_rect, maintaining aspect ratio
-                QSize image_size = render_image.size();
                 QSizeF target_size = target_rect_in_canvas.size();
-
-                // Scale to fill the target rect, cropping if necessary (like CanvasWidget)
-                QImage scaled = render_image.scaled(target_size.toSize(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
-
-                // Calculate source rect to crop the center part if needed
-                QRectF source_rect;
-                if (scaled.width() > target_size.width() || scaled.height() > target_size.height()) {
-                    double source_x = (scaled.width() - target_size.width()) / 2.0;
-                    double source_y = (scaled.height() - target_size.height()) / 2.0;
-                    source_rect = QRectF(source_x, source_y, target_size.width(), target_size.height());
-                } else {
-                    source_rect = QRectF(0, 0, scaled.width(), scaled.height());
-                }
-
-                // Draw the image at the specified position
-                painter->drawImage(target_rect_in_canvas, scaled, source_rect);
+                QImage scaled = render_image.scaled(target_size.toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                QPointF top_left(
+                    target_rect_in_canvas.x() + (target_rect_in_canvas.width() - scaled.width()) / 2.0,
+                    target_rect_in_canvas.y() + (target_rect_in_canvas.height() - scaled.height()) / 2.0);
+                painter->drawImage(top_left, scaled);
             } else {
                 // Placeholder rectangle using the layer's dest_rect
                 painter->fillRect(layer.dest_rect, QColor(64, 128, 255));

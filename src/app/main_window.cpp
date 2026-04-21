@@ -84,6 +84,36 @@ extern "C" {
 
 namespace live_assistant {
 
+namespace {
+
+Transform make_centered_fit_transform(
+    int canvas_w,
+    int canvas_h,
+    int src_w,
+    int src_h,
+    double max_canvas_width_ratio,
+    double max_canvas_height_ratio,
+    bool mirror = false) {
+    canvas_w = (std::max)(canvas_w, 1);
+    canvas_h = (std::max)(canvas_h, 1);
+    src_w = (std::max)(src_w, 1);
+    src_h = (std::max)(src_h, 1);
+
+    const int max_w = (std::max)(1, static_cast<int>(canvas_w * max_canvas_width_ratio));
+    const int max_h = (std::max)(1, static_cast<int>(canvas_h * max_canvas_height_ratio));
+    const double scale = (std::min)(
+        static_cast<double>(max_w) / src_w,
+        static_cast<double>(max_h) / src_h);
+
+    const int target_w = (std::max)(1, static_cast<int>(src_w * scale));
+    const int target_h = (std::max)(1, static_cast<int>(src_h * scale));
+    const int x = (canvas_w - target_w) / 2;
+    const int y = (canvas_h - target_h) / 2;
+    return Transform(x, y, target_w, target_h, 0.0f, 1.0f, mirror);
+}
+
+}
+
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow) {
@@ -1998,7 +2028,13 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
     auto sceneItem = scene->add_source(mediaSource);
     if (sceneItem) {
 
-        Transform transform(0, 0, canvas_config_.get_width(), canvas_config_.get_height());
+        Transform transform = make_centered_fit_transform(
+            canvas_config_.get_width(),
+            canvas_config_.get_height(),
+            1280,
+            720,
+            0.9,
+            0.55);
         scene->set_transform(sceneItem, transform);
         
 
@@ -2012,8 +2048,8 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
 
                 compositor_->set_layer_order(source_id_str, 0);
             }
-            compositor_->update_layer_transform(source_id_str, 
-                QRectF(0, 0, canvas_config_.get_width(), canvas_config_.get_height()), 1.0f);
+            compositor_->update_layer_transform(source_id_str,
+                QRectF(transform.x, transform.y, transform.width, transform.height), 1.0f);
         }
 
 
@@ -2508,20 +2544,22 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
                 added_item->set_source_params(params);
 
 
-                int canvas_w = canvas_config_.get_width();
-                int canvas_h = canvas_config_.get_height();
-                int w = canvas_w / 2;
-                int h = canvas_h / 2;
-                int x = (canvas_w - w) / 2;
-                int y = (canvas_h - h) / 2;
-
                 // Get mirror setting from video engine
                 bool mirror = false;
                 if (video_engine_) {
                     mirror = video_engine_->get_camera_mirror();
                 }
 
-                Transform tr(x, y, w, h, 0.0f, 1.0f, mirror);
+                int src_w = config.width > 0 ? config.width : 1280;
+                int src_h = config.height > 0 ? config.height : 720;
+                Transform tr = make_centered_fit_transform(
+                    canvas_config_.get_width(),
+                    canvas_config_.get_height(),
+                    src_w,
+                    src_h,
+                    0.9,
+                    0.5,
+                    mirror);
                 scene->set_transform(added_item, tr);
 
 
@@ -2656,14 +2694,16 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
             params["opencv_index"] = std::to_string(config.opencv_index);
             added_item->set_source_params(params);
 
-            int canvas_w = canvas_config_.get_width();
-            int canvas_h = canvas_config_.get_height();
-            int w = canvas_w / 2;
-            int h = canvas_h / 2;
-            int x = (canvas_w - w) / 2;
-            int y = (canvas_h - h) / 2;
-
-            Transform tr(x, y, w, h, 0.0f, 1.0f, config.mirror);
+            int src_w = config.width > 0 ? config.width : 1280;
+            int src_h = config.height > 0 ? config.height : 720;
+            Transform tr = make_centered_fit_transform(
+                canvas_config_.get_width(),
+                canvas_config_.get_height(),
+                src_w,
+                src_h,
+                0.9,
+                0.5,
+                config.mirror);
             scene->set_transform(added_item, tr);
 
             added_item->set_order(9999);

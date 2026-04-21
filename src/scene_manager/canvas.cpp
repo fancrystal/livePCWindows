@@ -8,6 +8,7 @@
 #include <QBrush>
 #include <QPen>
 #include <QCursor>
+#include <algorithm>
 
 namespace live_assistant {
 
@@ -89,12 +90,11 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
                 if (!latest.isNull()) {
                     // Scale to fill, cropping if necessary, then draw the center part.
                 // Use FastTransformation for better performance (SmoothTransformation is too slow for real-time)
-                QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
-                QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
-                                   (scaled.height() - item_rect.height()) / 2.0,
-                                   item_rect.width(),
-                                   item_rect.height());
-                painter.drawImage(item_rect, scaled, source_rect);
+                QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                QPoint top_left(
+                    item_rect.x() + (item_rect.width() - scaled.width()) / 2,
+                    item_rect.y() + (item_rect.height() - scaled.height()) / 2);
+                painter.drawImage(top_left, scaled);
                 frame_rendered = true;
             }
         }
@@ -110,12 +110,11 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
                         latest = latest.mirrored(true, false);
                     }
                     // Scale to fill, cropping if necessary, then draw the center part.
-                    QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
-                    QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
-                                       (scaled.height() - item_rect.height()) / 2.0,
-                                       item_rect.width(),
-                                       item_rect.height());
-                    painter.drawImage(item_rect, scaled, source_rect);
+                    QImage scaled = latest.scaled(item_rect.size(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                    QPoint top_left(
+                        item_rect.x() + (item_rect.width() - scaled.width()) / 2,
+                        item_rect.y() + (item_rect.height() - scaled.height()) / 2);
+                    painter.drawImage(top_left, scaled);
                     frame_rendered = true;
                 }
             }
@@ -135,12 +134,11 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
                         if (!image.isNull()) {
                             // 绘制视频帧，使用变换进行缩放和定位
                             // Scale to fill, cropping if necessary, then draw the center part.
-                            QImage scaled = image.scaled(item_rect.size(), Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
-                            QRectF source_rect((scaled.width() - item_rect.width()) / 2.0,
-                                               (scaled.height() - item_rect.height()) / 2.0,
-                                               item_rect.width(),
-                                               item_rect.height());
-                            painter.drawImage(item_rect, scaled, source_rect);
+                            QImage scaled = image.scaled(item_rect.size(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                            QPoint top_left(
+                                item_rect.x() + (item_rect.width() - scaled.width()) / 2,
+                                item_rect.y() + (item_rect.height() - scaled.height()) / 2);
+                            painter.drawImage(top_left, scaled);
                         } else {
                             painter.fillRect(item_rect, QBrush(QColor(50, 150, 50)));
                         }
@@ -196,21 +194,11 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
             if (item_rect.width() > 0 && item_rect.height() > 0 &&
                 item_rect.x() >= -item_rect.width() && item_rect.y() >= -item_rect.height()) {
                 // 性能优化：避免每帧创建 scaled 临时大图
-                const double target_aspect = static_cast<double>(item_rect.width()) / item_rect.height();
-                const double src_aspect = static_cast<double>(image.width()) / image.height();
-
-                QRectF src_rect;
-                if (src_aspect > target_aspect) {
-                    const double new_w = image.height() * target_aspect;
-                    const double x = (image.width() - new_w) / 2.0;
-                    src_rect = QRectF(x, 0.0, new_w, image.height());
-                } else {
-                    const double new_h = image.width() / target_aspect;
-                    const double y = (image.height() - new_h) / 2.0;
-                    src_rect = QRectF(0.0, y, image.width(), new_h);
-                }
-
-                painter.drawImage(item_rect, image, src_rect);
+                QImage scaled = image.scaled(item_rect.size(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                QPoint top_left(
+                    item_rect.x() + (item_rect.width() - scaled.width()) / 2,
+                    item_rect.y() + (item_rect.height() - scaled.height()) / 2);
+                painter.drawImage(top_left, scaled);
             }
         }
         // 如果没有帧，保持透明
@@ -635,7 +623,13 @@ std::shared_ptr<SceneItem> CanvasWidget::hit_test(int x, int y) const {
     auto scene_items = current_scene_->get_all_scene_items();
     
     // 反转列表，从上到下检查
-    std::reverse(scene_items.begin(), scene_items.end());
+    std::sort(scene_items.begin(), scene_items.end(),
+        [](const std::shared_ptr<SceneItem>& a, const std::shared_ptr<SceneItem>& b) {
+            if (!a || !b) {
+                return static_cast<bool>(a);
+            }
+            return a->get_order() > b->get_order();
+        });
     
     // compute mapping from canvas to widget coordinates
     QRect widget_rect = this->rect();
