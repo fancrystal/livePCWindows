@@ -7,6 +7,17 @@
 #include <QJsonArray>
 #include <QDateTime>
 
+namespace {
+QString makeAuthorizationHeader(const QString& token)
+{
+    QString normalized = token.trimmed();
+    if (normalized.startsWith("Bearer ", Qt::CaseInsensitive)) {
+        normalized = normalized.mid(7).trimmed();
+    }
+    return QString("Bearer %1").arg(normalized);
+}
+}
+
 ClientService* ClientService::m_instance = nullptr;
 QMutex ClientService::m_mutex;
 
@@ -141,7 +152,7 @@ bool ClientService::getLiveList(const QString &sassUrl, const QString& userId, c
     LOG_DEBUG(QString("获取直播列表请求URL: %1").arg(url).toStdString());
     
     struct curl_slist* headers = client->createHeaders();
-    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token));
     client->addHeader(&headers, "Content-Type", "application/json");
     
     
@@ -215,7 +226,7 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
 
     
     struct curl_slist* headers = client->createHeaders();
-    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token));
     client->addHeader(&headers, "Content-Type", "application/json");
 
     
@@ -359,7 +370,7 @@ bool ClientService::getInsertFile(const QString& sassUrl, const QString& userId,
     
     
     struct curl_slist* headers = client->createHeaders();
-    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token));
     client->addHeader(&headers, "Content-Type", "application/json");
     
     
@@ -400,7 +411,7 @@ bool ClientService::getStreamName(const QString& sassUrl, const QString& token, 
     HttpClient* client = HttpClient::instance();
 
     struct curl_slist* headers = client->createHeaders();
-    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token));
     client->addHeader(&headers, "Content-Type", "application/json");
 
     QString httpErrMsg;
@@ -510,7 +521,7 @@ bool ClientService::genOnceLoginKey(const QString& baseUrl, const QString& userI
     
     
     struct curl_slist* headers = client->createHeaders();
-    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token));
     client->addHeader(&headers, "Content-Type", "application/json");
     
     

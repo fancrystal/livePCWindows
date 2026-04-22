@@ -183,14 +183,14 @@ int main(int argc, char *argv[]) {
             }
 
             // 设置凭证信息
-            QSettings settings("LiveClient", "Config");
+            QSettings settings("LiveAssistant", "Config");
             ServerConfig serverConfig;
 
-            // 读取环境配置
+            // 读取环境配置，默认测试环境(1)与 config.cpp 保持一致
             if (!settings.contains("server/env")) {
-                settings.setValue("server/env", 0);  // 主动创建键并写入默认值
+                settings.setValue("server/env", 1);  // 默认测试环境
             }
-            int envValue = settings.value("server/env", 0).toInt();
+            int envValue = settings.value("server/env", 1).toInt();
             // 根据环境加载默认配置
             switch (static_cast<ServerEnv>(envValue)) {
             case ServerEnv::Testing:

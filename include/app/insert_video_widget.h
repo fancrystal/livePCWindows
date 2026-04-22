@@ -90,6 +90,7 @@ private:
     QString token_;
     QString room_id_;
     QString selected_file_id_;
+    QString last_error_message_;
     bool is_initialized_ = false;
 
     // 下载进度条映射

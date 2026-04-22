@@ -5,6 +5,17 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 
+namespace {
+QString makeAuthorizationHeader(const QString& token)
+{
+    QString normalized = token.trimmed();
+    if (normalized.startsWith("Bearer ", Qt::CaseInsensitive)) {
+        normalized = normalized.mid(7).trimmed();
+    }
+    return QString("Bearer %1").arg(normalized);
+}
+}
+
 LoginService* LoginService::m_instance = nullptr;
 QMutex LoginService::m_mutex;
 
@@ -84,7 +95,7 @@ bool LoginService::genOnceLoginKey(const QString &baseUrl, const QString &userId
     HttpClient* client = HttpClient::instance();
 
     struct curl_slist* headers = client->createHeaders();
-    client->addHeader(&headers, "Authorization", QString("Bearer %1").arg(token));
+    client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token));
     client->addHeader(&headers, "Content-Type", "application/json");
 
     QString httpErrMsg;

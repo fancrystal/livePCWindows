@@ -240,6 +240,7 @@ void InsertVideoWidget::refreshVideoList() {
     }
 
     statusLabel_->setText(QString::fromUtf8("正在加载..."));
+    last_error_message_.clear();
     InsertFileManager::instance()->refreshInsertFiles(room_id_);
 }
 
@@ -482,6 +483,14 @@ void InsertVideoWidget::onDownloadFinished(const QString& fileId, bool success, 
 
 void InsertVideoWidget::onErrorOccurred(const QString& fileId, const QString& message) {
     LOG_ERROR("InsertVideoWidget: Error for file " + fileId.toStdString() + ": " + message.toStdString());
+    statusLabel_->setText(message);
+
+    if (message.isEmpty() || message == last_error_message_) {
+        return;
+    }
+
+    last_error_message_ = message;
+    QMessageBox::warning(this, QString::fromUtf8("错误"), message);
 }
 
 void InsertVideoWidget::onPreviewEndReached() {
