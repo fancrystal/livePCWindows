@@ -161,7 +161,8 @@ private:
     bool decodeVideoPacket(const AVPacket* packet);
     bool decodeAudioPacket(const AVPacket* packet);
     std::shared_ptr<VideoFrame> convertToVideoFrame(AVFrame* frame);
-    std::shared_ptr<AudioFrame> convertToAudioFrame(AVFrame* frame);
+    // 返回本次 decode 产生的所有完整固定样本帧（可能 0 或多个）
+    std::vector<std::shared_ptr<AudioFrame>> convertToAudioFrame(AVFrame* frame);
 
     // ========== FFmpeg 上下文 ==========
     std::shared_ptr<InsertFileItem> file_item_;
@@ -215,11 +216,20 @@ private:
     int audio_sample_rate_ = 48000;
     int audio_channels_ = 2;
 
-    // ========== 音频重采样缓冲区（实现固定1024样本输出）==========
-    static const int TARGET_AUDIO_SAMPLES = 1024;  // 与麦克风采样数匹配
+    // ========== 音频重采样缓冲区（实现固定样本输出）==========
+    // WASAPI microphone capture arrives as 1024-sample chunks at 48 kHz. Keep
+    // media chunks the same size so MIC+MEDIA mixing does not truncate or
+    // overrun either source. Matching 1024 ensures the mixer fully blends both
+    // sources each cycle without leaving silent gaps in the media audio.
+    static const int TARGET_AUDIO_SAMPLES = 1024;
     std::vector<float> audio_resample_buffer_;       // 累积重采样数据
+    size_t audio_resample_buffer_offset_ = 0;       // O(1) 读指针（避免 erase-from-front 的 O(N) 开销）
     int64_t audio_resample_timestamp_ms_ = 0;       // 缓冲区对应的时间戳
-    size_t audio_resample_buffer_size_before_ = 0;  // 记录处理前的缓冲区大小
+    bool audio_ts_initialized_ = false;              // 音频时间戳是否已初始化（允许首帧PTS=0）
+
+    // ========== 解码器状态 ==========
+    std::atomic<bool> need_decoder_flush_{false};   // 循环播放 seek 后需要 flush 解码器
+    AVPixelFormat sws_src_fmt_ = AV_PIX_FMT_NONE;  // 当前 sws_ctx_ 对应的源格式，用于动态检查
 
     // ========== 目标输出参数（与主直播匹配）==========
     int target_width_ = 1280;

@@ -32,6 +32,12 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ZERO_CHECK", "ZERO_CHECK.vc
 	ProjectSection(ProjectDependencies) = postProject
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "deploy_qt_runtime", "deploy_qt_runtime.vcxproj", "{BA5C63A8-24FA-3DE1-BE50-5F1547A39F68}"
+	ProjectSection(ProjectDependencies) = postProject
+		{996B1D9A-AA28-3B57-85BF-92ABB1F04AE4} = {996B1D9A-AA28-3B57-85BF-92ABB1F04AE4}
+		{4562773E-13F5-3A32-A909-CED665076A72} = {4562773E-13F5-3A32-A909-CED665076A72}
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -76,6 +82,10 @@ Global
 		{4562773E-13F5-3A32-A909-CED665076A72}.MinSizeRel|x64.Build.0 = MinSizeRel|x64
 		{4562773E-13F5-3A32-A909-CED665076A72}.RelWithDebInfo|x64.ActiveCfg = RelWithDebInfo|x64
 		{4562773E-13F5-3A32-A909-CED665076A72}.RelWithDebInfo|x64.Build.0 = RelWithDebInfo|x64
+		{BA5C63A8-24FA-3DE1-BE50-5F1547A39F68}.Debug|x64.ActiveCfg = Debug|x64
+		{BA5C63A8-24FA-3DE1-BE50-5F1547A39F68}.Release|x64.ActiveCfg = Release|x64
+		{BA5C63A8-24FA-3DE1-BE50-5F1547A39F68}.MinSizeRel|x64.ActiveCfg = MinSizeRel|x64
+		{BA5C63A8-24FA-3DE1-BE50-5F1547A39F68}.RelWithDebInfo|x64.ActiveCfg = RelWithDebInfo|x64
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{15241492-E581-39C6-8931-EEC80192C05C} = {3D5DE369-EF90-382C-8C19-38C7E1A39B1F}

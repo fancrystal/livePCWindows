@@ -59,6 +59,7 @@
 #include <QScreen>
 #include <QFile>
 #include <QCloseEvent>
+#include <QResizeEvent>
 #include <QSettings>
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -152,7 +153,7 @@ MainWindow::MainWindow(QWidget *parent) :
         // logo
         QLabel* logoLbl = new QLabel(titleContainer);
         logoLbl->setFixedSize(32, 32);  
-        QPixmap iconPix(":/images/Frame_icon.png");
+        QPixmap iconPix(":/images/logo_new.png");
         if (!iconPix.isNull()) {
             QPixmap scaledPix = iconPix.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
             logoLbl->setPixmap(scaledPix);
@@ -160,7 +161,7 @@ MainWindow::MainWindow(QWidget *parent) :
         tlay->addWidget(logoLbl);
 
         // gradient text pixmap for main title
-        QString mainText = QString::fromUtf8("直播伴侣");
+        QString mainText = QString::fromUtf8("灵犀");
         QFont tf = ui->label_title ? ui->label_title->font() : this->font();
         tf.setPointSize(14);
         tf.setBold(true);
@@ -184,24 +185,12 @@ MainWindow::MainWindow(QWidget *parent) :
         tlay->addWidget(titleLbl);
 
         // suffix
-        QLabel* suffix = new QLabel(QString::fromUtf8("·启点点"), titleContainer);
+        QLabel* suffix = new QLabel(QString::fromUtf8("·视频云"), titleContainer);
         QFont suf = tf;
         suf.setPointSize(11);
         suf.setItalic(true);
         suffix->setFont(suf);
         tlay->addWidget(suffix);
-
-        QLabel* sep = new QLabel("|", titleContainer);
-        sep->setStyleSheet("color: #666666; font-size: 14px;");
-        tlay->addWidget(sep);
-
-        live_title_label_ = new QLabel(titleContainer);
-        live_title_label_->setStyleSheet(
-            "QLabel { color: #cccccc; font-size: 13px; font-weight: normal; }"
-        );
-        live_title_label_->setMaximumWidth(300);
-        live_title_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        tlay->addWidget(live_title_label_);
 
         titleContainer->setLayout(tlay);
 
@@ -231,12 +220,36 @@ MainWindow::MainWindow(QWidget *parent) :
 
     // Make window frameless and use our custom topBar as title bar
     setWindowFlag(Qt::FramelessWindowHint);
-    setAttribute(Qt::WA_TranslucentBackground);
+    setAttribute(Qt::WA_TranslucentBackground, false);
+    setAttribute(Qt::WA_NoSystemBackground, false);
+    setAutoFillBackground(true);
+    setAttribute(Qt::WA_StyledBackground, true);
+    if (ui->centralWidget) {
+        ui->centralWidget->setAttribute(Qt::WA_StyledBackground, true);
+        ui->centralWidget->setAutoFillBackground(true);
+    }
+    if (ui->topBar) {
+        ui->topBar->setAttribute(Qt::WA_StyledBackground, true);
+    }
+    if (ui->liveRoomInfoBar) {
+        ui->liveRoomInfoBar->setAttribute(Qt::WA_StyledBackground, true);
+    }
+    if (ui->liveArea) {
+        ui->liveArea->setAttribute(Qt::WA_StyledBackground, true);
+    }
+    if (ui->rightSidebar) {
+        ui->rightSidebar->setAttribute(Qt::WA_StyledBackground, true);
+    }
     
     // Install event filter on topBar to enable window dragging
     if (ui->topBar) {
         ui->topBar->installEventFilter(this);
         ui->topBar->setAttribute(Qt::WA_Hover, true);
+    }
+    if (ui->label_liveRoomTitle) {
+        live_title_label_ = ui->label_liveRoomTitle;
+        ui->label_liveRoomTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        ui->label_liveRoomTitle->setToolTip(ui->label_liveRoomTitle->text());
     }
     
     // connect window control buttons if present
@@ -382,19 +395,7 @@ MainWindow::MainWindow(QWidget *parent) :
 
     update_status("Ready");
 
-    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
-        if (screen) {
-            LOG_INFO("Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
-            this->updateGeometry();
-        }
-    });
-
-    if (windowHandle() && windowHandle()->screen()) {
-        connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
-            LOG_INFO("DPI changed to: " + std::to_string(dpi));
-            this->updateGeometry();
-        });
-    }
+    setupDpiChangeHandling();
 
     
     initWebEngineUI();
@@ -486,6 +487,96 @@ MainWindow::~MainWindow() {
     }
 
     delete ui;
+}
+
+void MainWindow::setupDpiChangeHandling() {
+    last_normal_window_size_ = size();
+
+    dpi_relayout_timer_ = new QTimer(this);
+    dpi_relayout_timer_->setSingleShot(true);
+    connect(dpi_relayout_timer_, &QTimer::timeout, this, [this]() {
+        if (ui) {
+            if (ui->centralWidget) {
+                ui->centralWidget->updateGeometry();
+                ui->centralWidget->update();
+            }
+            if (ui->liveArea) {
+                ui->liveArea->updateGeometry();
+                ui->liveArea->layout()->activate();
+                ui->liveArea->update();
+            }
+            if (ui->rightSidebar) {
+                ui->rightSidebar->updateGeometry();
+                ui->rightSidebar->update();
+            }
+        }
+        if (canvasContainer_) {
+            canvasContainer_->updateGeometry();
+            canvasContainer_->update();
+        }
+        if (canvas_widget_) {
+            canvas_widget_->updateGeometry();
+            canvas_widget_->update();
+        }
+
+        update_stage_container_aspect_ratio();
+        repositionPlaceholderOverlays();
+        updateGeometry();
+        update();
+    });
+
+    QTimer::singleShot(0, this, [this]() {
+        QWindow* handle = windowHandle();
+        if (!handle) {
+            return;
+        }
+
+        connect(handle, &QWindow::screenChanged, this, [this](QScreen* screen) {
+            if (screen) {
+                LOG_INFO("MainWindow screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
+            }
+            attachScreenDpiHandler(screen);
+            scheduleDpiRelayout(true);
+        });
+
+        attachScreenDpiHandler(handle->screen());
+    });
+}
+
+void MainWindow::attachScreenDpiHandler(QScreen* screen) {
+    if (current_screen_dpi_connection_) {
+        disconnect(current_screen_dpi_connection_);
+        current_screen_dpi_connection_ = QMetaObject::Connection();
+    }
+
+    if (!screen) {
+        return;
+    }
+
+    current_screen_dpi_connection_ =
+        connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
+            LOG_INFO("MainWindow DPI changed to: " + std::to_string(dpi));
+            scheduleDpiRelayout(true);
+        });
+}
+
+void MainWindow::scheduleDpiRelayout(bool preserve_window_size) {
+    if (preserve_window_size && !isMaximized() && !isMinimized() && last_normal_window_size_.isValid()) {
+        const QSize current_size = size();
+        const int width_delta = std::abs(current_size.width() - last_normal_window_size_.width());
+        const int height_delta = std::abs(current_size.height() - last_normal_window_size_.height());
+
+        // A cross-monitor DPI transition can briefly reinterpret frameless-window
+        // geometry in physical pixels. Put the widget back to the last user-sized
+        // logical dimensions before recomputing the stage.
+        if (width_delta > 2 || height_delta > 2) {
+            resize(last_normal_window_size_);
+        }
+    }
+
+    if (dpi_relayout_timer_) {
+        dpi_relayout_timer_->start(0);
+    }
 }
 
 void MainWindow::setup_scene_list() {
@@ -1002,31 +1093,20 @@ void MainWindow::restore_capture_sources() {
 
             connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
 
-                if (compositor_ && !frame.image.isNull()) {
+                if (compositor_ && !frame.image.isNull() && is_source_in_current_scene(source_id)) {
                     if (!compositor_->has_layer(source_id)) {
                         compositor_->add_layer(source_id);
 
 
-                        if (scene_manager_) {
-                            auto scene_names = scene_manager_->get_scene_names();
-                            for (const auto& scene_name : scene_names) {
-                                auto items = scene_manager_->get_scene_items(scene_name);
-                                for (auto& item : items) {
-                                    if (item && item->get_source_id() == source_id) {
+                        if (auto item = find_current_scene_item(source_id)) {
+                            compositor_->set_layer_order(source_id, item->get_order());
 
-                                        compositor_->set_layer_order(source_id, item->get_order());
-
-
-                                        const auto& tr = item->get_transform();
-                                        int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
-                                        int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
-                                        compositor_->update_layer_transform(source_id,
-                                            QRectF(tr.x, tr.y, w, h), tr.opacity);
-                                        compositor_->set_layer_visible(source_id, item->is_visible());
-                                        break;
-                                    }
-                                }
-                            }
+                            const auto& tr = item->get_transform();
+                            int w = tr.width > 0 ? tr.width : canvas_config_.get_width();
+                            int h = tr.height > 0 ? tr.height : canvas_config_.get_height();
+                            compositor_->update_layer_transform(source_id,
+                                QRectF(tr.x, tr.y, w, h), tr.opacity);
+                            compositor_->set_layer_visible(source_id, item->is_visible());
                         }
                     }
                     compositor_->updateLayerImage(QString::fromStdString(source_id), frame.image);
@@ -1349,7 +1429,9 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
             live_title_label_->setText(liveItem.title);
             live_title_label_->setToolTip(liveItem.title);
         } else {
-            live_title_label_->setText(QString::fromUtf8("未知直播间"));
+            const QString unknownRoomTitle = QStringLiteral("\u672A\u77E5\u76F4\u64AD\u95F4");
+            live_title_label_->setText(unknownRoomTitle);
+            live_title_label_->setToolTip(unknownRoomTitle);
         }
     }
 
@@ -1506,7 +1588,7 @@ void MainWindow::initialize_modules() {
             .arg(hh, 2, 10, QChar('0'))
             .arg(mm, 2, 10, QChar('0'))
             .arg(ss, 2, 10, QChar('0'));
-        if (ui->label_liveDuration) ui->label_liveDuration->setText(text);
+        if (ui->label_liveDuration) ui->label_liveDuration->setText(QStringLiteral("\u76F4\u64AD\u65F6\u957F\uFF1A") + text);
     });
 
 
@@ -1683,7 +1765,7 @@ void MainWindow::setup_ui_connections() {
                         live_duration_timer_->stop();
                         streaming_start_time_ms_ = 0;
                         if (ui->label_liveDuration) {
-                            ui->label_liveDuration->setText("00:00:00");
+                            ui->label_liveDuration->setText(QStringLiteral("\u76F4\u64AD\u65F6\u957F\uFF1A00:00:00"));
                         }
                     }
 
@@ -1810,9 +1892,38 @@ void MainWindow::setup_ui_connections() {
 }
 
 void MainWindow::setupBottomButtonsStyle() {
+    if (ui->horizontalLayout_techStats &&
+        ui->pushButton_shareScreen &&
+        ui->pushButton_camera &&
+        ui->pushButton_insertVideo) {
+        QLayoutItem* spacerLayoutItem = ui->horizontalLayout_techStats->itemAt(1);
+        if (spacerLayoutItem && spacerLayoutItem->spacerItem()) {
+            spacerLayoutItem->spacerItem()->changeSize(40, 20, QSizePolicy::Expanding, QSizePolicy::Minimum);
+            ui->horizontalLayout_techStats->invalidate();
+        }
 
+        QWidget* actionButtonsContainer = findChild<QWidget*>("widget_bottomActionButtons");
+        if (!actionButtonsContainer) {
+            actionButtonsContainer = new QWidget(this);
+            actionButtonsContainer->setObjectName("widget_bottomActionButtons");
+            actionButtonsContainer->setMinimumWidth(280);
+            actionButtonsContainer->setMaximumWidth(280);
 
-    
+            auto* actionButtonsLayout = new QHBoxLayout(actionButtonsContainer);
+            actionButtonsLayout->setContentsMargins(0, 0, 0, 0);
+            actionButtonsLayout->setSpacing(8);
+
+            ui->horizontalLayout_techStats->removeWidget(ui->pushButton_shareScreen);
+            ui->horizontalLayout_techStats->removeWidget(ui->pushButton_camera);
+            ui->horizontalLayout_techStats->removeWidget(ui->pushButton_insertVideo);
+
+            actionButtonsLayout->addWidget(ui->pushButton_shareScreen);
+            actionButtonsLayout->addWidget(ui->pushButton_camera);
+            actionButtonsLayout->addWidget(ui->pushButton_insertVideo);
+            ui->horizontalLayout_techStats->addWidget(actionButtonsContainer);
+            ui->horizontalLayout_techStats->invalidate();
+        }
+    }
 
     QString shareScreenStyle = R"(
         QPushButton {
@@ -1820,11 +1931,13 @@ void MainWindow::setupBottomButtonsStyle() {
                                         stop:0 #2196F3, stop:1 #00BCD4);
             color: white;
             border-radius: 6px;
-            padding: 6px 12px;
-            font-size: 13px;
+            padding: 4px 8px;
+            font-size: 12px;
             font-weight: bold;
-            min-width: 80px;
-            min-height: 28px;
+            min-width: 72px;
+            max-width: 88px;
+            min-height: 26px;
+            max-height: 26px;
         }
         QPushButton:hover {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1843,11 +1956,13 @@ void MainWindow::setupBottomButtonsStyle() {
                                         stop:0 #4CAF50, stop:1 #8BC34A);
             color: white;
             border-radius: 6px;
-            padding: 6px 12px;
-            font-size: 13px;
+            padding: 4px 8px;
+            font-size: 12px;
             font-weight: bold;
-            min-width: 80px;
-            min-height: 28px;
+            min-width: 72px;
+            max-width: 88px;
+            min-height: 26px;
+            max-height: 26px;
         }
         QPushButton:hover {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1866,11 +1981,13 @@ void MainWindow::setupBottomButtonsStyle() {
                                         stop:0 #FF9800, stop:1 #FF5722);
             color: white;
             border-radius: 6px;
-            padding: 6px 12px;
-            font-size: 13px;
+            padding: 4px 8px;
+            font-size: 12px;
             font-weight: bold;
-            min-width: 80px;
-            min-height: 28px;
+            min-width: 72px;
+            max-width: 88px;
+            min-height: 26px;
+            max-height: 26px;
         }
         QPushButton:hover {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
@@ -1908,6 +2025,7 @@ void MainWindow::setupBottomButtonsStyle() {
 
     if (ui->pushButton_shareScreen) {
         ui->pushButton_shareScreen->setStyleSheet(shareScreenStyle);
+        ui->pushButton_shareScreen->setIconSize(QSize(14, 14));
 
         connect(ui->pushButton_shareScreen, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Share screen button clicked from bottom toolbar");
@@ -1916,6 +2034,7 @@ void MainWindow::setupBottomButtonsStyle() {
     }
     if (ui->pushButton_camera) {
         ui->pushButton_camera->setStyleSheet(cameraStyle);
+        ui->pushButton_camera->setIconSize(QSize(14, 14));
 
         connect(ui->pushButton_camera, &QPushButton::clicked, this, [this]() {
             LOG_INFO("Camera button clicked from bottom toolbar");
@@ -1924,6 +2043,7 @@ void MainWindow::setupBottomButtonsStyle() {
     }
     if (ui->pushButton_insertVideo) {
         ui->pushButton_insertVideo->setStyleSheet(insertVideoStyle);
+        ui->pushButton_insertVideo->setIconSize(QSize(14, 14));
     }
     if (ui->pushButton_settings) {
         ui->pushButton_settings->setStyleSheet(settingsStyle);
@@ -1992,6 +2112,18 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
         return;
     }
 
+    // 二次校验：status 标记为已下载，但本地文件可能实际不存在
+    // （如切换环境/缓存被清理），此时重置状态并重新下载
+    {
+        QString localPath = fileItem->getLocalCachePath();
+        if (!QFile::exists(localPath)) {
+            LOG_WARNING("Insert video cache file missing on disk, re-downloading: " + localPath.toStdString());
+            fileItem->status = InsertFileStatus::TRANSCODE_SUCCEEDED;  // 重置为待下载
+            InsertFileManager::instance()->startDownload(fileId);
+            QMessageBox::information(this, "提示", "视频文件缓存已丢失，正在重新下载，请下载完成后再试");
+            return;
+        }
+    }
 
     std::string source_id = "insert_video_" + fileId.toStdString();
     auto mediaSource = std::make_shared<MediaFileSource>(source_id, fileItem);
@@ -2072,6 +2204,8 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
             LOG_INFO("[INSERT_VIDEO] Frame sync timer started at 30fps");
 
             if (audio_engine_) {
+                audio_engine_->clearMediaFrames();
+                audio_engine_->set_media_mute(false);
                 audio_engine_->set_media_volume(0.7f);
             }
             update_audio_mix_mode();
@@ -2145,16 +2279,14 @@ void MainWindow::stopInsertVideoPlayback() {
         current_insert_video_source_.reset();
     }
 
+    if (audio_engine_) {
+        audio_engine_->set_media_mute(true);
+        audio_engine_->clearMediaFrames();
+    }
+
     current_insert_video_file_id_.clear();
     is_insert_video_playing_ = false;
 
-    if (audio_engine_) {
-
-        if (!current_insert_video_file_id_.isEmpty()) {
-            QString callbackId = QString("insert_video_%1").arg(current_insert_video_file_id_);
-            audio_engine_->unregisterAudioSource(callbackId);
-        }
-    }
     update_audio_mix_mode();
 
 
@@ -2174,11 +2306,14 @@ void MainWindow::on_insert_video_frame_ready() {
         return;
     }
 
+    const std::string source_id = current_insert_video_source_->get_id();
+    if (!is_source_in_current_scene(source_id)) {
+        return;
+    }
+
     SyncedVideoFrame synced_frame;
 
     if (encoder_bridge_->pop_insert_video_frame(synced_frame) && synced_frame.frame) {
-        const std::string source_id = current_insert_video_source_->get_id();
-
         compositor_->update_layer_video_frame(source_id, synced_frame.frame);
 
 
@@ -2378,7 +2513,7 @@ void MainWindow::on_select_camera(const QString& camera_name, const CaptureConfi
 
     connect(src.get(), &ICaptureSource::frameReady, this, [this, source_id](const CaptureFrame& frame) {
 
-        if (compositor_ && !frame.image.isNull()) {
+        if (compositor_ && !frame.image.isNull() && is_source_in_current_scene(source_id)) {
             if (!compositor_->has_layer(source_id)) {
                 compositor_->add_layer(source_id);
 
@@ -2620,7 +2755,7 @@ void MainWindow::on_select_camera_with_source(const QString& camera_name, const 
         LOG_DEBUG("[DIAG] 收到frameReady信号，源ID: " + source_id);
 
 
-        if (compositor_ && !frame.image.isNull()) {
+        if (compositor_ && !frame.image.isNull() && is_source_in_current_scene(source_id)) {
             if (!compositor_->has_layer(source_id)) {
                 compositor_->add_layer(source_id);
 
@@ -2787,7 +2922,7 @@ void MainWindow::show_screen_share_selector() {
 
                     if (source_id.find("capture_") == 0) {
 
-                        if (compositor_ && !frame.image.isNull()) {
+                        if (compositor_ && !frame.image.isNull() && is_source_in_current_scene(source_id)) {
                             if (!compositor_->has_layer(source_id)) {
                                 compositor_->add_layer(source_id);
 
@@ -3044,8 +3179,9 @@ void MainWindow::setup_canvas_widget() {
 
     if (!canvasContainer_) {
         canvasContainer_ = new QWidget(ui->centralWidget);
-        canvasContainer_->setStyleSheet("background-color: #000000;");
     }
+    canvasContainer_->setObjectName("liveCanvasContainer");
+    canvasContainer_->setAttribute(Qt::WA_StyledBackground, true);
     ui->verticalLayout_liveArea->insertWidget(0, canvasContainer_);
 
 
@@ -3780,6 +3916,30 @@ QPushButton* MainWindow::create_icon_button(QStyle::StandardPixmap icon, const Q
     return button;
 }
 
+std::shared_ptr<SceneItem> MainWindow::find_current_scene_item(const std::string& source_id) const {
+    if (!scene_manager_) {
+        return nullptr;
+    }
+
+    auto scene = scene_manager_->get_current_scene();
+    if (!scene) {
+        return nullptr;
+    }
+
+    const auto items = scene->get_all_scene_items();
+    for (const auto& item : items) {
+        if (item && item->get_source_id() == source_id) {
+            return item;
+        }
+    }
+
+    return nullptr;
+}
+
+bool MainWindow::is_source_in_current_scene(const std::string& source_id) const {
+    return find_current_scene_item(source_id) != nullptr;
+}
+
 void MainWindow::sync_scene_to_compositor() {
     if (!compositor_ || !scene_manager_ || !scene_manager_->get_current_scene()) {
         return;
@@ -3939,6 +4099,10 @@ void MainWindow::toggle_speaker() {
     if (audio_engine_ && audio_engine_->get_audio_capturer()) {
 
         audio_engine_->get_audio_capturer()->set_speaker_capture_enabled(speaker_enabled_);
+        audio_engine_->set_speaker_mute(!speaker_enabled_);
+        if (!speaker_enabled_) {
+            audio_engine_->clearSpeakerFrames();
+        }
     }
     update_audio_mix_mode();
     update_speaker_ui();
@@ -4048,7 +4212,7 @@ void MainWindow::show_speaker_menu(const QPoint& pos) {
 void MainWindow::on_streaming_started() {
     LOG_INFO("推流状态：已开始");
     streaming_start_time_ms_ = QDateTime::currentMSecsSinceEpoch();
-    if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
+    if (ui->label_liveDuration) ui->label_liveDuration->setText(QStringLiteral("\u76F4\u64AD\u65F6\u957F\uFF1A00:00:00"));
 
     if (live_duration_timer_) live_duration_timer_->start(200);
 
@@ -4079,7 +4243,7 @@ void MainWindow::on_streaming_stopped() {
     }
     if (system_log_timer_) system_log_timer_->stop();
     streaming_start_time_ms_ = 0;
-    if (ui->label_liveDuration) ui->label_liveDuration->setText("00:00:00");
+    if (ui->label_liveDuration) ui->label_liveDuration->setText(QStringLiteral("\u76F4\u64AD\u65F6\u957F\uFF1A00:00:00"));
 
 
     update_system_info();
@@ -4373,15 +4537,17 @@ void MainWindow::apply_canvas_config_change() {
     }
 
 
-    if (encoder_ && encoder_bridge_ && !encoder_bridge_->is_streaming()) {
+    if (encoder_ && encoder_bridge_) {
+        // 无论是否推流，始终更新编码器配置
+        // 1. 若编码器未激活：reinitialize_video_encoder 仅存储配置，等待下次启动时应用（延迟初始化）
+        // 2. 若编码器已激活：使用内部 video_mutex_ 保护，安全地重新初始化
+        // 调用者（set_landscape_mode/set_portrait_mode）已在推流时提前拦截，此处不需要重复检查
         LOG_INFO("Reinitializing video encoder");
         app_settings_.canvas = canvas_config_;
         VideoEncoderConfig video_config = build_video_config_from_settings(app_settings_);
         encoder_->reinitialize_video_encoder(video_config);
         LOG_INFO("Video encoder reinitialized for " + std::string(is_portrait_mode_ ? "portrait" : "landscape") +
                  " mode: " + std::to_string(width) + "x" + std::to_string(height));
-    } else {
-        LOG_INFO("Skipping encoder reinitialization (streaming or not ready)");
     }
 
 
@@ -4553,6 +4719,16 @@ void MainWindow::update_stage_container_aspect_ratio() {
              " (aspect: " + std::to_string(canvas_aspect) + ")");
 }
 
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+
+    if (!isMaximized() && !isMinimized() && event && event->size().isValid()) {
+        last_normal_window_size_ = event->size();
+    }
+
+    scheduleDpiRelayout(false);
+}
+
 void MainWindow::changeEvent(QEvent* event) {
     QMainWindow::changeEvent(event);
     
@@ -4667,7 +4843,7 @@ void MainWindow::setupSystemTray() {
     system_tray_icon_ = new QSystemTrayIcon(this);
     
 
-    QIcon trayIcon(":/images/Frame_icon.png");
+    QIcon trayIcon(":/images/logo_new.ico");
     if (!trayIcon.isNull()) {
         system_tray_icon_->setIcon(trayIcon);
     } else {
@@ -4675,7 +4851,7 @@ void MainWindow::setupSystemTray() {
         system_tray_icon_->setIcon(QIcon::fromTheme("application-default-icon"));
     }
     
-    system_tray_icon_->setToolTip("直播伴侣");
+    system_tray_icon_->setToolTip("灵犀");
     system_tray_icon_->setContextMenu(system_tray_menu_);
     
 

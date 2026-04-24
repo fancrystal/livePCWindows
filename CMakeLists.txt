@@ -24,6 +24,8 @@ if(WIN32)
     add_definitions(-DCPPWINRT_VERSION="2.0.230207.1")
 endif()
 
+option(LIVEASSISTANT_DEPLOY_QT_ON_BUILD "Run windeployqt after every LiveAssistant build" OFF)
+
 # Find Qt dependencies (add Qml/Quick for QML login, Multimedia for audio capture, MultimediaWidgets for QVideoWidget, PrintSupport for QCustomPlot)
 find_package(Qt6 COMPONENTS Core Widgets Qml Quick QuickWidgets WebSockets Multimedia MultimediaWidgets PrintSupport WebEngineWidgets Concurrent OpenGL OpenGLWidgets)
 qt_standard_project_setup()
@@ -208,52 +210,49 @@ if(WIN32)
     )
     install(SCRIPT ${deploy_script})
 
-    # Also deploy Qt runtime files directly into the build output directory so
-    # packaging tools that archive build_vs2019/Release get a runnable app.
+    # Deploy Qt runtime files directly into the build output directory only
+    # when explicitly requested, so normal edit/build cycles stay quiet.
     get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
     get_filename_component(QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
     find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${QT_BIN_DIR}")
     if(WINDEPLOYQT_EXECUTABLE)
-        add_custom_command(
-            TARGET LiveAssistant POST_BUILD
-            COMMAND "${WINDEPLOYQT_EXECUTABLE}"
-                    "$<$<CONFIG:Debug>:--debug>"
-                    "$<$<NOT:$<CONFIG:Debug>>:--release>"
-                    --no-3danimation
-                    --no-3dcore
-                    --no-3dextras
-                    --no-3dinput
-                    --no-3dlogic
-                    --no-3dquick
-                    --no-3dquickanimation
-                    --no-3dquickextras
-                    --no-3dquickinput
-                    --no-3dquickrender
-                    --no-3dquickscene2d
-                    --no-3drender
-                    --no-quick3d
-                    --no-quick3dassetimport
-                    --no-quick3dassetutils
-                    --no-quick3deffects
-                    --no-quick3dhelpers
-                    --no-quick3dhelpersimpl
-                    --no-quick3diblbaker
-                    --no-quick3dparticleeffects
-                    --no-quick3dparticles
-                    --no-quick3dphysics
-                    --no-quick3dphysicshelpers
-                    --no-quick3druntimerender
-                    --no-quick3dutils
-                    --dir "$<TARGET_FILE_DIR:LiveAssistant>"
-                    --qmldir "${CMAKE_SOURCE_DIR}"
-                    --compiler-runtime
-                    --no-translations
-                    "$<TARGET_FILE:LiveAssistant>"
-            COMMENT "Deploying Qt runtime files with windeployqt"
-            COMMAND_EXPAND_LISTS
+        set(LIVEASSISTANT_WINDEPLOYQT_ARGS
+            "$<$<CONFIG:Debug>:--debug>"
+            "$<$<NOT:$<CONFIG:Debug>>:--release>"
+            --no-3danimation
+            --no-3dcore
+            --no-3dextras
+            --no-3dinput
+            --no-3dlogic
+            --no-3dquick
+            --no-3dquickanimation
+            --no-3dquickextras
+            --no-3dquickinput
+            --no-3dquickrender
+            --no-3dquickscene2d
+            --no-3drender
+            --no-quick3d
+            --no-quick3dassetimport
+            --no-quick3dassetutils
+            --no-quick3deffects
+            --no-quick3dhelpers
+            --no-quick3dhelpersimpl
+            --no-quick3diblbaker
+            --no-quick3dparticleeffects
+            --no-quick3dparticles
+            --no-quick3dphysics
+            --no-quick3dphysicshelpers
+            --no-quick3druntimerender
+            --no-quick3dutils
+            --dir "$<TARGET_FILE_DIR:LiveAssistant>"
+            --qmldir "${CMAKE_SOURCE_DIR}/qml"
+            --compiler-runtime
+            --no-translations
+            "$<TARGET_FILE:LiveAssistant>"
         )
-        add_custom_command(
-            TARGET LiveAssistant POST_BUILD
+
+        add_custom_target(deploy_qt_runtime
+            COMMAND "${WINDEPLOYQT_EXECUTABLE}" ${LIVEASSISTANT_WINDEPLOYQT_ARGS}
             COMMAND ${CMAKE_COMMAND} -E rm -f
                     "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DAnimation.dll"
                     "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DCore.dll"
@@ -268,9 +267,33 @@ if(WIN32)
                     "$<TARGET_FILE_DIR:LiveAssistant>/sceneparsers"
                     "$<TARGET_FILE_DIR:LiveAssistant>/renderers"
                     "$<TARGET_FILE_DIR:LiveAssistant>/renderplugins"
-            COMMENT "Removing unused Qt3D/Quick3D runtime files from build output"
+            DEPENDS LiveAssistant
+            COMMENT "Deploying Qt runtime files with windeployqt"
             COMMAND_EXPAND_LISTS
         )
+
+        if(LIVEASSISTANT_DEPLOY_QT_ON_BUILD)
+            add_custom_command(
+                TARGET LiveAssistant POST_BUILD
+                COMMAND "${WINDEPLOYQT_EXECUTABLE}" ${LIVEASSISTANT_WINDEPLOYQT_ARGS}
+                COMMAND ${CMAKE_COMMAND} -E rm -f
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DAnimation.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DCore.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DExtras.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DInput.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DLogic.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DQuickScene2D.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt63DRender.dll"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/Qt6Quick3DUtils.dll"
+                COMMAND ${CMAKE_COMMAND} -E rm -rf
+                        "$<TARGET_FILE_DIR:LiveAssistant>/geometryloaders"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/sceneparsers"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/renderers"
+                        "$<TARGET_FILE_DIR:LiveAssistant>/renderplugins"
+                COMMENT "Deploying Qt runtime files with windeployqt"
+                COMMAND_EXPAND_LISTS
+            )
+        endif()
     else()
         message(WARNING "windeployqt not found; Qt runtime files will not be deployed to the build output directory")
     endif()

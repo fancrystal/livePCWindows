@@ -88,7 +88,7 @@ Rectangle {
             spacing: 12
 
             Text {
-                text: "直播伴侣 · 启点点"
+                text: "灵犀 · 视频云"
                 color: "white"
                 font.pixelSize: 22
                 horizontalAlignment: Text.AlignHCenter

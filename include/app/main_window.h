@@ -8,9 +8,11 @@
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QAction>
+#include <QMetaObject>
 #include <memory>
 #include <qlabel.h>
 #include <QPointer>
+#include <QSize>
 #include <atomic>
 
 #include "common/media_clock.h"
@@ -23,6 +25,7 @@
 
 class ExitDialog;
 class InsertVideoWidget;
+class QScreen;
 
 namespace Ui {
 class MainWindow;
@@ -172,6 +175,9 @@ private:
     // Window dragging via custom title bar
     bool window_dragging_ = false;
     QPoint window_drag_start_pos_;
+    QSize last_normal_window_size_;
+    QMetaObject::Connection current_screen_dpi_connection_;
+    QTimer* dpi_relayout_timer_ = nullptr;
 
     // Compositor and encoder bridge
     std::shared_ptr<Compositor> compositor_;
@@ -258,7 +264,7 @@ private:
     // Tech stats label (bottom bar)
     QLabel* tech_stats_label_ = nullptr;
 
-    // Live title label (top bar)
+    // Live room title label (below top bar)
     QLabel* live_title_label_ = nullptr;
 
     // 系统监控日志打印计数器
@@ -288,6 +294,9 @@ private:
     void setupBottomButtonsStyle();
     void initWebEngineUI();     // 初始化WebView UI属性
     void initWebEngineViews();  // 初始化WebView控件（加载URL）
+    void setupDpiChangeHandling();
+    void attachScreenDpiHandler(QScreen* screen);
+    void scheduleDpiRelayout(bool preserve_window_size);
 
     // System tray methods
     void setupSystemTray();
@@ -303,6 +312,8 @@ private:
     void saveExitPreference(int preference);
 
     // A-mode: Scene is authoritative; keep Compositor layers in sync with SceneItems.
+    std::shared_ptr<SceneItem> find_current_scene_item(const std::string& source_id) const;
+    bool is_source_in_current_scene(const std::string& source_id) const;
     void sync_scene_to_compositor();
 
     // Camera methods
@@ -348,6 +359,7 @@ private:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     void changeEvent(QEvent* event) override; // 处理窗口状态变化
     void closeEvent(QCloseEvent* event) override; // 处理窗口关闭事件
 

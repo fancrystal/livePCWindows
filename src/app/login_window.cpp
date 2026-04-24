@@ -24,7 +24,7 @@ LoginWindow::LoginWindow(QWidget *parent) :
     settings_("LiveAssistant", "Login") {
     
     // 设置窗口属性
-    setWindowTitle("启点点直播 - 登录");
+    setWindowTitle("视频云直播 - 登录");
     setWindowFlag(Qt::FramelessWindowHint, true);
     setAttribute(Qt::WA_TranslucentBackground, true);
     setMinimumSize(800, 500);

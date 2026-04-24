@@ -70,6 +70,7 @@ public:
     
     // 设置 WASAPI 设备 ID（FN 模式使用）
     void set_wasapi_device_id(const std::string& device_id) { wasapi_device_id_ = device_id; }
+    void set_speaker_wasapi_device_id(const std::string& device_id) { speaker_wasapi_device_id_ = device_id; }
     
     // 获取 WASAPI 设备列表
     static std::vector<AudioDeviceInfo> get_wasapi_devices();
@@ -102,19 +103,24 @@ private:
 
 public:
     // 设置扬声器采集开关
-    void set_speaker_capture_enabled(bool enabled) { speaker_capture_enabled_ = enabled; }
+    void set_speaker_capture_enabled(bool enabled);
     bool is_speaker_capture_enabled() const { return speaker_capture_enabled_; }
 
 private:
     // WASAPI 音频采集（默认）- 麦克风
     std::unique_ptr<WASAPICapturer> wasapi_capturer_;
     std::string wasapi_device_id_;
-    
+
     // WASAPI 音频采集 - 扬声器（桌面音频）
     std::unique_ptr<WASAPICapturer> speaker_capturer_;
-    bool speaker_capture_enabled_ = true;  // 默认采集扬声器
+    bool speaker_capture_enabled_ = false;
     
     // Qt Native 音频采集（可选）
+    std::string speaker_wasapi_device_id_;
+
+    bool start_speaker_capture();
+    void stop_speaker_capture();
+
     std::unique_ptr<QtNativeAudioCapturer> qt_native_capturer_;
 
     int current_device_index_ = -1;

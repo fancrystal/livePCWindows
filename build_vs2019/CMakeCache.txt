@@ -257,6 +257,9 @@ CMAKE_SYSTEM_VERSION:UNINITIALIZED=10
 // Studio IDE projects all commands are done without /nologo.
 CMAKE_VERBOSE_MAKEFILE:BOOL=FALSE
 
+//Run windeployqt after every LiveAssistant build
+LIVEASSISTANT_DEPLOY_QT_ON_BUILD:BOOL=OFF
+
 //Value Computed by CMake
 LiveAssistant_BINARY_DIR:STATIC=D:/work/project/LiveAssistant/build_vs2019
 

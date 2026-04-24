@@ -12,6 +12,12 @@
 #include <chrono>
 #include <thread>
 
+extern "C" {
+#include <libswresample/swresample.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
+}
+
 // Windows Speaker volume control
 #ifdef _WIN32
 #include <windows.h>
@@ -204,6 +210,14 @@ bool AudioEngine::shutdown() {
         }
     }
 
+    // 释放麦克风重采样上下文
+    if (mic_swr_ctx_) {
+        swr_free(&mic_swr_ctx_);
+        mic_swr_ctx_ = nullptr;
+        mic_swr_src_rate_ = 0;
+        mic_swr_src_ch_ = 0;
+    }
+
     LOG_INFO("[AudioEngine] Shutdown complete");
     return true;
 }
@@ -229,6 +243,10 @@ bool AudioEngine::start_capture() {
                 break;
             }
         }
+    }
+
+    if (!selected_speaker_id_.empty()) {
+        audio_capturer_->set_speaker_wasapi_device_id(selected_speaker_id_);
     }
 
     // 使用 AudioCapturer 启动捕获
@@ -298,19 +316,79 @@ void AudioEngine::on_data_captured(QByteArray data, int64_t timestamp) {
         return;
     }
 
-    const int src_sample_rate = audio_capturer_ ? audio_capturer_->get_sample_rate() : sample_rate_;
-    const int src_channels = audio_capturer_ ? audio_capturer_->get_channels() : channels_;
-    auto frame = make_frame_from_interleaved_float(
-        data,
-        src_sample_rate,
-        src_channels,
-        sample_rate_,
-        channels_,
-        mapCaptureTimestampToEngineClock(timestamp, false));
+    const int src_sr  = audio_capturer_ ? audio_capturer_->get_sample_rate() : sample_rate_;
+    const int src_ch  = audio_capturer_ ? audio_capturer_->get_channels()    : channels_;
+    const int dst_sr  = sample_rate_;
+    const int dst_ch  = channels_;
+    const int64_t ts_ms = mapCaptureTimestampToEngineClock(timestamp, false);
 
-    if (frame) {
-        pushFrameToQueue(microphone_queue_, microphone_mutex_, frame);
+    const int bytes_per_sample = static_cast<int>(sizeof(float));
+    const int src_samples = (src_ch > 0 && bytes_per_sample > 0)
+        ? data.size() / (src_ch * bytes_per_sample) : 0;
+    if (src_samples <= 0) return;
+
+    if (src_sr == dst_sr && src_ch == dst_ch) {
+        // 采样率/声道完全匹配，直接拷贝，不需要重采样
+        auto frame = std::make_shared<AudioFrame>(dst_sr, dst_ch, src_samples);
+        if (frame && frame->data) {
+            std::copy_n(reinterpret_cast<const float*>(data.constData()),
+                        src_samples * dst_ch, frame->data);
+            frame->timestamp_ms = ts_ms;
+            pushFrameToQueue(microphone_queue_, microphone_mutex_, frame);
+        }
+        return;
     }
+
+    // 采样率或声道数不匹配（常见：设备 44100Hz vs 引擎 48000Hz）
+    // 使用持久化 SwrContext：跨帧保留滤波器历史，避免每帧边界出现噪音（嚓嚓声）
+    if (!mic_swr_ctx_ || mic_swr_src_rate_ != src_sr || mic_swr_src_ch_ != src_ch) {
+        if (mic_swr_ctx_) {
+            swr_free(&mic_swr_ctx_);
+            mic_swr_ctx_ = nullptr;
+        }
+        AVChannelLayout in_layout  = {};
+        AVChannelLayout out_layout = {};
+        av_channel_layout_default(&in_layout,  src_ch);
+        av_channel_layout_default(&out_layout, dst_ch);
+        int ret = swr_alloc_set_opts2(&mic_swr_ctx_,
+            &out_layout, AV_SAMPLE_FMT_FLT, dst_sr,
+            &in_layout,  AV_SAMPLE_FMT_FLT, src_sr,
+            0, nullptr);
+        av_channel_layout_uninit(&in_layout);
+        av_channel_layout_uninit(&out_layout);
+        if (ret < 0 || !mic_swr_ctx_ || swr_init(mic_swr_ctx_) < 0) {
+            LOG_ERROR("[AudioEngine] Failed to create mic SWR context (src=" +
+                      std::to_string(src_sr) + "Hz/" + std::to_string(src_ch) +
+                      "ch -> dst=" + std::to_string(dst_sr) + "Hz/" +
+                      std::to_string(dst_ch) + "ch)");
+            if (mic_swr_ctx_) { swr_free(&mic_swr_ctx_); mic_swr_ctx_ = nullptr; }
+            return;
+        }
+        mic_swr_src_rate_ = src_sr;
+        mic_swr_src_ch_   = src_ch;
+        LOG_INFO("[AudioEngine] Mic SWR context created: " +
+                 std::to_string(src_sr) + "Hz/" + std::to_string(src_ch) +
+                 "ch -> " + std::to_string(dst_sr) + "Hz/" +
+                 std::to_string(dst_ch) + "ch");
+    }
+
+    // 计算重采样后最大样本数（含 SWR 内部积压）
+    const int64_t delay_samples = swr_get_delay(mic_swr_ctx_, src_sr);
+    const int dst_samples = static_cast<int>(
+        av_rescale_rnd(delay_samples + src_samples, dst_sr, src_sr, AV_ROUND_UP));
+    if (dst_samples <= 0) return;
+
+    auto frame = std::make_shared<AudioFrame>(dst_sr, dst_ch, dst_samples);
+    if (!frame || !frame->data) return;
+
+    const uint8_t* in_ptr  = reinterpret_cast<const uint8_t*>(data.constData());
+    uint8_t*       out_ptr = reinterpret_cast<uint8_t*>(frame->data);
+    int converted = swr_convert(mic_swr_ctx_, &out_ptr, dst_samples, &in_ptr, src_samples);
+    if (converted <= 0) return;
+
+    frame->samples       = converted;  // 实际输出样本数
+    frame->timestamp_ms  = ts_ms;
+    pushFrameToQueue(microphone_queue_, microphone_mutex_, frame);
 }
 
 void AudioEngine::on_speaker_data_captured(QByteArray data, int64_t timestamp) {
@@ -418,8 +496,17 @@ std::vector<AudioEngine::AudioDeviceInfo> AudioEngine::get_available_speakers() 
 }
 
 bool AudioEngine::select_speaker(const std::string& speaker_id) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    selected_speaker_id_ = speaker_id;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        selected_speaker_id_ = speaker_id;
+    }
+    if (audio_capturer_) {
+        audio_capturer_->set_speaker_wasapi_device_id(speaker_id);
+        if (is_capturing_ && audio_capturer_->is_speaker_capture_enabled()) {
+            audio_capturer_->set_speaker_capture_enabled(false);
+            audio_capturer_->set_speaker_capture_enabled(true);
+        }
+    }
     LOG_INFO("[AudioEngine] Selected speaker ID: " + speaker_id);
     return true;
 }
@@ -810,6 +897,28 @@ void AudioEngine::pushMediaFrame(std::shared_ptr<AudioFrame> frame) {
     pushFrameToQueue(media_queue_, media_mutex_, frame);
 }
 
+void AudioEngine::clearMediaFrames() {
+    std::lock_guard<std::mutex> lock(media_mutex_);
+    size_t cleared = media_queue_.size();
+    while (!media_queue_.empty()) {
+        media_queue_.pop();
+    }
+    if (cleared > 0) {
+        LOG_INFO("[AudioEngine] Cleared media audio frames: " + std::to_string(cleared));
+    }
+}
+
+void AudioEngine::clearSpeakerFrames() {
+    std::lock_guard<std::mutex> lock(speaker_mutex_);
+    size_t cleared = speaker_queue_.size();
+    while (!speaker_queue_.empty()) {
+        speaker_queue_.pop();
+    }
+    if (cleared > 0) {
+        LOG_INFO("[AudioEngine] Cleared speaker audio frames: " + std::to_string(cleared));
+    }
+}
+
 //=============================================================================
 // 自定义音频源扩展
 //=============================================================================
@@ -842,23 +951,26 @@ std::shared_ptr<AudioFrame> AudioEngine::mixMultipleSources(
         return nullptr;
     }
 
-    // 获取第一个帧的参数作为输出参数
-    std::shared_ptr<AudioFrame> firstFrame = sources.first();
-    
-    // 🔧 严格检查：firstFrame 有效性
-    if (!firstFrame) {
-        LOG_ERROR("[AudioMixer] ERROR: firstFrame is nullptr!");
+    // Use the longest available frame as the output shape. This prevents a
+    // shorter source frame from truncating another source in mixed modes.
+    std::shared_ptr<AudioFrame> referenceFrame = nullptr;
+    for (const auto& frame : sources) {
+        if (!frame || !frame->data) {
+            continue;
+        }
+        if (!referenceFrame || frame->samples > referenceFrame->samples) {
+            referenceFrame = frame;
+        }
+    }
+
+    if (!referenceFrame) {
+        LOG_ERROR("[AudioMixer] ERROR: no valid source frame!");
         return nullptr;
     }
-    
-    if (!firstFrame->data) {
-        LOG_ERROR("[AudioMixer] ERROR: firstFrame->data is null!");
-        return nullptr;
-    }
-    
-    int out_sample_rate = firstFrame->sample_rate;
-    int out_channels = firstFrame->channels;
-    int out_samples = firstFrame->samples;
+
+    int out_sample_rate = referenceFrame->sample_rate;
+    int out_channels = referenceFrame->channels;
+    int out_samples = referenceFrame->samples;
     
     // 创建输出帧
     auto output = std::make_shared<AudioFrame>(out_sample_rate, out_channels, out_samples);

@@ -18,6 +18,9 @@
 #include "common/error.h"
 #include "common/media_clock.h"
 
+// Forward-declare SwrContext to avoid including FFmpeg headers in the interface
+struct SwrContext;
+
 namespace live_assistant {
 
 // 前向声明
@@ -140,6 +143,8 @@ public:
 
     // ========== 媒体音频推送（重构）==========
     void pushMediaFrame(std::shared_ptr<AudioFrame> frame);
+    void clearMediaFrames();
+    void clearSpeakerFrames();
 
     // ========== 预留扩展接口 ==========
 
@@ -347,6 +352,12 @@ private:
     int64_t mapCaptureTimestampToEngineClock(
         int64_t source_timestamp_ms,
         bool is_speaker_source);
+
+    // 麦克风重采样：当 WASAPI 实际采样率与引擎目标不符时（如 44100 vs 48000），
+    // 使用持久化 SwrContext 避免逐帧分配导致的边界噪音（嚓嚓声 + 音色变化）
+    SwrContext* mic_swr_ctx_ = nullptr;
+    int mic_swr_src_rate_ = 0;
+    int mic_swr_src_ch_ = 0;
 
     // Protects state variables that may be accessed from multiple threads
     mutable std::mutex state_mutex_;

@@ -24,6 +24,7 @@ AudioCapturer::AudioCapturer(QObject* parent)
     , channels_(0)
     , sample_size_(0)
     , capture_mode_(AudioCaptureMode::FN_STYLE) {  // 默认使用 FN_STYLE
+    speaker_capture_enabled_ = false;
     LOG_INFO("[AudioCapturer] Created, default mode: FN_STYLE");
 }
 
@@ -103,27 +104,9 @@ bool AudioCapturer::init_wasapi_capture() {
         return false;
     }
 
-    // 如果启用了扬声器采集，启动扬声器采集
-    if (speaker_capture_enabled_) {
-        speaker_capturer_ = std::make_unique<WASAPICapturer>();
-        // 使用默认输出设备（桌面音频）
-        if (speaker_capturer_->Initialize(WASAPISourceType::DeviceOutput, "", true)) {
-            speaker_capturer_->SetCallback([this](const float* data, uint32_t frames,
-                                                  uint32_t sample_rate, uint32_t channels,
-                                                  int64_t timestamp) {
-                on_speaker_data(data, frames, sample_rate, channels, timestamp);
-            });
-            if (speaker_capturer_->Start()) {
-                LOG_INFO("[AudioCapturer] WASAPI speaker (desktop audio) capture started");
-            } else {
-                LOG_ERROR("[AudioCapturer] Failed to start WASAPI speaker capture");
-                speaker_capturer_.reset();
-            }
-        } else {
-            LOG_ERROR("[AudioCapturer] Failed to initialize WASAPI speaker capture");
-            speaker_capturer_.reset();
-        }
-    }
+    // [DISABLED] Speaker loopback capture is temporarily disabled.
+    // When re-enabling: uncomment the block below and remove this comment.
+    // if (speaker_capture_enabled_) { ... start loopback ... }
 
     is_capturing_ = true;
     LOG_INFO("[AudioCapturer] WASAPI capture started: " + 
@@ -131,6 +114,39 @@ bool AudioCapturer::init_wasapi_capture() {
              std::to_string(channels_) + " channels, " +
              std::to_string(sample_size_) + " bits");
     return true;
+}
+
+bool AudioCapturer::start_speaker_capture() {
+    // [DISABLED] Speaker loopback capture is temporarily disabled.
+    // The WASAPI loopback mixes system audio into the live stream, which is
+    // undesirable for the current use case. Re-enable when needed.
+    LOG_INFO("[AudioCapturer] Speaker capture disabled (feature temporarily off)");
+    return false;
+}
+
+void AudioCapturer::stop_speaker_capture() {
+    if (speaker_capturer_) {
+        speaker_capturer_->Stop();
+        speaker_capturer_.reset();
+        LOG_INFO("[AudioCapturer] WASAPI speaker (desktop audio) capture stopped");
+    }
+}
+
+void AudioCapturer::set_speaker_capture_enabled(bool enabled) {
+    if (speaker_capture_enabled_ == enabled) {
+        return;
+    }
+
+    speaker_capture_enabled_ = enabled;
+    if (!is_capturing_) {
+        return;
+    }
+
+    if (speaker_capture_enabled_) {
+        start_speaker_capture();
+    } else {
+        stop_speaker_capture();
+    }
 }
 
 bool AudioCapturer::init_qt_native_capture() {

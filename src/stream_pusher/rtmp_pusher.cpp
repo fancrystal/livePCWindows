@@ -344,6 +344,10 @@ ErrorCode RTMPPusher::register_video_stream(AVCodecParameters* codecpar, AVRatio
         return ErrorCode::INIT_FAILED;
     }
 
+    // 显式设置 SAR=1:1，防止部分 CDN/播放器在竖屏场景下误判宽高比
+    // 从而丢弃视频流（表现为拉流端只有声音没有画面）
+    video_stream_->codecpar->sample_aspect_ratio = {1, 1};
+
     // FLV/RTMP 要求 H264 extradata 必须是 avcC 格式（ISO 14496-15）。
     // NVENC 某些 Windows FFmpeg 版本即便设置了 AV_CODEC_FLAG_GLOBAL_HEADER 仍输出
     // Annex-B 格式（以 00 00 00 01 起始），需要手动转换。
@@ -391,7 +395,8 @@ ErrorCode RTMPPusher::open_output() {
     std::string full_url = config_.server_url + "/" + config_.stream_key;
     // 调试模式：可选择输出到本地文件进行测试
     //// 要测试本地文件，请取消下面一行的注释：
-    //full_url = "D:/test.flv";
+    //full_url = "D://test.flv";
+    //full_url = "rtmp://rtmp-push-test-wss.lxi-tech.com/liveapp/SN-20260401170959163-EGPwZ0?txSecret=c8744aa37e87a66c640b878eaee2bf9f&txTime=69F31C55&module=100003&domain=rtmp-push-test-wss.lxi-tech.com";
     //// 正常推流时，请确保这一行被注释掉
 
     // 使用 avio_open2 并设置 rw_timeout（单位：微秒），防止连接不可达时主线程无限阻塞。

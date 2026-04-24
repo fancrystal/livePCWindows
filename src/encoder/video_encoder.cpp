@@ -584,7 +584,12 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             // ✅ 使用简单可靠的 x264-params
             // 注意：不要设置 slice-max-size 和 slices 参数，让编码器自动处理
             // 设置过小的 slice-max-size 会导致 slice 数量过多，服务器解码器无法处理
-            std::string x264_params = "ref=1:profile=baseline";
+
+            // 根据分辨率选择合适的 H.264 level，竖屏（height > width）使用 level 4.0
+            // 以确保 SPS 中的级别参数对各类 CDN 和播放器具有最佳兼容性
+            // Level 3.1 最大帧尺寸 3600 MBs（1280×720），Level 4.0 最大 8192 MBs（1920×1080）
+            const char* h264_level = (config_.height > config_.width) ? "40" : "31";
+            std::string x264_params = std::string("ref=1:profile=baseline:level=") + h264_level;
 
             // ✅ 禁用场景检测，严格按照 GOP 间隔生成 IDR 关键帧
             // scenecut=0 表示禁用场景检测，确保第一帧和每 GOP 帧都生成 IDR
@@ -877,7 +882,8 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
         } else {
             // 非 NV12 输入：使用 sws 转换
             AVPixelFormat target_fmt = AV_PIX_FMT_NV12;
-            if (!sws_ctx_ || sws_src_fmt_ != src_fmt) {
+            if (!sws_ctx_ || sws_src_fmt_ != src_fmt ||
+                sws_src_w_ != config_.width || sws_src_h_ != config_.height) {
                 if (sws_ctx_) {
                     sws_freeContext(sws_ctx_);
                     sws_ctx_ = nullptr;
@@ -891,6 +897,8 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
                     return ErrorCode::ENCODING_ERROR;
                 }
                 sws_src_fmt_ = src_fmt;
+                sws_src_w_ = config_.width;
+                sws_src_h_ = config_.height;
             }
             const uint8_t* src_slices[1] = {reinterpret_cast<const uint8_t*>(in->data.get())};
             int src_stride[1] = {in->stride > 0 ? in->stride : in->width * 4};

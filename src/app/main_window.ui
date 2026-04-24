@@ -270,6 +270,105 @@
 					</widget>
 				</item>
 
+				<item>
+					<widget class="QWidget" name="liveRoomInfoBar" native="true">
+						<property name="minimumSize">
+							<size>
+								<width>0</width>
+								<height>56</height>
+							</size>
+						</property>
+						<property name="maximumSize">
+							<size>
+								<width>16777215</width>
+								<height>56</height>
+							</size>
+						</property>
+						<layout class="QHBoxLayout" name="horizontalLayout_liveRoomInfoBar">
+							<property name="leftMargin">
+								<number>16</number>
+							</property>
+							<property name="topMargin">
+								<number>8</number>
+							</property>
+							<property name="rightMargin">
+								<number>16</number>
+							</property>
+							<property name="bottomMargin">
+								<number>8</number>
+							</property>
+							<item>
+								<widget class="QWidget" name="liveRoomInfoPanel" native="true">
+									<property name="sizePolicy">
+										<sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+											<horstretch>1</horstretch>
+											<verstretch>0</verstretch>
+										</sizepolicy>
+									</property>
+									<layout class="QHBoxLayout" name="horizontalLayout_liveRoomInfoPanel">
+										<property name="spacing">
+											<number>10</number>
+										</property>
+										<property name="leftMargin">
+											<number>14</number>
+										</property>
+										<property name="topMargin">
+											<number>0</number>
+										</property>
+										<property name="rightMargin">
+											<number>14</number>
+										</property>
+										<property name="bottomMargin">
+											<number>0</number>
+										</property>
+										<item>
+											<widget class="QLabel" name="label_liveRoomBadge">
+												<property name="minimumSize">
+													<size>
+														<width>56</width>
+														<height>24</height>
+													</size>
+												</property>
+												<property name="maximumSize">
+													<size>
+														<width>56</width>
+														<height>24</height>
+													</size>
+												</property>
+												<property name="text">
+													<string>&#x76F4;&#x64AD;&#x95F4;</string>
+												</property>
+												<property name="alignment">
+													<set>Qt::AlignCenter</set>
+												</property>
+												<property name="styleSheet">
+													<string notr="true">background: rgba(255,255,255,0.08); color: #d8dde8; border-radius: 12px; font-size: 12px; font-weight: 600; padding: 0 8px;</string>
+												</property>
+											</widget>
+										</item>
+										<item>
+											<widget class="QLabel" name="label_liveRoomTitle">
+												<property name="sizePolicy">
+													<sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+														<horstretch>1</horstretch>
+														<verstretch>0</verstretch>
+													</sizepolicy>
+												</property>
+												<property name="text">
+													<string>&#x672A;&#x77E5;&#x76F4;&#x64AD;&#x95F4;</string>
+												</property>
+												<property name="styleSheet">
+													<string notr="true">color: #f3f5f7; font-size: 15px; font-weight: 600; border: none; background: transparent;</string>
+												</property>
+											</widget>
+										</item>
+									</layout>
+								</widget>
+							</item>
+						</layout>
+					</widget>
+				</item>
+
 				<!-- 主要内容区域 -->
 				<item>
 					<layout class="QHBoxLayout" name="horizontalLayout_main">
@@ -894,7 +993,7 @@
 									<item>
 										<widget class="QLabel" name="label_liveDuration">
 											<property name="text">
-												<string>00:00:00</string>
+												<string>&#x76F4;&#x64AD;&#x65F6;&#x957F;&#xFF1A;00:00:00</string>
 											</property>
 										</widget>
 									</item>

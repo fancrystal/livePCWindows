@@ -210,7 +210,7 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     server_address_ = "ws://localhost:8080";
     
     // 设置窗口标题
-    setWindowTitle("启点点直播 - 直播列表");
+    setWindowTitle("视频云直播 - 直播列表");
     
     // Remove default light background so the themed background image shows through
     setStyleSheet("QMainWindow { background-color: transparent; }");
@@ -283,85 +283,26 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         ui->headerWidget->installEventFilter(this); 
     }
 
-    // add logo and gradient title (use existing ui->logoLabel and insert title widget into the header layout)
+    // Use a single combined brand image to keep the icon and text aligned across DPI scales.
     if (ui && ui->headerWidget) {
-        // set ui->logoLabel to use Frame_icon.png; always clear original text
-        QPixmap iconPix2(":/images/Frame_icon.png");
+        QPixmap brandPix(":/images/logo2.png");
         if (ui->logoLabel) {
-            ui->logoLabel->setFixedSize(32, 32);  // FIXED: Set size BEFORE pixmap
-            if (!iconPix2.isNull()) {
-                // FIXED: Use KeepAspectRatioByExpanding to fill the 32x32 space
-                ui->logoLabel->setPixmap(iconPix2.scaled(32, 32, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation));
+            ui->logoLabel->setFixedSize(170, 32);
+            ui->logoLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+            if (!brandPix.isNull()) {
+                ui->logoLabel->setPixmap(brandPix.scaled(ui->logoLabel->size(),
+                                                          Qt::KeepAspectRatio,
+                                                          Qt::SmoothTransformation));
             }
             ui->logoLabel->setText("");
             ui->logoLabel->setStyleSheet("background: transparent;");
         }
-
-        // gradient text '直播伴侣' + suffix, inserted into header layout after logoLabel
-        QString gradText = QString::fromUtf8("直播伴侣");
-        QString suffixText = QString::fromUtf8(" · 启点点");
-        QFont titleFont = ui->headerWidget->font();
-        titleFont.setPointSize(14);
-        titleFont.setBold(true);
-
-        QPainterPath path;
-        path.addText(0, 0, titleFont, gradText);
-        QRectF br = path.boundingRect();
-        QPixmap titlePixmap(int(br.width()) + 4, int(br.height()) + 4);
-        titlePixmap.fill(Qt::transparent);
-        {
-            QPainter p(&titlePixmap);
-            p.setRenderHint(QPainter::Antialiasing);
-            p.translate(-br.left(), -br.top());
-            QLinearGradient lg(0, 0, br.width(), 0);
-            lg.setColorAt(0.0, QColor(255, 106, 106));
-            lg.setColorAt(1.0, QColor(74, 110, 240));
-            p.fillPath(path, QBrush(lg));
-        }
-
-        // container widget to hold title and suffix
-        QWidget* titleContainer = new QWidget(ui->headerWidget);
-        titleContainer->setObjectName("titleContainer");
-        titleContainer->setAttribute(Qt::WA_TranslucentBackground);
-        titleContainer->setAutoFillBackground(false);
-        titleContainer->setStyleSheet("background: transparent;");
-        // Set size policy to prevent layout jumping
-        titleContainer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-        QHBoxLayout* tl = new QHBoxLayout(titleContainer);
-        tl->setContentsMargins(0, 0, 0, 0); // FIXED: Removed negative margin
-        tl->setSpacing(6);
-        QLabel* titleLabel = new QLabel(titleContainer);
-        titleLabel->setPixmap(titlePixmap);
-        titleLabel->setFixedSize(titlePixmap.size());
-        QLabel* suffixLabel = new QLabel(suffixText, titleContainer);
-        titleLabel->setAttribute(Qt::WA_TranslucentBackground);
-        titleLabel->setStyleSheet("background: transparent;");
-        suffixLabel->setAttribute(Qt::WA_TranslucentBackground);
-        suffixLabel->setStyleSheet("background: transparent;");
-        QFont sufFont = titleFont;
-        sufFont.setBold(true);
-        sufFont.setItalic(true);
-        sufFont.setPointSize(11);
-        suffixLabel->setFont(sufFont);
-        suffixLabel->setStyleSheet("color: rgba(255,255,255,0.95);");
-        tl->addWidget(titleLabel);
-        tl->addWidget(suffixLabel);
-
-        titleContainer->setLayout(tl);
-
-        // insert into header layout after the existing logoLabel (index 1)
         if (ui->headerWidget->layout()) {
             QHBoxLayout* hl = qobject_cast<QHBoxLayout*>(ui->headerWidget->layout());
             if (hl) {
-                // remove original text label if present to avoid duplicate text
-                if (ui->logoLabel) ui->logoLabel->setText("");
-                // FIXED: Set proper alignment to prevent jumping
                 hl->setAlignment(ui->logoLabel, Qt::AlignLeft | Qt::AlignVCenter);
-                hl->insertWidget(1, titleContainer);
-                hl->setAlignment(titleContainer, Qt::AlignLeft | Qt::AlignVCenter);
             }
         }
-        titleContainer->show();
     }
     // set initial positions for win buttons - 放在 createLiveButton 右边
     if (ui && ui->headerWidget) {
@@ -647,7 +588,7 @@ void LiveListWindow::setup_live_list() {
 
         // small icon top-left
         QLabel* icon = new QLabel(card);
-        QPixmap iconPix(":/images/Frame_icon.png");
+        QPixmap iconPix(":/images/logo_new.png");
         if (!iconPix.isNull()) {
             icon->setPixmap(iconPix.scaled(18,18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         } else {

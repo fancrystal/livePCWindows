@@ -50,7 +50,7 @@ QPushButton#pushButton_confirm:hover { background: qlineargradient(x1:0,y1:0,x2:
 			<item alignment="Qt::AlignHCenter">
 				<widget class="QLabel" name="label_title">
 					<property name="text">
-						<string>确认要退出直播伴侣吗？</string>
+						<string>确认要退出灵犀吗？</string>
 					</property>
 					<property name="font">
 						<font pointSize="14" weight="bold"/>

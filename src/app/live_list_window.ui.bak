@@ -11,7 +11,7 @@
    </rect>
    </property>
   <property name="windowTitle">
-   <string>启点点直播 - 直播列表</string>
+   <string>视频云直播 - 直播列表</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayout">

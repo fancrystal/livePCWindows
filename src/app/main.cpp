@@ -21,6 +21,39 @@
 
 #pragma comment(lib, "dbghelp.lib")
 
+void enable_per_monitor_dpi_awareness() {
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (user32) {
+        using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto setProcessDpiAwarenessContext =
+            reinterpret_cast<SetProcessDpiAwarenessContextFn>(
+                GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (setProcessDpiAwarenessContext &&
+            setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+            FreeLibrary(user32);
+            return;
+        }
+        FreeLibrary(user32);
+    }
+
+    HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    if (shcore) {
+        enum PROCESS_DPI_AWARENESS_FALLBACK {
+            PROCESS_DPI_UNAWARE_FALLBACK = 0,
+            PROCESS_SYSTEM_DPI_AWARE_FALLBACK = 1,
+            PROCESS_PER_MONITOR_DPI_AWARE_FALLBACK = 2
+        };
+        using SetProcessDpiAwarenessFn = HRESULT(WINAPI*)(PROCESS_DPI_AWARENESS_FALLBACK);
+        auto setProcessDpiAwareness =
+            reinterpret_cast<SetProcessDpiAwarenessFn>(
+                GetProcAddress(shcore, "SetProcessDpiAwareness"));
+        if (setProcessDpiAwareness) {
+            setProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE_FALLBACK);
+        }
+        FreeLibrary(shcore);
+    }
+}
+
 // 生成 dump 文件名
 std::string generate_dump_filename() {
     auto now = std::chrono::system_clock::now();
@@ -101,6 +134,8 @@ LONG WINAPI exception_handler(EXCEPTION_POINTERS* exception_pointers) {
 
 int main(int argc, char *argv[]) {
 #ifdef _WIN32
+    enable_per_monitor_dpi_awareness();
+
     // 设置未处理异常过滤器，用于生成崩溃转储
     SetUnhandledExceptionFilter(exception_handler);
 #endif
@@ -115,7 +150,7 @@ int main(int argc, char *argv[]) {
     QApplication a(argc, argv);
 
     // 设置应用程序图标（任务栏和窗口图标）
-    a.setWindowIcon(QIcon(":/images/logo.ico"));
+    a.setWindowIcon(QIcon(":/images/logo_new.ico"));
 
     // Register custom types for cross-thread signal/slot connections
     qRegisterMetaType<live_assistant::CaptureFrame>("CaptureFrame");
