@@ -1,0 +1,69 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource>
+    <!-- qml files are located in project root's qml/ directory; qrc is in resources/ so use relative ../ -->
+    <file alias="qml/Login.qml">../qml/Login.qml</file>
+    <!-- LiveMain.qml removed; no QML entry here -->
+    <!-- LiveList and LiveDetail QML removed to revert to QWidget list -->
+    <!-- QSS stylesheet -->
+    <file alias="resources/live_companion_style.qss">live_companion_style.qss</file>
+</qresource>
+<qresource prefix="/images">
+    <!-- image files are in the same folder as this qrc (resources/) -->
+    <file>logo.png</file>
+    <file>logo.ico</file>
+    <file>logo_new.png</file>
+    <file>logo_new.ico</file>
+    <file>logo2.png</file>
+    <file>logo2_tran.png</file>
+    <file>Frame back.png</file>
+    <file>Frame_user.png</file>
+    <file>Frame_pass.png</file>
+    <file>close.png</file>
+    <file>livelist_back.png</file>
+    <file>home_f.png</file>
+    <file>Frame_icon.png</file>
+    <file>main_wnd_bk.png</file>
+    <!-- 底部控制栏图标 -->
+    <file>screentcast.png</file>
+    <file>Camera.png</file>
+    <file>insertplay.png</file>
+    <file>Colorfilter.png</file>
+    <file>Voice-on.png</file>
+    <file>Voice-on@2x.png</file>
+    <file>Voice-off.png</file>
+    <file>Voice-off@2x.png</file>
+    <file>Volume.png</file>
+    <file>Volume@2x.png</file>
+    <file>Volume-mute.png</file>
+    <file>Volume-mute@2x.png</file>
+    <file>Setting.png</file>
+    <file>Delete.png</file>
+    <file>Preview-open.png</file>
+    <file>Preview-close.png</file>
+    <file>Preview-open(1).png</file>
+    <file>Preview-close(1).png</file>
+    <!-- 标题栏按钮图标 -->
+    <file>Frame_min.png</file>
+    <file>Frame_min@2x.png</file>
+    <file>Frame_min_hover.png</file>
+    <file>Frame_min_hover@2x.png</file>
+    <file>Frame_Max.png</file>
+    <file>Frame_Max@2x.png</file>
+    <file>Frame_MAX_hover@2x.png</file>
+    <file>Frame_recover.png</file>
+    <file>Frame_recover@2x.png</file>
+    <file>Frame_recover_hover.png</file>
+    <file>Frame_recover_hover@2x.png</file>
+    <file>Frame_close.png</file>
+    <file>Frame_close@2x.png</file>
+    <file>Frame_close_hover.png</file>
+    <file>Frame_close_hover@2x.png</file>
+    <!-- 下拉框图标 -->
+    <file>Frame_Tri.png</file>
+    <file>Frame_Tri@2x.png</file>
+    <!-- SVG图标 -->
+    <file>close_icon.svg</file>
+    <file>arrow_up.svg</file>
+    <file>arrow_up_hover.svg</file>
+</qresource>
+</RCC>

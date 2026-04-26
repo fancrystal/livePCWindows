@@ -928,6 +928,7 @@ void MainWindow::load_scenes_config() {
 
     QJsonArray scenes_array;
     bool loaded_portrait_mode = false;
+    bool has_saved_portrait_mode = false;
 
 
     if (doc.isObject()) {
@@ -935,6 +936,7 @@ void MainWindow::load_scenes_config() {
         if (config_obj.contains("scenes")) {
             scenes_array = config_obj["scenes"].toArray();
             if (config_obj.contains("is_portrait")) {
+                has_saved_portrait_mode = true;
                 loaded_portrait_mode = config_obj["is_portrait"].toBool(false);
                 LOG_INFO("Loaded portrait mode from config: " + std::to_string(loaded_portrait_mode));
             }
@@ -951,8 +953,18 @@ void MainWindow::load_scenes_config() {
 
 
     if (scene_manager_->deserialize(scenes_array) == ErrorCode::SUCCESS) {
-
-        if (loaded_portrait_mode != is_portrait_mode_) {
+        if (!server_canvas_orientation_.isEmpty()) {
+            const bool server_portrait_mode = (server_canvas_orientation_ == "portrait");
+            LOG_INFO(QString("Server canvas orientation overrides saved scene orientation: %1")
+                .arg(server_canvas_orientation_).toStdString());
+            if (server_portrait_mode != is_portrait_mode_) {
+                if (server_portrait_mode) {
+                    set_portrait_mode();
+                } else {
+                    set_landscape_mode();
+                }
+            }
+        } else if (has_saved_portrait_mode && loaded_portrait_mode != is_portrait_mode_) {
             LOG_INFO("Restoring portrait mode: " + std::to_string(loaded_portrait_mode));
             if (loaded_portrait_mode) {
                 set_portrait_mode();
@@ -1467,7 +1479,7 @@ void MainWindow::setLiveItem(const LiveItem& liveItem) {
         }
     }
 
-    QString canvasOrientation = liveItem.isPortraitMode() ? "portrait" : "landscape";
+    QString canvasOrientation = liveItem.orientationString();
     LOG_INFO(QString("Server canvas orientation: %1 (isPortraitMode=%2)")
         .arg(canvasOrientation).arg(liveItem.isPortraitMode()).toStdString());
     apply_server_canvas_config(canvasOrientation);

@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QStringList>
 
 namespace {
 QString makeAuthorizationHeader(const QString& token)
@@ -15,6 +16,25 @@ QString makeAuthorizationHeader(const QString& token)
         normalized = normalized.mid(7).trimmed();
     }
     return QString("Bearer %1").arg(normalized);
+}
+
+QDateTime parseApiDateTime(const QString& value)
+{
+    static const QStringList kFormats = {
+        QStringLiteral("yyyy-MM-dd HH:mm:ss"),
+        QStringLiteral("yyyy-MM-dd HH:mm")
+    };
+
+    const QString trimmed = value.trimmed();
+    for (const QString& format : kFormats) {
+        QDateTime parsed = QDateTime::fromString(trimmed, format);
+        if (parsed.isValid()) {
+            return parsed;
+        }
+    }
+
+    QDateTime isoParsed = QDateTime::fromString(trimmed, Qt::ISODate);
+    return isoParsed;
 }
 }
 
@@ -467,12 +487,13 @@ void ClientService::parseLiveListJson(const QJsonObject& json, QList<LiveItem>& 
         liveItem.liveId =  recordJson["roomInfoId"].toString();/*recordJson["id"].toString();*/
         liveItem.roomNumber = recordJson["roomNumber"].toString();
         liveItem.title = recordJson["roomTitle"].toString();  
-        liveItem.createTime = QDateTime::fromString(recordJson["createTime"].toString(), Qt::ISODate);
-        liveItem.startTime = QDateTime::fromString(recordJson["liveStartTime"].toString(), Qt::ISODate);
-        liveItem.endTime = QDateTime::fromString(recordJson["liveEndTime"].toString(), Qt::ISODate);
-        liveItem.type = recordJson["roomType"].toString();
+        liveItem.createTime = parseApiDateTime(recordJson["createTime"].toString());
+        liveItem.startTime = parseApiDateTime(recordJson["liveStartTime"].toString());
+        liveItem.endTime = parseApiDateTime(recordJson["liveEndTime"].toString());
+        liveItem.roomType = recordJson["roomType"].toInt();
         liveItem.horizontalImageUrl = recordJson["horizontalImageUrl"].toString();
         liveItem.verticalImageUrl = recordJson["verticalImageUrl"].toString();
+        liveItem.liveShareImgUrl = recordJson["liveShareImgUrl"].toString();
 
         
         if (recordJson.contains("pushStreamNameUrl") && recordJson["pushStreamNameUrl"].isString()) {
@@ -489,13 +510,7 @@ void ClientService::parseLiveListJson(const QJsonObject& json, QList<LiveItem>& 
         liveItem.reserveCount = recordJson["bookingNum"].toInt();           
         liveItem.viewCount = recordJson["viewerNum"].toInt();               
 
-        int videoScreenMode = recordJson["videoScreenMode"].toInt();
-        liveItem.videoScreenMode = videoScreenMode;
-        if (videoScreenMode == 1) {
-            liveItem.canvasOrientation = "portrait";
-        } else {
-            liveItem.canvasOrientation = "landscape";
-        }
+        liveItem.setVideoScreenMode(recordJson["videoScreenMode"].toInt(1));
 
         liveList.append(liveItem);
     }

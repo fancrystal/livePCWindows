@@ -86,6 +86,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     
 private:
+    void reset_interaction_state();
     void maximize_item_in_canvas(const std::shared_ptr<SceneItem>& item);
     void restore_item_from_maximize();
     bool is_maximized_ = false;

@@ -132,13 +132,13 @@ QString orientationTextForItem(const LiveItem& item)
 
 QString coverUrlForItem(const LiveItem& item)
 {
-    if (!item.horizontalImageUrl.isEmpty()) {
-        return item.horizontalImageUrl;
-    }
     if (item.isPortraitMode() && !item.verticalImageUrl.isEmpty()) {
         return item.verticalImageUrl;
     }
-    return item.verticalImageUrl;
+    if (!item.isPortraitMode() && !item.horizontalImageUrl.isEmpty()) {
+        return item.horizontalImageUrl;
+    }
+    return item.liveShareImgUrl;
 }
 
 QString streamStateText(int streamState, bool hasUsableAddress)
@@ -696,10 +696,12 @@ void LiveListWindow::load_live_list() {
         QJsonObject formatted;
         formatted["id"] = item.liveId;
         formatted["name"] = item.title;
-        formatted["startTime"] = item.createTime.toString("yyyy-MM-dd HH:mm:ss");
+        formatted["startTime"] = item.startTime.isValid()
+            ? item.startTime.toString("yyyy-MM-dd HH:mm:ss")
+            : item.createTime.toString("yyyy-MM-dd HH:mm:ss");
         formatted["roomNumber"] = item.roomNumber;
         formatted["orientation"] = orientationTextForItem(item);
-        formatted["type"] = item.type;
+        formatted["type"] = item.roomType;
         formatted["coverUrl"] = coverUrlForItem(item);
         formatted["roomState"] = item.roomState;
 

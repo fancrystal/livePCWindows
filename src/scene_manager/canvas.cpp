@@ -369,20 +369,45 @@ CanvasWidget::~CanvasWidget() {
     LOG_INFO("CanvasWidget destroyed");
 }
 
+void CanvasWidget::reset_interaction_state() {
+    is_dragging_ = false;
+    is_resizing_ = false;
+    resize_handle_ = 0;
+    camera_resize_handle_ = -1;
+    selected_item_.reset();
+    hovered_item_.reset();
+    last_mouse_pos_ = QPoint();
+    original_transform_ = Transform();
+    is_maximized_ = false;
+    maximized_source_id_.clear();
+    saved_item_rect_ = QRectF();
+    saved_transform_ = Transform();
+    camera_transform_ = Transform();
+}
+
 void CanvasWidget::set_scene_manager(std::shared_ptr<SceneManager> scene_manager) {
+    reset_interaction_state();
     scene_manager_ = scene_manager;
+    current_scene_.reset();
+    if (!scene_manager_) {
+        refresh();
+        return;
+    }
     
     // 如果有场景，将当前场景设置为第一个
-    if (scene_manager_) {
-        auto scene_names = scene_manager_->get_scene_names();
-        if (!scene_names.empty()) {
-            set_current_scene(scene_names[0]);
-        }
+    auto scene_names = scene_manager_->get_scene_names();
+    if (!scene_names.empty()) {
+        set_current_scene(scene_names[0]);
+    } else {
+        refresh();
     }
 }
 
 void CanvasWidget::set_current_scene(const std::string& scene_name) {
+    reset_interaction_state();
     if (!scene_manager_) {
+        current_scene_.reset();
+        refresh();
         return;
     }
     

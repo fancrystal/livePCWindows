@@ -397,6 +397,7 @@ ErrorCode RTMPPusher::open_output() {
     //// 要测试本地文件，请取消下面一行的注释：
     //full_url = "D://test.flv";
     //full_url = "rtmp://rtmp-push-test-wss.lxi-tech.com/liveapp/SN-20260401170959163-EGPwZ0?txSecret=c8744aa37e87a66c640b878eaee2bf9f&txTime=69F31C55&module=100003&domain=rtmp-push-test-wss.lxi-tech.com";
+    //full_url = "rtmp://rtmp-push-test-wss.lxi-tech.com/liveapp/SN-20260424171307444-SRh1BM?txSecret=2e9805bada0c9cfbd6f7874e483ccb32&txTime=69EC8480&module=100003&domain=rtmp-push-test-wss.lxi-tech.com";
     //// 正常推流时，请确保这一行被注释掉
 
     // 使用 avio_open2 并设置 rw_timeout（单位：微秒），防止连接不可达时主线程无限阻塞。

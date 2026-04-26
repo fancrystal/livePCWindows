@@ -1,0 +1,815 @@
+/* ======================================
+   LiveAssistant 灵犀界面 QSS 样式表
+   完全匹配 main_window.ui 中的 objectName
+   ====================================== */
+
+#centralWidget {
+    background-image: url(:/images/main_wnd_bk.png);
+    background-repeat: no-repeat;
+    background-position: center;
+    background-color: #090709;
+}
+
+/* ====================
+   1. 全局基础样式
+   ==================== */
+QWidget {
+    background-color: transparent;
+    color: #E0E0E8;
+    font-family: "Microsoft YaHei", "SimHei", sans-serif;
+    font-size: 14px;
+}
+
+QMainWindow {
+    background-image: url(:/images/main_wnd_bk.png);
+    background-repeat: no-repeat;
+    background-position: center;
+    /* 设置背景颜色为透明，让图片完全显示 */
+    background-color: #090709;
+}
+
+/* ====================
+   2. 顶部标题栏 - topBar
+   ==================== */
+#topBar {
+    background-color: rgba(2, 1, 1, 0.96);
+    border-bottom: none;
+}
+
+#liveRoomInfoBar {
+    background-color: rgba(2, 1, 1, 0.96);
+}
+
+#liveRoomInfoPanel {
+    background-color: rgba(27, 22, 24, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+}
+
+#label_title {
+    font-weight: bold;
+    font-size: 14px;
+    color: #020101;
+}
+
+#label_status {
+    font-weight: bold;
+    font-size: 14px;
+    color: #4CAF50;
+    background-color: rgba(76, 175, 80, 0.15);
+    border-radius: 12px;
+    padding: 4px 12px;
+    border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+#label_company {
+    color: #9090A0;
+    font-size: 12px;
+}
+
+/* 标题栏按钮统一样式 - 现代化图标风格 */
+#pushButton_settings_topBar,
+#pushButton_minimize,
+#pushButton_maximize,
+#pushButton_close {
+    border: none;
+    background: transparent;
+    font-size: 18px;
+    min-width: 36px;
+    min-height: 36px;
+    border-radius: 8px;
+    font-weight: 400;
+    color: #9090A0;
+    padding: 6px 8px;
+    margin: 0 2px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 最小化按钮样式 - 使用扁平化图标 */
+#pushButton_minimize {
+    color: #9090A0;
+}
+#pushButton_minimize:hover {
+    background-color: rgba(80, 150, 255, 0.15);
+    color: #5096FF;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(80, 150, 255, 0.2);
+}
+#pushButton_minimize:pressed {
+    background-color: rgba(80, 150, 255, 0.25);
+    transform: translateY(0);
+}
+
+/* 最大化按钮样式 */
+#pushButton_maximize {
+    color: #9090A0;
+    font-size: 18px;
+}
+#pushButton_maximize:hover {
+    background-color: rgba(80, 150, 255, 0.15);
+    color: #5096FF;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(80, 150, 255, 0.2);
+}
+#pushButton_maximize:pressed {
+    background-color: rgba(80, 150, 255, 0.25);
+    transform: translateY(0);
+}
+
+/* 还原按钮样式（最大化后的状态） */
+#pushButton_maximize[maximized="true"] {
+    color: #9090A0;
+    font-size: 18px;
+}
+#pushButton_maximize[maximized="true"]:hover {
+    background-color: rgba(80, 150, 255, 0.15);
+    color: #5096FF;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(80, 150, 255, 0.2);
+}
+#pushButton_maximize[maximized="true"]:pressed {
+    background-color: rgba(80, 150, 255, 0.25);
+    transform: translateY(0);
+}
+
+/* 关闭按钮样式 - 悬停时渐变红色 */
+#pushButton_close {
+    color: #9090A0;
+}
+#pushButton_close:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 rgba(255, 87, 87, 0.9),
+                                stop:1 rgba(229, 57, 53, 0.9));
+    color: white;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(229, 57, 53, 0.4);
+}
+#pushButton_close:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 rgba(229, 57, 53, 1),
+                                stop:1 rgba(200, 50, 50, 1));
+    transform: translateY(0);
+}
+
+/* 设置按钮样式 */
+#pushButton_settings_topBar {
+    color: #707080;
+}
+#pushButton_settings_topBar:hover {
+    background-color: rgba(80, 150, 255, 0.2);
+    color: #5096FF;
+    box-shadow: 0 0 10px rgba(80, 150, 255, 0.3);
+}
+#pushButton_settings_topBar:pressed {
+    background-color: rgba(80, 150, 255, 0.3);
+    transform: scale(0.95) rotate(90deg);
+}
+
+/* ====================
+   3. 直播预览区域 - liveArea
+   ==================== */
+#liveArea {
+    background-color: #090709;
+}
+
+#liveCanvasContainer,
+#liveViewWidget,
+#label_livePreview {
+    background-color: rgba(23, 20, 23, 0.84);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    font-size: 48px;
+    color: #505060;
+}
+
+/* 添加直播画面按钮 - 圆角矩形样式 */
+#stageAddButton {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 8px;
+    padding: 12px 32px;
+    font-size: 15px;
+    font-weight: 500;
+}
+
+#stageAddButton:hover {
+    background-color: #323242;
+    border-color: #4A4A56;
+}
+
+#stageAddButton:pressed {
+    background-color: #252532;
+}
+
+/* ====================
+   4. 右侧边栏 - rightSidebar
+   ==================== */
+#rightSidebar {
+    background-color: transparent;
+    border-left: none;
+}
+
+/* ====================
+   5. 我的场景区域 - myScenesWidget
+   ==================== */
+#myScenesWidget {
+    min-height: 150px;
+    background-color: rgba(42, 31, 36, 0.84);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+}
+
+#label_myScenes {
+    font-weight: bold;
+    font-size: 14px;
+    color: #F0F0F8;
+}
+
+#comboBox_scenes {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 6px;
+    padding: 6px 10px;
+    min-width: 80px;
+}
+
+#comboBox_scenes:hover {
+    background-color: #323242;
+}
+
+#comboBox_scenes::drop-down {
+    border: none;
+    width: 24px;
+}
+
+#comboBox_scenes::down-arrow {
+    image: none;
+    border: 2px solid #606070;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 4px;
+}
+
+#pushButton_addScene {
+    border: 1px solid #3A3A46;
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    padding: 0px;
+    font-size: 18px;
+    background-color: #2A2A36;
+    color: #9090A0;
+}
+
+#pushButton_addScene:hover {
+    background-color: #3A3A46;
+    color: #E0E0E8;
+}
+
+#sceneItemsWidget {
+    background-color: rgba(22, 20, 23, 0.82);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* 场景列表样式 */
+QListWidget#listWidget_sceneItems {
+    background-color: transparent;
+    border: none;
+}
+
+QListWidget#listWidget_sceneItems::item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-bottom: 2px;
+}
+
+QListWidget#listWidget_sceneItems::item:selected {
+    background-color: #3A3A46;
+}
+
+QListWidget#listWidget_sceneItems::item:hover:!selected {
+    background-color: #2A2A36;
+}
+
+/* ====================
+   6. 添加素材区域 - addMaterialWidget
+   ==================== */
+#addMaterialWidget {
+    min-height: 200px;
+    background-color: transparent;
+}
+
+#pushButton_addMaterial {
+    background-color: rgba(59, 42, 47, 0.86);
+    color: #E0E0E8;
+    font-weight: 500;
+    font-size: 14px;
+    border-radius: 8px;
+    padding: 12px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+#pushButton_addMaterial:hover {
+    background-color: rgba(71, 50, 56, 0.92);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+#pushButton_addMaterial:pressed {
+    background-color: rgba(47, 34, 39, 0.92);
+}
+
+/* ====================
+   7. 聊天标签页 - tabWidget_chat
+   ==================== */
+#tabWidget_chat {
+    background-color: transparent;
+}
+
+QTabWidget#tabWidget_chat::pane {
+    background-color: rgba(42, 31, 36, 0.84);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+}
+
+QTabWidget#tabWidget_chat::tab-bar {
+    background-color: transparent;
+    alignment: left;
+}
+
+QTabBar#tabWidget_chat::tab {
+    background-color: transparent !important;
+    color: #808090;
+    padding: 10px 16px;
+    margin-right: 8px;
+    border: none !important;
+    border-bottom: 2px solid transparent;
+    font-size: 13px;
+    min-width: 60px;
+}
+
+QTabBar#tabWidget_chat::tab:selected {
+    color: #E0E0E8 !important;
+    background-color: transparent !important;
+    background: transparent !important;
+    border-bottom: 2px solid #5096FF !important;
+    border-top: none !important;
+    border-left: none !important;
+    border-right: none !important;
+}
+
+QTabBar#tabWidget_chat::tab:hover:!selected {
+    color: #B0B0C0;
+    background-color: transparent !important;
+    background: transparent !important;
+}
+
+/* ====================
+   8. 聊天区域 - scrollArea_chat
+   ==================== */
+#scrollArea_chat {
+    background-color: transparent;
+    border: none;
+}
+
+#scrollAreaWidgetContents_chat {
+    background-color: transparent;
+}
+
+#label_chatPlaceholder {
+    color: #606070;
+    font-size: 14px;
+}
+
+/* 聊天输入框区域 */
+#lineEdit_chatInput {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+#lineEdit_chatInput:focus {
+    border-color: #5096FF;
+    outline: none;
+}
+
+#lineEdit_chatInput::placeholder {
+    color: #606070;
+}
+
+#pushButton_sendChat {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-weight: 500;
+    font-size: 13px;
+    border: 1px solid #3A3A46;
+}
+
+#pushButton_sendChat:hover {
+    background-color: #323242;
+    border-color: #4A4A56;
+}
+
+#pushButton_sendChat:pressed {
+    background-color: #252532;
+}
+
+/* ====================
+   9. 在线观众区域 - tab_audience
+   ==================== */
+#tab_audience {
+    background-color: transparent;
+}
+
+#label_audiencePlaceholder {
+    color: #606070;
+    font-size: 14px;
+}
+
+/* ====================
+   10. 其他标签页通用样式
+   ==================== */
+#tab_liveVideo,
+#tab_product,
+#tab_tools,
+#tab_linkMic {
+    background-color: transparent;
+}
+
+/* ====================
+   11. 底部控制栏 - bottomControl
+   ==================== */
+#bottomControl {
+    background-color: rgba(8, 7, 9, 0.94);
+    min-height: 60px;
+    max-height: 60px;
+    border-top: none;
+}
+
+/* ====================
+   12. 音频控制区域
+   ==================== */
+#pushButton_mic,
+#pushButton_speaker {
+    border: none;
+    background: transparent;
+    font-size: 18px;
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: 6px;
+}
+
+#pushButton_mic:hover,
+#pushButton_speaker:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+#slider_mic,
+#slider_speaker {
+    min-width: 120px;
+}
+
+QSlider#slider_mic::groove:horizontal,
+QSlider#slider_speaker::groove:horizontal {
+    background-color: #2A2A36;
+    height: 4px;
+    border-radius: 2px;
+}
+
+QSlider#slider_mic::handle:horizontal,
+QSlider#slider_speaker::handle:horizontal {
+    background-color: #5096FF;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    margin: -5px 0;
+}
+
+QSlider#slider_mic::handle:horizontal:hover,
+QSlider#slider_speaker::handle:horizontal:hover {
+    background-color: #60A6FF;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+}
+
+#label_micLevel,
+#label_speakerLevel {
+    min-width: 45px;
+    font-size: 12px;
+    color: #B0B0C0;
+}
+
+/* ====================
+   13. 状态信息 - label_statusInfo
+   ==================== */
+#label_statusInfo {
+    font-size: 12px;
+    color: #808090;
+}
+
+/* ====================
+   14. 右侧控制按钮
+   ==================== */
+#pushButton_cameraToggle,
+#pushButton_settings,
+#pushButton_beauty {
+    border: none;
+    background: transparent;
+    font-size: 16px;
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: 6px;
+}
+
+#pushButton_cameraToggle:hover,
+#pushButton_settings:hover,
+#pushButton_beauty:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* ====================
+   15. 开始直播按钮 - pushButton_startLive
+   ==================== */
+#pushButton_startLive {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                               stop:0 #FF5252, stop:1 #FF7043);
+    color: white;
+    font-weight: bold;
+    border-radius: 8px;
+    padding: 10px 28px;
+    font-size: 14px;
+    border: none;
+}
+
+#pushButton_startLive:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                               stop:0 #FF4545, stop:1 #FF6340);
+}
+
+#pushButton_startLive:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                               stop:0 #E84545, stop:0.5 #EE5540);
+}
+
+/* ====================
+   16. 通用控件样式补充
+   ==================== */
+
+/* 通用按钮 */
+QPushButton {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 6px;
+    padding: 8px 16px;
+}
+
+QPushButton:hover {
+    background-color: #323242;
+    border-color: #4A4A56;
+}
+
+QPushButton:pressed {
+    background-color: #252532;
+}
+
+/* 通用输入框 */
+QLineEdit {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+QLineEdit:focus {
+    border-color: #5096FF;
+    outline: none;
+}
+
+/* 通用下拉框 */
+QComboBox {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border: 2px solid #606070;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    margin-right: 6px;
+}
+
+/* 通用滚动区域 */
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+/* 通用标签 */
+QLabel {
+    color: #E0E0E8;
+}
+
+/* 通用分隔符 */
+QFrame[frameShape="4"] {
+    border: 1px solid #2A2A36;
+}
+
+/* 通用滑块 */
+QSlider {
+    background-color: transparent;
+}
+
+QSlider::groove:horizontal {
+    background-color: #2A2A36;
+    height: 4px;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background-color: #5096FF;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    margin: -5px 0;
+}
+
+/* ====================
+   17. 状态栏样式
+   ==================== */
+QStatusBar {
+    background-color: #1E1E2A;
+    border-top: 1px solid #2A2A36;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+/* ====================
+   18. 标签页内容区域背景
+   ==================== */
+QWidget#tab_chat,
+QWidget#tab_audience,
+QWidget#tab_liveVideo,
+QWidget#tab_product,
+QWidget#tab_tools,
+QWidget#tab_linkMic {
+    background-color: transparent;
+}
+
+/* ====================
+   19. 强制标签页样式（覆盖所有可能的默认样式）
+   ==================== */
+QTabBar::tab {
+    background-color: transparent !important;
+    background: transparent !important;
+}
+
+QTabBar::tab:selected {
+    background-color: transparent !important;
+    background: transparent !important;
+}
+
+QTabBar::tab:hover {
+    background-color: transparent !important;
+    background: transparent !important;
+}
+
+/* ====================
+   20. 底部控制栏样式
+   ==================== */
+#bottomControl {
+    background-color: rgba(8, 7, 9, 0.94);
+    min-height: 100px;
+    max-height: 100px;
+    border-top: none;
+}
+
+/* 第一行：技术参数 */
+#label_techStats {
+    font-size: 12px;
+    color: #808090;
+}
+
+/* 内容源切换按钮 */
+#pushButton_shareScreen,
+#pushButton_camera,
+#pushButton_insertVideo {
+    background-color: #2A2A36;
+    color: #E0E0E8;
+    border: 1px solid #3A3A46;
+    border-radius: 4px;
+    padding: 6px 16px;
+    font-size: 12px;
+}
+
+#pushButton_shareScreen:hover,
+#pushButton_camera:hover,
+#pushButton_insertVideo:hover {
+    background-color: #323242;
+}
+
+/* 音频控制按钮 */
+#pushButton_mic,
+#pushButton_speaker {
+    border: none;
+    background: transparent;
+    font-size: 16px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 4px;
+}
+
+#pushButton_mic:hover,
+#pushButton_speaker:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+}
+
+/* 音量滑块 */
+#slider_mic,
+#slider_speaker {
+    min-width: 80px;
+}
+
+QSlider#slider_mic::groove:horizontal,
+QSlider#slider_speaker::groove:horizontal {
+    background-color: #2A2A36;
+    height: 4px;
+    border-radius: 2px;
+}
+
+QSlider#slider_mic::handle:horizontal,
+QSlider#slider_speaker::handle:horizontal {
+    background-color: #5096FF;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    margin: -5px 0;
+}
+
+QSlider#slider_mic::handle:horizontal:hover,
+QSlider#slider_speaker::handle:horizontal:hover {
+    background-color: #60A6FF;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+}
+
+/* 音量百分比标签 */
+#label_micLevel,
+#label_speakerLevel {
+    font-size: 12px;
+    color: #B0B0C0;
+    min-width: 40px;
+}
+
+/* 直播时长标签 */
+#label_liveDuration {
+    font-size: 12px;
+    color: #808090;
+    min-width: 70px;
+}
+
+/* 开始直播按钮 */
+#pushButton_startLive {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                               stop:0 #FF5252, stop:1 #FF7043);
+    color: white;
+    font-weight: bold;
+    border-radius: 6px;
+    padding: 8px 24px;
+    font-size: 14px;
+    border: none;
+}
+
+#pushButton_startLive:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                               stop:0 #FF4545, stop:1 #FF6340);
+}
+
+#pushButton_startLive:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                               stop:0 #E84545, stop:0.5 #EE5540);
+}
