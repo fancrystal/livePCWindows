@@ -199,7 +199,7 @@ void StreamPusher::push_thread_func() {
 
                             if (reconnecting_callback_) {
                                 reconnecting_callback_(reconnect_attempts_.load(),
-                                                       config_.max_reconnect_attempts);
+                                                       config_.max_reconnect_attempts * 3);
                             }
 
                             ErrorCode reconnect_result = rtmp_pusher_.connect_and_write_header();
