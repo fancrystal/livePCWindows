@@ -29,9 +29,9 @@ const ServerConfig DEFAULT_PROD_CONFIG = {
 };
 
 const ServerConfig DEFAULT_TEST_CONFIG = {
-    "https://qdd-test.lxi-tech.com:15815",
-    "https://qdd-test.lxi-tech.com:15816",
-    "wss://qdd-test.lxi-tech.com:15830",
+    "https://mall-test.lxi-tech.com:15815",
+    "https://mall-test.lxi-tech.com:15816",
+    "wss://mall-test.lxi-tech.com:15830",
     "h7kP9xR2vLmQwE5t"
 };
 
@@ -43,9 +43,9 @@ const ServerConfig DEFAULT_DEV_CONFIG = {
 };
 
 const ServerConfig DEFAULT_LOCAL_CONFIG = {
-    "http://192.168.3.47:9082",
-    "http://192.168.3.47:9084",
-    "ws://192.168.3.47:9085",
+    "http://192.168.0.25:9082",
+    "http://192.168.0.25:9084",
+    "ws://192.168.0.25:9085",
     "h7kP9xR2vLmQwE5t"
 };
 

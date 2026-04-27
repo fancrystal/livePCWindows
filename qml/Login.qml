@@ -124,7 +124,7 @@ Rectangle {
                 when: isLoggingIn || loginError !== ""
             }
 
-            Text { text: "手机号"; color: Qt.rgba(1,1,1,0.6); font.pixelSize: 12 }
+            Text { text: "用户名"; color: Qt.rgba(1,1,1,0.6); font.pixelSize: 12 }
 
             Rectangle {
                 width: parent.width
@@ -147,20 +147,11 @@ Rectangle {
                     }
                     TextField {
                         id: accountField
-                        placeholderText: "请输入手机号"
+                        placeholderText: "请输入用户名"
                         color: "#222222"
                         background: Rectangle { color: "transparent"; border.width: 0 }
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        maximumLength: 11
-                        validator: RegularExpressionValidator { regularExpression: /[0-9]*/ }
-                        onTextChanged: {
-                            // 移除非数字字符
-                            var filtered = text.replace(/[^0-9]/g, '')
-                            if (text !== filtered) {
-                                text = filtered
-                            }
-                        }
                     }
                 }
             }
@@ -434,16 +425,8 @@ Rectangle {
         loginError = ""
         statusText.text = ""
 
-        // QML端验证手机号格式
-        var phoneRegex = /^1[3-9]\d{9}$/
         if (phone === "") {
-            loginError = "请输入手机号"
-            statusText.text = loginError
-            statusText.color = "#ff6b6b"
-            return
-        }
-        if (!phoneRegex.test(phone)) {
-            loginError = "请输入有效的手机号（11位数字）"
+            loginError = "请输入用户名"
             statusText.text = loginError
             statusText.color = "#ff6b6b"
             return
@@ -513,17 +496,13 @@ Rectangle {
         console.log("Login.qml component completed")
         if (typeof loginWindow !== 'undefined') {
             console.log("loginWindow is defined")
-            // 检查是否有保存的凭据且是有效手机号
+            // 检查是否有保存的凭据
             if (loginWindow.qmlHasSavedCredentials()) {
-                var savedPhone = loginWindow.qmlGetSavedUsername()
-                console.log("Saved username: " + savedPhone)
-                // 验证保存的用户名是否是有效手机号
-                var phoneRegex = /^1[3-9]\d{9}$/
-                if (phoneRegex.test(savedPhone)) {
-                    accountField.text = savedPhone
+                var savedUsername = loginWindow.qmlGetSavedUsername()
+                console.log("Saved username: " + savedUsername)
+                if (savedUsername !== "") {
+                    accountField.text = savedUsername
                     passwordField.text = loginWindow.qmlGetSavedPassword()
-                } else {
-                    console.log("Saved username is not a valid phone number, clearing...")
                 }
             }
         } else {
@@ -535,21 +514,21 @@ Rectangle {
     Connections {
         target: loginWindow
 
-        function onLoginFailed(errorMsg) {
-            console.log("QML onLoginFailed: " + errorMsg)
+        function onLogin_failed(errorMsg) {
+            console.log("QML onLogin_failed: " + errorMsg)
             handleLoginFailed(errorMsg)
         }
 
-        function onLoginSuccess() {
-            console.log("QML onLoginSuccess called")
+        function onLogin_success() {
+            console.log("QML onLogin_success called")
             isLoggingIn = false
             loginStatus = "登录成功！"
             statusText.text = "登录成功！"
             statusText.color = "#4aa6ff"
         }
 
-        function onLocalStreamSuccess(rtmpUrl) {
-            console.log("QML onLocalStreamSuccess: " + rtmpUrl)
+        function onLocal_stream_success(rtmpUrl) {
+            console.log("QML onLocal_stream_success: " + rtmpUrl)
             isLoggingIn = false
             loginStatus = "正在进入推流..."
             statusText.text = "正在进入推流..."
