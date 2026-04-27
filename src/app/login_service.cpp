@@ -55,6 +55,13 @@ bool LoginService::login(const QString &loginUrl, const QString &key, const QStr
     // 发送POST请求
     HttpClient* client = HttpClient::instance();
     LOG_INFO(QString("Sending login request to: %1").arg(url).toStdString());
+    LOG_INFO(QString("Login request body: %1")
+                 .arg(QString::fromUtf8(QJsonDocument(postData).toJson(QJsonDocument::Compact)))
+                 .toStdString());
+    LOG_INFO(QString("Login request raw username: %1, password length: %2")
+                 .arg(username)
+                 .arg(password.length())
+                 .toStdString());
     QString httpErrMsg;
     QJsonObject response = client->post(url, postData, httpErrMsg);
 

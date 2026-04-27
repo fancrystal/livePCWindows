@@ -26,7 +26,6 @@ class ClientService
 public:
     static ClientService* instance();
 
-    bool login(const QString &logUrl, const QString &key, const QString &username, const QString &password, QString &userID, QString &token);
 #if 0
     bool getStreamAddresses(const QString &userId, const QString &token, QString &rtmpURL, QString &srtURL,
                             QString &liveStartTime, QString &liveEndTime, QString &liveID, QString &errMessage);
@@ -57,9 +56,9 @@ private:
     void parseLiveListJson(const QJsonObject& json, QList<LiveItem>& liveList, int& totalCount);
     
     // 解析单个插播视频JSON
-    void parseInsertFileJson(const QJsonObject& recordJson, InsertFileItem& fileItem);
+    void parseInsertFileJson(const QJsonObject& recordJson, InsertFileItem& fileItem, const QString& sassUrl);
     // 解析插播视频列表JSON
-    void parseInsertVideolistJson(const QJsonObject& json, QList<InsertFileItem>& insertFileList, int& totalCount);
+    void parseInsertVideolistJson(const QJsonObject& json, QList<InsertFileItem>& insertFileList, int& totalCount, const QString& sassUrl);
     void parseInsertFile(const QJsonObject& jsonArr, InsertFileItem& fileItem);
 
     static ClientService* m_instance;

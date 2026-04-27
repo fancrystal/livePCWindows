@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QStringList>
+#include <QUrl>
 
 namespace {
 QString makeAuthorizationHeader(const QString& token)
@@ -36,6 +37,43 @@ QDateTime parseApiDateTime(const QString& value)
     QDateTime isoParsed = QDateTime::fromString(trimmed, Qt::ISODate);
     return isoParsed;
 }
+
+QString originFromUrl(const QString& value, bool keepPort)
+{
+    QUrl url(value.trimmed());
+    if (!url.isValid() || url.scheme().isEmpty() || url.host().isEmpty()) {
+        return QString();
+    }
+
+    QString origin = QString("%1://%2").arg(url.scheme(), url.host());
+    if (keepPort && url.port() > 0) {
+        origin += QString(":%1").arg(url.port());
+    }
+    return origin;
+}
+
+QString buildDownloadUrlFromFileKey(const QString& baseUrl, const QString& fileKey, const QString& assetUrl)
+{
+    const QString trimmedFileKey = fileKey.trimmed();
+    if (trimmedFileKey.startsWith("http://") || trimmedFileKey.startsWith("https://")) {
+        return trimmedFileKey;
+    }
+
+    QString normalizedBaseUrl = originFromUrl(assetUrl, true);
+    if (normalizedBaseUrl.isEmpty()) {
+        normalizedBaseUrl = originFromUrl(baseUrl, false);
+    }
+
+    QString normalizedFileKey = trimmedFileKey;
+    while (normalizedFileKey.startsWith('/')) {
+        normalizedFileKey.remove(0, 1);
+    }
+
+    if (normalizedBaseUrl.isEmpty()) {
+        return normalizedFileKey;
+    }
+    return QString("%1/%2").arg(normalizedBaseUrl, normalizedFileKey);
+}
 }
 
 ClientService* ClientService::m_instance = nullptr;
@@ -48,41 +86,6 @@ ClientService* ClientService::instance()
         m_instance = new ClientService();
     }
     return m_instance;
-}
-
-bool ClientService::login(const QString &logUrl,  const QString &key, const QString &username, const QString &password, QString &userID, QString &token)
-{
-    QString encryptedUserTel = EncryptionUtils::encryptAES128_ECB(username, key);
-    QString encryptedUserPwd = EncryptionUtils::encryptAES128_ECB(password, key);
-
-    if (logUrl.isEmpty() || encryptedUserTel.isEmpty() || encryptedUserPwd.isEmpty()) {
-        LOG_WARNING("Failed to encrypt login data (logUrl, username or password)");
-        return false;
-    }
-
-    QJsonObject postData;
-    postData["userTel"] = encryptedUserTel;
-    postData["userPwd"] = encryptedUserPwd;
-    QString url = QString("%1/auth/ClientPwdLogin").arg(logUrl);
-
-    HttpClient* client = HttpClient::instance();
-    QString httpErrMsg;
-    QJsonObject response = client->post(url, postData, httpErrMsg);
-
-    if (!httpErrMsg.isEmpty()) {
-        LOG_WARNING(QString("Login HTTP request failed: %1").arg(httpErrMsg).toStdString());
-        return false;
-    }
-
-    if(response["code"].toInt() == 200) {
-        token = response["data"].toObject()["token"].toString();
-        userID = response["data"].toObject()["userId"].toString();
-        LOG_INFO(QString("Login succeed, token:%1, userID: %2").arg(token).arg(userID).toStdString());
-        return true;
-    }
-
-    LOG_WARNING(QString("Login failed:%1").arg(response["msg"].toString()).toStdString());
-    return false;
 }
 
 #if 0
@@ -274,7 +277,7 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
     }
 
     
-    parseInsertVideolistJson(response["data"].toObject(), insertFileList, totalCount);
+    parseInsertVideolistJson(response["data"].toObject(), insertFileList, totalCount, sassUrl);
 
     LOG_INFO(QString("getInsertVideolist EXIT - Parsed %1 files, totalCount: %2").arg(insertFileList.size()).arg(totalCount).toStdString());
 
@@ -282,7 +285,7 @@ bool ClientService::getInsertVideolist(const QString& sassUrl, const QString& us
 }
 
 
-void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFileItem& fileItem)
+void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFileItem& fileItem, const QString& sassUrl)
 {
     LOG_INFO(QString("parseInsertFileJson ENTER - recordJson keys: %1")
              .arg(QStringList(recordJson.keys()).join(",")).toStdString());
@@ -307,14 +310,10 @@ void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFil
         LOG_INFO(QString("parseInsertFileJson - downloadUrl from transcodingFileMp4Url: %1")
                  .arg(fileItem.downloadUrl).toStdString());
     } else if (recordJson.contains("fileKey") && !recordJson["fileKey"].toString().isEmpty()) {
-        
-        QString fileKey = recordJson["fileKey"].toString();
-        if (fileKey.startsWith("http://") || fileKey.startsWith("https://")) {
-            fileItem.downloadUrl = fileKey;
-        } else {
-            
-            fileItem.downloadUrl = QString("https://stor.lxi-tech.com/%1").arg(fileKey);
-        }
+        fileItem.downloadUrl = buildDownloadUrlFromFileKey(
+            sassUrl,
+            recordJson["fileKey"].toString(),
+            recordJson["videoCoverUrl"].toString());
         LOG_INFO(QString("parseInsertFileJson - downloadUrl constructed: %1")
                  .arg(fileItem.downloadUrl).toStdString());
     } else {
@@ -362,7 +361,7 @@ void ClientService::parseInsertFileJson(const QJsonObject& recordJson, InsertFil
     fileItem.durationMs = durationMs;
 }
 
-void ClientService::parseInsertVideolistJson(const QJsonObject& json, QList<InsertFileItem>& insertFileList, int& totalCount)
+void ClientService::parseInsertVideolistJson(const QJsonObject& json, QList<InsertFileItem>& insertFileList, int& totalCount, const QString& sassUrl)
 {
     totalCount = json["totalCount"].toInt();  
     QJsonArray records = json["records"].toArray();
@@ -370,7 +369,7 @@ void ClientService::parseInsertVideolistJson(const QJsonObject& json, QList<Inse
     for (const auto& recordVal : records) {
         QJsonObject recordJson = recordVal.toObject();
         InsertFileItem fileItem;
-        parseInsertFileJson(recordJson, fileItem);
+        parseInsertFileJson(recordJson, fileItem, sassUrl);
         insertFileList.emplace_back(fileItem);
     }
 }
@@ -414,7 +413,7 @@ bool ClientService::getInsertFile(const QString& sassUrl, const QString& userId,
 
     
     QJsonObject dataJson = response["data"].toObject();
-    parseInsertFileJson(dataJson, fileItem);
+    parseInsertFileJson(dataJson, fileItem, sassUrl);
     return true;
 }
 

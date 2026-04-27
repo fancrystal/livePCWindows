@@ -272,8 +272,16 @@ bool HttpClient::downloadFile(const QString& url, const QString& saveAsFilePath,
 
     file.close();
 
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+
     if (res != CURLE_OK) {
         errMsg = QString("下载失败 (CURL error): %1").arg(curl_easy_strerror(res));
+        curl_easy_cleanup(curl);
+        return false;
+    } else if (httpCode >= 400) {
+        errMsg = QString("下载失败 (HTTP 错误): 状态码 %1").arg(httpCode);
+        QFile::remove(saveAsFilePath);
         curl_easy_cleanup(curl);
         return false;
     }
@@ -373,6 +381,7 @@ bool HttpClient::downloadFileWithProgress(const QString& url, const QString& sav
     } else if (httpCode >= 400) {
         errMsg = QString("下载失败 (HTTP 错误): 状态码 %1").arg(httpCode);
         file.close();
+        QFile::remove(saveAsFilePath);
         curl_easy_cleanup(curl);
         return false;
     }

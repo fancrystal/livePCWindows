@@ -4,8 +4,58 @@
 #include <QThread>
 #include <QFile>
 #include <QtConcurrent/QtConcurrent>
+#include <algorithm>
+#include <cmath>
 
 // InsertFileItem 已在 http/live_item.h 中定义
+
+namespace {
+qint64 parseVideoSizeToBytes(const QString& videoSize)
+{
+    const QString normalized = videoSize.trimmed().toUpper();
+    if (normalized.isEmpty()) {
+        return 0;
+    }
+
+    int suffixIndex = 0;
+    while (suffixIndex < normalized.size() &&
+           (normalized.at(suffixIndex).isDigit() || normalized.at(suffixIndex) == '.')) {
+        ++suffixIndex;
+    }
+
+    bool ok = false;
+    double value = normalized.left(suffixIndex).trimmed().toDouble(&ok);
+    if (!ok || value <= 0.0) {
+        return 0;
+    }
+
+    if (normalized.contains("GB")) {
+        value *= 1024.0 * 1024.0 * 1024.0;
+    } else if (normalized.contains("MB")) {
+        value *= 1024.0 * 1024.0;
+    } else if (normalized.contains("KB")) {
+        value *= 1024.0;
+    }
+
+    return static_cast<qint64>(std::llround(value));
+}
+
+bool isCacheSizeValid(qint64 actualBytes, const QString& expectedSizeText)
+{
+    if (actualBytes <= 0) {
+        return false;
+    }
+
+    const qint64 expectedBytes = parseVideoSizeToBytes(expectedSizeText);
+    if (expectedBytes <= 0) {
+        return actualBytes > 0;
+    }
+
+    const qint64 diff = actualBytes > expectedBytes ? actualBytes - expectedBytes : expectedBytes - actualBytes;
+    const qint64 tolerance = (std::max)(static_cast<qint64>(expectedBytes * 0.05), static_cast<qint64>(16 * 1024));
+    return diff <= tolerance;
+}
+}
 
 InsertFileManager* InsertFileManager::instance() {
     static InsertFileManager instance;
@@ -87,9 +137,15 @@ void InsertFileManager::refreshInsertFiles(const QString& roomId) {
             // 检查文件是否已下载
             QString localPath = sharedItem->getLocalCachePath();
             QFile file(localPath);
-            if (file.exists() && file.size() > 0) {
+            if (file.exists() && isCacheSizeValid(file.size(), sharedItem->videoSize)) {
                 sharedItem->status = InsertFileStatus::DOWNLOAD_COMPLETED;
                 LOG_INFO("InsertFileManager: File already downloaded: " + sharedItem->fileName.toStdString());
+            } else if (file.exists()) {
+                LOG_WARNING("InsertFileManager: Removing invalid cache for " +
+                            sharedItem->fileName.toStdString() +
+                            ", local_size=" + std::to_string(file.size()) +
+                            ", expected_size=" + sharedItem->videoSize.toStdString());
+                QFile::remove(localPath);
             }
         }
     }

@@ -558,7 +558,18 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0);  // 低延迟模式
             av_opt_set(codec_ctx_->priv_data, "bf", "0", 0);       // 禁用 B 帧（NVENC 专用选项）
             codec_ctx_->max_b_frames = 0;
-            LOG_INFO("H264Encoder: configured NVENC: zero-latency, no B-frames");
+
+            // CBR bitrate control — without this NVENC runs unconstrained (CQP/VBR default),
+            // producing IDR frames up to 57 KB (13.8 Mbps) on a 2.5 Mbps target stream,
+            // which overflows the send queue and causes viewer-side stutter every 2 seconds.
+            codec_ctx_->bit_rate = config_.bitrate;
+            codec_ctx_->rc_max_rate = config_.bitrate;
+            // VBV buffer: 2× bitrate (standard for live streaming, smooths IDR bursts).
+            codec_ctx_->rc_buffer_size = config_.bitrate * 2;
+            av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);
+
+            LOG_INFO("H264Encoder: configured NVENC: zero-latency, no B-frames, CBR " +
+                     std::to_string(config_.bitrate / 1000) + " kbps");
         } else if (enc_name.find("amf") != std::string::npos) {
             // AMF: usage=transcoding 产出 avcC 格式 extradata
             av_opt_set(codec_ctx_->priv_data, "usage", "transcoding", 0);

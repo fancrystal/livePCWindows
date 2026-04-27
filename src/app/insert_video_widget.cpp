@@ -551,12 +551,16 @@ void InsertVideoWidget::updateVideoTable() {
         tableWidget_->setItem(row, 1, nameItem);
 
         // 大小列
-        qint64 fileSize = 0;
-        QString localPath = file->getLocalCachePath();
-        if (QFile::exists(localPath)) {
-            fileSize = QFile(localPath).size();
+        QString sizeText = file->videoSize.trimmed();
+        if (sizeText.isEmpty()) {
+            qint64 fileSize = 0;
+            QString localPath = file->getLocalCachePath();
+            if (QFile::exists(localPath)) {
+                fileSize = QFile(localPath).size();
+            }
+            sizeText = formatFileSize(fileSize);
         }
-        auto* sizeItem = new QTableWidgetItem(formatFileSize(fileSize));
+        auto* sizeItem = new QTableWidgetItem(sizeText);
         sizeItem->setTextAlignment(Qt::AlignCenter);
         tableWidget_->setItem(row, 2, sizeItem);
 
