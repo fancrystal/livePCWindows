@@ -195,25 +195,27 @@ int main(int argc, char *argv[]) {
 
                 // 连接返回直播列表信号
                 QObject::connect(main_window, &live_assistant::MainWindow::request_return_to_live_list,
-                    [main_window, &live_list_window]() {
+                    [&main_window, &live_list_window]() {
                     LOG_INFO("User requested to return to live list");
 
                     // 先隐藏主窗口，保持响应
-                    main_window->hide();
+                    live_assistant::MainWindow* window_to_destroy = main_window;
+                    main_window = nullptr;
+                    if (!window_to_destroy) {
+                        return;
+                    }
 
-                    // 异步清理资源，不阻塞UI
-                    QTimer::singleShot(50, main_window, [main_window]() {
-                        LOG_INFO("Async cleanup started");
-                        main_window->stop_all_capture_sources();
-                        main_window->save_scenes_config();
-                        LOG_INFO("Async cleanup finished");
-                    });
-
-                    // 显示直播列表窗口
                     if (live_list_window) {
                         live_list_window->show();
                         live_list_window->activateWindow();
                     }
+
+                    window_to_destroy->hide();
+                    window_to_destroy->deleteLater();
+
+                    // 异步清理资源，不阻塞UI
+
+                    // 显示直播列表窗口
                 });
             }
 
@@ -290,19 +292,20 @@ int main(int argc, char *argv[]) {
 
             // 本地推流模式：退出时直接退出程序，不返回直播列表
             QObject::connect(main_window, &live_assistant::MainWindow::request_return_to_live_list,
-                [main_window]() {
+                [&main_window]() {
                 LOG_INFO("Local stream mode - exiting application");
 
                 // 先隐藏主窗口
-                main_window->hide();
+                live_assistant::MainWindow* window_to_destroy = main_window;
+                main_window = nullptr;
+                if (!window_to_destroy) {
+                    return;
+                }
+
+                window_to_destroy->hide();
+                window_to_destroy->deleteLater();
 
                 // 异步清理资源
-                QTimer::singleShot(50, main_window, [main_window]() {
-                    LOG_INFO("Async cleanup started");
-                    main_window->stop_all_capture_sources();
-                    main_window->save_scenes_config();
-                    LOG_INFO("Async cleanup finished");
-                });
 
                 // 延迟退出程序
                 QTimer::singleShot(500, []() {

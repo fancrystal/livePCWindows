@@ -183,6 +183,62 @@ AVRational H264Encoder::get_time_base() const {
     return AVRational{1, 1000};
 }
 
+void H264Encoder::configure_codec_ctx_for_streaming(AVCodecContext* ctx,
+                                                     const AVCodec* codec,
+                                                     const VideoEncoderConfig& cfg) {
+    // Strict 2-second GOP — required for live-streaming CDN compatibility.
+    int fps = cfg.fps > 0 ? cfg.fps : 30;
+    int gop = cfg.gop > 0 ? cfg.gop : fps * 2;
+    ctx->gop_size    = gop;
+    ctx->keyint_min  = fps;   // minimum 1-second keyframe interval (scene-cut suppressed in x264)
+    ctx->max_b_frames = 0;
+
+    // CBR: all three fields together cap IDR-frame bursts and prevent send-queue overflows.
+    // rc_max_rate == bit_rate is also the QSV signal to select CBR mode.
+    ctx->bit_rate       = cfg.bitrate;
+    ctx->rc_max_rate    = cfg.bitrate;
+    ctx->rc_buffer_size = static_cast<int>(static_cast<int64_t>(cfg.bitrate) * 2);  // VBV: 2× bitrate
+
+    if (!codec || !ctx->priv_data) return;
+    const std::string enc = codec->name;
+
+    if (enc.find("nvenc") != std::string::npos) {
+        av_opt_set(ctx->priv_data, "rc",          "cbr", 0);
+        av_opt_set(ctx->priv_data, "delay",       "0",   0);
+        av_opt_set(ctx->priv_data, "zerolatency", "1",   0);
+        av_opt_set(ctx->priv_data, "bf",          "0",   0);
+        LOG_INFO("[H264Encoder] NVENC: CBR " + std::to_string(cfg.bitrate / 1000) +
+                 " kbps, gop=" + std::to_string(gop));
+    } else if (enc.find("amf") != std::string::npos) {
+        av_opt_set(ctx->priv_data, "rc",    "cbr",         0);
+        av_opt_set(ctx->priv_data, "usage", "transcoding", 0);
+        LOG_INFO("[H264Encoder] AMF: CBR " + std::to_string(cfg.bitrate / 1000) +
+                 " kbps, gop=" + std::to_string(gop));
+    } else if (enc.find("qsv") != std::string::npos) {
+        // QSV infers CBR when bit_rate == rc_max_rate; no separate rc option needed.
+        av_opt_set(ctx->priv_data, "async_depth", "1", 0);
+        LOG_INFO("[H264Encoder] QSV: CBR " + std::to_string(cfg.bitrate / 1000) +
+                 " kbps, gop=" + std::to_string(gop) + ", async_depth=1");
+    } else if (enc.find("libx264") != std::string::npos) {
+        // Profile must be set via codec_ctx_->profile — x264_param_parse() does NOT call
+        // x264_param_apply_profile(), so "profile=baseline" in x264-params is silently ignored.
+        ctx->profile = FF_PROFILE_H264_BASELINE;
+        av_opt_set(ctx->priv_data, "preset", preset_to_string(cfg.preset).c_str(), 0);
+        av_opt_set(ctx->priv_data, "tune",   "zerolatency", 0);
+
+        // Level 3.1 supports up to 3600 MBs (macroblocks per frame); level 4.0 supports 8192 MBs.
+        // Using macroblock count is more accurate than width/height comparison alone.
+        int mbs = ((cfg.width + 15) / 16) * ((cfg.height + 15) / 16);
+        const char* level = (mbs > 3600) ? "40" : "31";
+        std::string x264p = std::string("ref=1:level=") + level
+            + ":scenecut=0:forced-idr=1:threads=4:annexb=0:repeat-headers=0"
+            + ":nal-hrd=cbr:force-cfr=1";
+        av_opt_set(ctx->priv_data, "x264-params", x264p.c_str(), 0);
+        LOG_INFO("[H264Encoder] libx264: CBR " + std::to_string(cfg.bitrate / 1000) +
+                 " kbps, gop=" + std::to_string(gop) + ", profile=baseline, x264-params=" + x264p);
+    }
+}
+
 ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     LOG_INFO("Initializing H.264 encoder (FFmpeg)");
 
@@ -451,15 +507,6 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     codec_ctx_->thread_count = 0;  // 0 = 让编码器自行决定
     codec_ctx_->thread_type = 0;   // 由编码器自行决定
 
-    // ✅ GOP: 固定 2 秒关键帧间隔
-    int gop_size = config_.gop > 0 ? config_.gop : (config_.fps > 0 ? config_.fps * 2 : 60);
-    codec_ctx_->gop_size = gop_size;
-    codec_ctx_->keyint_min = config_.fps;  // 最小关键帧间隔 = 1秒
-
-    LOG_INFO("[H264Encoder] GOP size set to " + std::to_string(gop_size) + " frames (" +
-             std::to_string(gop_size / (config_.fps > 0 ? config_.fps : 30)) + " seconds @ " +
-             std::to_string(config_.fps) + " fps)");
-
     // 🔧 像素格式设置
     if (is_qsv_encoder_) {
         // QSV 编码器需要使用 AV_PIX_FMT_QSV 格式
@@ -543,99 +590,15 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
     // For FLV/RTMP, extradata is typically required
     codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    // 🔧 硬件编码器公共配置：强制 avcC 格式（非 Annex-B）
-    // NVENC/AMF 默认可能生成 Annex-B 格式的 extradata（start code 00 00 00 01），
-    // FLV/RTMP 容器要求 avcC 格式（length-prefixed NAL units，首字节 0x01）
-    if (codec_ctx_->priv_data && codec_) {
-        std::string enc_name = codec_->name;
+    // Configure GOP, CBR bitrate constraints, and all encoder-specific options.
+    // pix_fmt and hw_frames_ctx must be set before this call.
+    configure_codec_ctx_for_streaming(codec_ctx_, codec_, config_);
 
-        if (enc_name.find("nvenc") != std::string::npos) {
-            // NVENC extradata 格式：AV_CODEC_FLAG_GLOBAL_HEADER（已设置）会使 FFmpeg 的
-            // NVENC 封装器将 SPS/PPS 输出到 extradata（avcC 格式）。
-            // 注意：FFmpeg NVENC 封装器不存在 h264_demuxer 选项，设置它会静默失效。
-            // 若 extradata 仍为 Annex-B，rtmp_pusher 的 convert_annexb_to_avcc() 会兜底转换。
-            av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);    // 零延迟：不缓冲帧
-            av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0);  // 低延迟模式
-            av_opt_set(codec_ctx_->priv_data, "bf", "0", 0);       // 禁用 B 帧（NVENC 专用选项）
-            codec_ctx_->max_b_frames = 0;
-
-            // CBR bitrate control — without this NVENC runs unconstrained (CQP/VBR default),
-            // producing IDR frames up to 57 KB (13.8 Mbps) on a 2.5 Mbps target stream,
-            // which overflows the send queue and causes viewer-side stutter every 2 seconds.
-            codec_ctx_->bit_rate = config_.bitrate;
-            codec_ctx_->rc_max_rate = config_.bitrate;
-            // VBV buffer: 2× bitrate (standard for live streaming, smooths IDR bursts).
-            codec_ctx_->rc_buffer_size = config_.bitrate * 2;
-            av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);
-
-            LOG_INFO("H264Encoder: configured NVENC: zero-latency, no B-frames, CBR " +
-                     std::to_string(config_.bitrate / 1000) + " kbps");
-        } else if (enc_name.find("amf") != std::string::npos) {
-            // AMF: usage=transcoding 产出 avcC 格式 extradata
-            av_opt_set(codec_ctx_->priv_data, "usage", "transcoding", 0);
-            codec_ctx_->max_b_frames = 0;
-            LOG_INFO("H264Encoder: configured AMF: avcC format (usage=transcoding)");
-        } else if (enc_name.find("qsv") != std::string::npos) {
-            // QSV: AV_CODEC_FLAG_GLOBAL_HEADER（已设置）会将 SPS/PPS 写入 extradata（avcC 格式）。
-            // async_depth=1 减少内部流水线延迟（默认为 4）。
-            av_opt_set(codec_ctx_->priv_data, "async_depth", "1", 0);
-            codec_ctx_->max_b_frames = 0;
-            LOG_INFO("H264Encoder: configured QSV: async_depth=1, no B-frames");
-        }
-    }
-
-    // x264 options (works when underlying encoder is libx264)
-    // ✅ 参考原项目 qt-live-client 的配置
-    if (codec_ctx_->priv_data) {
-        av_opt_set(codec_ctx_->priv_data, "preset", preset_to_string(config_.preset).c_str(), 0);
-        av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
-
-        // Only set x264-specific params when using libx264 (software) encoder.
-        if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
-            // ✅ 使用简单可靠的 x264-params
-            // 注意：不要设置 slice-max-size 和 slices 参数，让编码器自动处理
-            // 设置过小的 slice-max-size 会导致 slice 数量过多，服务器解码器无法处理
-
-            // 根据分辨率选择合适的 H.264 level，竖屏（height > width）使用 level 4.0
-            // 以确保 SPS 中的级别参数对各类 CDN 和播放器具有最佳兼容性
-            // Level 3.1 最大帧尺寸 3600 MBs（1280×720），Level 4.0 最大 8192 MBs（1920×1080）
-            const char* h264_level = (config_.height > config_.width) ? "40" : "31";
-            std::string x264_params = std::string("ref=1:profile=baseline:level=") + h264_level;
-
-            // ✅ 禁用场景检测，严格按照 GOP 间隔生成 IDR 关键帧
-            // scenecut=0 表示禁用场景检测，确保第一帧和每 GOP 帧都生成 IDR
-            x264_params += ":scenecut=0";
-
-            // ✅ 强制第一帧为 IDR 帧，这是解决音视频同步问题的关键
-            // 没有这个参数，第一个 I 帧可能不是 IDR，会导致推流时大量丢帧
-            x264_params += ":forced-idr=1";
-
-            // ✅ 使用多线程编码提升吞吐量
-            x264_params += ":threads=4";
-
-            // Force AVCC output (length-prefixed NAL units) for FLV/RTMP muxing.
-            // This avoids Annex-B start codes leaking into downstream packet handling.
-            x264_params += ":annexb=0";
-            x264_params += ":repeat-headers=0";
-
-            av_opt_set(codec_ctx_->priv_data, "x264-params", x264_params.c_str(), 0);
-            LOG_INFO(std::string("H264Encoder: set x264-params: ") + x264_params);
-        } else {
-            LOG_INFO("H264Encoder: codec not libx264, skipping x264-params configuration");
-        }
-    }
-
-    // ✅ 参考原项目：使用 AVDictionary 设置码率控制参数
+    // max_delay is a generic FFmpeg AVOption (microseconds); pass it via AVDict for libx264
+    // to cap initial buffering without affecting the encoding parameters set above.
     AVDictionary* opts = nullptr;
     if (codec_ && std::string(codec_->name).find("libx264") != std::string::npos) {
-        // 软件编码器：设置 VBR 码率控制
-        av_dict_set(&opts, "rc", "vbr", 0);
-        av_dict_set(&opts, "b", (std::to_string(config_.bitrate / 1000) + "k").c_str(), 0);
-        av_dict_set(&opts, "maxrate", (std::to_string(config_.max_bitrate / 1000) + "k").c_str(), 0);
-        av_dict_set(&opts, "bufsize", (std::to_string((config_.max_bitrate / 1000) * 2) + "k").c_str(), 0);
         av_dict_set(&opts, "max_delay", "20000000", 0);
-        LOG_INFO("[H264Encoder] Set libx264 bitrate: " + std::to_string(config_.bitrate / 1000) + "k, maxrate: " +
-                 std::to_string(config_.max_bitrate / 1000) + "k");
     }
 
     if (avcodec_open2(codec_ctx_, codec_, &opts) < 0) {
@@ -1419,7 +1382,8 @@ ErrorCode H264Encoder::reset() {
 // 🔧 切换到下一个编码器（按优先级顺序）
 bool H264Encoder::switch_to_next_encoder() {
     if (has_exhausted_encoders_) {
-        return true;  // 已经尝试了所有编码器
+        LOG_ERROR("[H264Encoder] All encoders already exhausted, cannot switch");
+        return false;
     }
 
     // 尝试切换到下一个编码器
@@ -1464,18 +1428,13 @@ bool H264Encoder::switch_to_next_encoder() {
         return false;
     }
 
-    // 配置新编码器
+    // 配置新编码器基础字段（GOP/CBR 由 configure_codec_ctx_for_streaming 统一设置）
     new_codec_ctx->codec_type = AVMEDIA_TYPE_VIDEO;
     new_codec_ctx->codec_id = AV_CODEC_ID_H264;
     new_codec_ctx->width = old_config.width;
     new_codec_ctx->height = old_config.height;
     new_codec_ctx->time_base = get_time_base();
     new_codec_ctx->framerate = AVRational{old_config.fps > 0 ? old_config.fps : 30, 1};
-    // ✅ GOP: 参考原项目，使用 1 秒关键帧间隔
-    new_codec_ctx->gop_size = old_config.gop > 0 ? old_config.gop : old_config.fps;
-    new_codec_ctx->keyint_min = old_config.fps / 2;
-    new_codec_ctx->max_b_frames = 0;
-    new_codec_ctx->bit_rate = old_config.bitrate;
     new_codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     // 根据编码器类型设置像素格式和特殊配置
@@ -1522,37 +1481,24 @@ bool H264Encoder::switch_to_next_encoder() {
         new_codec_ctx->hw_frames_ctx = av_buffer_ref(new_hw_frame_ctx);
         av_buffer_unref(&new_hw_frame_ctx);
         av_buffer_unref(&new_hw_device_ctx);
-        // QSV: 强制 avcC 格式
-        if (new_codec_ctx->priv_data) {
-            av_opt_set(new_codec_ctx->priv_data, "h264_demuxer", "avc", 0);
-            LOG_INFO("[H264Encoder] Fallback QSV: set h264_demuxer=avc for avcC format");
-        }
     } else if (next_encoder_name == "libx264") {
         new_codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-        if (new_codec_ctx->priv_data) {
-            av_opt_set(new_codec_ctx->priv_data, "preset", "ultrafast", 0);
-            av_opt_set(new_codec_ctx->priv_data, "tune", "zerolatency", 0);
-            std::string x264_params = "ref=1:slice-max-size=400:slices=4:profile=baseline:annexb=0:repeat-headers=0";
-            av_opt_set(new_codec_ctx->priv_data, "x264-params", x264_params.c_str(), 0);
-        }
     } else {
-        // NVENC, AMF 等硬件编码器：强制 avcC 格式
         new_codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-        if (new_codec_ctx->priv_data) {
-            if (next_encoder_name.find("nvenc") != std::string::npos) {
-                av_opt_set(new_codec_ctx->priv_data, "h264_demuxer", "avc", 0);
-                av_opt_set(new_codec_ctx->priv_data, "delay", "0", 0);
-                av_opt_set(new_codec_ctx->priv_data, "tune", "ll", 0);
-                LOG_INFO("[H264Encoder] Fallback NVENC: set h264_demuxer=avc for avcC format");
-            } else if (next_encoder_name.find("amf") != std::string::npos) {
-                av_opt_set(new_codec_ctx->priv_data, "usage", "transcoding", 0);
-                LOG_INFO("[H264Encoder] Fallback AMF: set usage=transcoding for avcC format");
-            }
-        }
+    }
+
+    // Apply identical GOP + CBR settings as the main init() path.
+    configure_codec_ctx_for_streaming(new_codec_ctx, next_codec, old_config);
+
+    // max_delay AVOption is only meaningful for libx264.
+    AVDictionary* fallback_opts = nullptr;
+    if (next_encoder_name.find("libx264") != std::string::npos) {
+        av_dict_set(&fallback_opts, "max_delay", "20000000", 0);
     }
 
     // 尝试打开新编码器
-    if (avcodec_open2(new_codec_ctx, next_codec, nullptr) < 0) {
+    if (avcodec_open2(new_codec_ctx, next_codec, &fallback_opts) < 0) {
+        av_dict_free(&fallback_opts);
         char errbuf[128];
         av_strerror(AVERROR_UNKNOWN, errbuf, sizeof(errbuf));
         LOG_ERROR("[H264Encoder] Failed to open encoder '" + next_encoder_name + "': " + errbuf);
@@ -1560,18 +1506,30 @@ bool H264Encoder::switch_to_next_encoder() {
         // 释放新分配的资源
         avcodec_free_context(&new_codec_ctx);
 
-        // 释放旧编码器资源
+        // 释放旧编码器资源，同步清空成员指针防止 use-after-free
         if (old_codec_ctx) {
             avcodec_free_context(&old_codec_ctx);
+            codec_ctx_ = nullptr;
         }
         if (old_frame) {
             av_frame_free(&old_frame);
+            frame_ = nullptr;
         }
 
         // 继续尝试下一个编码器
         current_encoder_index_ = next_index;
         return switch_to_next_encoder();
     }
+
+    av_dict_free(&fallback_opts);
+
+    // 释放旧编码器的 QSV 硬件资源（新路径会按需重建）
+    if (hw_frame_)       { av_frame_free(&hw_frame_);         hw_frame_       = nullptr; }
+    if (sw_frame_)       { av_frame_free(&sw_frame_);         sw_frame_       = nullptr; }
+    if (d3d11va_frame_ctx_) { av_buffer_unref(&d3d11va_frame_ctx_); d3d11va_frame_ctx_ = nullptr; }
+    if (hw_frame_ctx_)   { av_buffer_unref(&hw_frame_ctx_);  hw_frame_ctx_   = nullptr; }
+    if (hw_device_ctx_)  { av_buffer_unref(&hw_device_ctx_); hw_device_ctx_  = nullptr; }
+    if (d3d11va_device_ctx_) { av_buffer_unref(&d3d11va_device_ctx_); d3d11va_device_ctx_ = nullptr; }
 
     // 新编码器创建成功，现在可以安全释放旧编码器资源
     if (old_codec_ctx) {
@@ -1583,6 +1541,9 @@ bool H264Encoder::switch_to_next_encoder() {
     codec_ctx_ = new_codec_ctx;
     current_encoder_index_ = next_index;
     is_qsv_encoder_ = next_is_qsv;
+
+    // 新编码器没有前帧上下文，第一帧必须是 IDR
+    force_keyframe_ = true;
 
     // 释放旧的 frame
     if (old_frame) {
@@ -1630,7 +1591,7 @@ bool H264Encoder::switch_to_next_encoder() {
 
     LOG_INFO("[H264Encoder] ✓ Successfully switched to encoder '" + next_encoder_name + "'");
     LOG_INFO("[H264Encoder] Encoding will continue with " + next_encoder_name);
-    LOG_ERROR("========================================");
+    LOG_INFO("========================================");
 
     return true;
 }

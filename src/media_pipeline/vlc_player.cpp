@@ -27,6 +27,10 @@ libvlc_instance_t* createVlcInstance() {
     const char* vlcArgs[] = {
         "--no-xlib",
         "--no-audio-time-stretch",
+        "--avcodec-hw=none",
+#if defined(Q_OS_WIN)
+        "--vout=wingdi",
+#endif
         "--no-video-title-show",  // 不显示视频标题
         "--quiet",                // 减少控制台输出
         "--verbose=0",
@@ -40,6 +44,10 @@ libvlc_instance_t* createVlcInstance() {
         const char* vlcArgsNoPlugin[] = {
             "--no-xlib",
             "--no-audio-time-stretch",
+            "--avcodec-hw=none",
+#if defined(Q_OS_WIN)
+            "--vout=wingdi",
+#endif
             "--quiet",
             "--verbose=0",
         };

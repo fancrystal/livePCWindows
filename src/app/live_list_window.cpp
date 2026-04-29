@@ -219,7 +219,7 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     if (ui) {
         // header background transparent dark
         ui->headerWidget->setStyleSheet(
-            "QWidget { background-color: rgba(20,12,16,0.5); }"
+            "QWidget { background-color: rgba(20,12,16,0.92); }"
         );
         // search box: semi-transparent, rounded
         ui->searchLineEdit->setStyleSheet(
@@ -248,10 +248,28 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     }
     // Set background image for central widget using Qt resource and remove borders
     if (ui && ui->centralwidget) {
-        ui->centralwidget->setContentsMargins(0,0,0,0);
         ui->centralwidget->setStyleSheet(
             "QWidget#centralwidget { background-image: url(:/images/livelist_back.png); background-repeat: no-repeat; background-position: center; background-attachment: fixed; border: none; }"
         );
+    }
+    // 消除所有层级的默认边距，确保 header 宽度与窗口一致
+    // QMainWindow 自身的 QMainWindowLayout 也有内部 margin，必须一起清零
+    if (layout()) {
+        layout()->setContentsMargins(0, 0, 0, 0);
+    }
+    if (ui && ui->centralwidget) {
+        ui->centralwidget->setContentsMargins(0, 0, 0, 0);
+    }
+    if (ui && ui->verticalLayout) {
+        ui->verticalLayout->setContentsMargins(0, 0, 0, 0);
+        ui->verticalLayout->setSpacing(0);
+    }
+    // header 高度：固定 52px（原 40px + 上下各 6px padding）
+    if (ui && ui->headerWidget) {
+        ui->headerWidget->setFixedHeight(52);
+        if (auto* hl = qobject_cast<QHBoxLayout*>(ui->headerWidget->layout())) {
+            hl->setContentsMargins(10, 6, 10, 6);
+        }
     }
 
     // Add frameless control buttons (minimize / close) into headerWidget
@@ -410,13 +428,40 @@ void LiveListWindow::setup_live_list() {
         ui->gridLayout->setHorizontalSpacing(18);
         ui->gridLayout->setVerticalSpacing(18);
         ui->gridLayout->setContentsMargins(8, 8, 8, 8);
-        ui->gridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        ui->gridLayout->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
     }
+
     
     // Pagination: display subset of live_list_ per page
     const int page_size = 8;
     int total_items = live_list_.size();
-    if (total_items == 0) return;
+    if (total_items == 0) {
+        // 空列表：加入 gridLayout 让布局系统管理尺寸，Expanding 策略撑满整个列表区
+        ui->gridLayout->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+
+        QWidget* emptyWidget = new QWidget();
+        emptyWidget->setObjectName("emptyStateWidget");
+        emptyWidget->setStyleSheet("background: transparent;");
+        emptyWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+        QVBoxLayout* vbox = new QVBoxLayout(emptyWidget);
+        vbox->setAlignment(Qt::AlignCenter);
+        vbox->setContentsMargins(0, 0, 0, 0);
+
+        QLabel* imgLabel = new QLabel();
+        imgLabel->setStyleSheet("background: transparent;");
+        imgLabel->setAlignment(Qt::AlignCenter);
+        QPixmap noItemPix(":/images/Frame noitem@2x.png");
+        if (!noItemPix.isNull()) {
+            imgLabel->setPixmap(noItemPix);
+        }
+        vbox->addWidget(imgLabel);
+
+        // 跨满 4 列 2 行，居中放置
+        ui->gridLayout->addWidget(emptyWidget, 0, 0, 2, 4, Qt::AlignCenter);
+        update_pagination();
+        return;
+    }
     total_pages_ = (total_items + page_size - 1) / page_size;
     if (current_page_ < 1) current_page_ = 1;
     if (current_page_ > total_pages_) current_page_ = total_pages_;
@@ -906,8 +951,10 @@ void LiveListWindow::update_pagination() {
         for (auto b : page_buttons) b->setVisible(false);
         ui->ellipsisLabel->setVisible(false);
         ui->lastPageButton->setVisible(false);
+        ui->paginationWidget->setVisible(false);
         return;
     }
+    ui->paginationWidget->setVisible(true);
 
     // sliding window of page buttons centered around current_page_
     int maxButtons = 5;
@@ -1060,6 +1107,7 @@ void LiveListWindow::resizeEvent(QResizeEvent* event) {
         ui->gridLayout->invalidate();
         ui->gridLayout->activate();
     }
+
 }
 
 } // namespace live_assistant

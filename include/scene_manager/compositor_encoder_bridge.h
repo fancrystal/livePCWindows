@@ -100,7 +100,9 @@ public:
                          int64_t timestamp, uint32_t sample_rate = 48000);
 
     // 设置 CanvasRenderer 用于推流捕获（回退方案：不使用 Compositor）
-    void set_canvas_renderer(std::shared_ptr<CanvasRenderer> renderer, std::shared_ptr<Scene> scene);
+    // NOTE: renderer 为非拥有裸指针，生命周期由 CanvasWidget::renderer_（unique_ptr）管理
+    // encoder_bridge_（C++ 成员）在 canvas_widget_（Qt child）之前析构，生命周期安全
+    void set_canvas_renderer(CanvasRenderer* renderer, std::shared_ptr<Scene> scene);
 
     // ═══════════════════════════════════════════════════════════════
     // 🔧 插播视频帧同步（新增）
@@ -151,7 +153,7 @@ private:
     // GPU 路径（Phase 2-4），可选——未设置时回退 CPU 路径
     std::shared_ptr<GpuCompositor>    gpu_compositor_;
     std::shared_ptr<GpuColorConverter> gpu_color_converter_;
-    std::shared_ptr<CanvasRenderer> canvas_renderer_;  // 回退方案：用于推流捕获
+    CanvasRenderer* canvas_renderer_ = nullptr;         // 回退方案：用于推流捕获（非拥有裸指针）
     std::shared_ptr<Scene> current_scene_;            // 当前场景（用于 CanvasRenderer 渲染）
     std::shared_ptr<Encoder> encoder_;
     std::shared_ptr<StreamPusher> stream_pusher_;

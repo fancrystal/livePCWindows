@@ -224,7 +224,12 @@ void InsertVideoWidget::setLiveInfo(const QString& sassUrl, const QString& userI
     sass_url_ = sassUrl;
     user_id_ = userId;
     token_ = token;
-    room_id_ = roomId;
+
+    // 直播间切换时重置初始化标志，确保 showEvent 重新拉取新房间的视频列表
+    if (room_id_ != roomId) {
+        room_id_ = roomId;
+        is_initialized_ = false;
+    }
 
     // 设置 InsertFileManager 的直播间信息
     InsertFileManager::instance()->setLiveInfo(sassUrl, userId, token);
@@ -420,10 +425,15 @@ void InsertVideoWidget::onStartInsertClicked() {
         return;
     }
 
+    LOG_INFO("InsertVideoWidget: Start insert clicked for " + item->fileName.toStdString());
+
     // 停止预览
     if (vlc_player_ && is_previewing_) {
-        vlc_player_->stop();
+        // Avoid synchronous libvlc stop on the UI thread here. On Windows the
+        // video output can block while tearing down D3D/child-window resources.
+        vlc_player_->pause();
         is_previewing_ = false;
+        previewLabel_->show();
     }
 
     // 获取循环播放设置
@@ -442,6 +452,7 @@ void InsertVideoWidget::onStartInsertClicked() {
     // 更新 InsertFileItem 中的循环设置
     item->loopEnabled = loopEnabled;
 
+    LOG_INFO("InsertVideoWidget: Emitting startInsertVideo for fileId=" + item->fileId.toStdString());
     emit startInsertVideo(item->fileId, item->fileName, loopEnabled);
     accept(); // 关闭对话框
 }

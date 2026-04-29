@@ -479,14 +479,41 @@ void MainWindow::initWebEngineViews() {
 MainWindow::~MainWindow() {
     LOG_INFO("MainWindow destroyed");
 
-    cleanupSystemTray();
+    // ── 1. 停止所有定时器，防止析构过程中触发回调 ──────────────────────
+    if (encoding_timer_)      encoding_timer_->stop();
+    if (preview_timer_)       preview_timer_->stop();
+    if (live_duration_timer_) live_duration_timer_->stop();
+    if (system_log_timer_)    system_log_timer_->stop();
+    if (system_info_timer_)   system_info_timer_->stop();
+    if (dpi_relayout_timer_)  dpi_relayout_timer_->stop();
+    if (insert_video_timer_)  insert_video_timer_->stop();
 
-    // Stop timers
-    if (system_info_timer_) {
-        system_info_timer_->stop();
+    // ── 2. 清空 encoder_bridge_ 对 CanvasRenderer 的引用 ─────────────
+    // encoder_bridge_ 持有 CanvasRenderer* (非拥有裸指针)；显式清空避免悬空指针
+    // CanvasRenderer 由 canvas_widget_->renderer_ (unique_ptr) 管理，稍后随 Qt child 一起析构
+    if (encoder_bridge_) {
+        encoder_bridge_->set_canvas_renderer(nullptr, nullptr);
     }
 
+    // ── 3. 清空 canvas_widget_ 对共享资源的引用 ──────────────────────
+    // canvas_widget_ 是 Qt child（在 ~QObject() 才释放），但 shared_ptr 持有的模块
+    // 会在 C++ 成员析构阶段提前销毁；提前解除引用避免 canvas_widget_ 回调悬空指针
+    if (canvas_widget_) {
+        canvas_widget_->set_compositor(nullptr);
+        canvas_widget_->set_video_engine(nullptr);
+    }
+
+    // ── 4. 清理系统托盘 ──────────────────────────────────────────────
+    cleanupSystemTray();
+
+    // ── 5. 删除 Qt UI（会移除其管理的所有 Widget children） ─────────
     delete ui;
+
+    // 注意：C++ 成员（shared_ptr）随后按逆声明顺序自动析构
+    // encoder_bridge_ → gpu_color_converter_ → gpu_compositor_ → compositor_
+    // → capture_manager_ → stream_pusher_ → encoder_ → audio_engine_
+    // → video_engine_ → scene_manager_
+    // canvas_widget_（Qt child）最后在 ~QObject() 中析构，届时上述模块已全部释放
 }
 
 void MainWindow::setupDpiChangeHandling() {
@@ -2080,17 +2107,14 @@ void MainWindow::show_insert_video_widget() {
     if (!insert_video_widget_) {
         insert_video_widget_ = new InsertVideoWidget(this);
 
-
-
-        QString roomId = current_live_item_.liveId;
-        if (!roomId.isEmpty()) {
-
-            insert_video_widget_->setLiveInfo(live_url_, user_id_, token_, roomId);
-        }
-
-
         connect(insert_video_widget_, &InsertVideoWidget::startInsertVideo,
                 this, &MainWindow::on_start_insert_video);
+    }
+
+    // 每次打开都用当前直播间刷新，避免切换直播间后数据仍是旧房间的
+    QString roomId = current_live_item_.liveId;
+    if (!roomId.isEmpty()) {
+        insert_video_widget_->setLiveInfo(live_url_, user_id_, token_, roomId);
     }
 
     insert_video_widget_->show();
@@ -3116,8 +3140,10 @@ void MainWindow::setup_canvas_widget() {
     }
 
     if (canvas_widget_->get_renderer() && scene_manager_->get_current_scene()) {
+        // 传入非拥有裸指针：CanvasRenderer 由 canvas_widget_->renderer_（unique_ptr）独占管理
+        // 切勿用 shared_ptr(raw_ptr) 包装，否则与 unique_ptr 形成双重所有权 → double-free
         encoder_bridge_->set_canvas_renderer(
-            std::shared_ptr<CanvasRenderer>(canvas_widget_->get_renderer()),
+            canvas_widget_->get_renderer(),
             scene_manager_->get_current_scene()
         );
     }

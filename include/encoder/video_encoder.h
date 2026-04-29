@@ -83,6 +83,10 @@ private:
     // Switch to next encoder in the candidate list when current encoder fails
     bool switch_to_next_encoder();
     std::string preset_to_string(VideoEncodingPreset preset) const;
+    // Applies GOP, CBR bitrate constraints, and all encoder-specific priv_data options.
+    // Must be called after pix_fmt and hw_frames_ctx are set, before avcodec_open2().
+    void configure_codec_ctx_for_streaming(AVCodecContext* ctx, const AVCodec* codec,
+                                           const VideoEncoderConfig& cfg);
     ErrorCode send_frame_internal(const std::shared_ptr<VideoFrame>& frame);
     ErrorCode send_flush();
     ErrorCode receive_packets(std::vector<EncodedPacketPtr>& packets);

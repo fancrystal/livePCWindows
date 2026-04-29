@@ -99,7 +99,8 @@ void CompositorEncoderBridge::set_compositor(std::shared_ptr<Compositor> composi
     }
 }
 
-void CompositorEncoderBridge::set_canvas_renderer(std::shared_ptr<CanvasRenderer> renderer, std::shared_ptr<Scene> scene) {
+void CompositorEncoderBridge::set_canvas_renderer(CanvasRenderer* renderer, std::shared_ptr<Scene> scene) {
+    // 非拥有裸指针：lifetime 由 CanvasWidget::renderer_（unique_ptr）保证
     canvas_renderer_ = renderer;
     current_scene_ = scene;
     LOG_INFO("CanvasRenderer set for encoder bridge (fallback mode)");
