@@ -1,4 +1,5 @@
 #include "common/log.h"
+#include "generated/app_version.h"
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -146,6 +147,7 @@ void Log::log(LogLevel level, const std::string& message, const char* function, 
         try {
             std::ofstream ofs(log_file_path_, std::ios::app);
             if (ofs.is_open()) {
+                ofs << "LiveAssistant Version: " << LIVEASSISTANT_VERSION << std::endl;
                 ofs << "========================================" << std::endl;
                 ofs << "LiveAssistant Log - Session Started" << std::endl;
                 ofs << "Log file: " << log_file_path_ << std::endl;

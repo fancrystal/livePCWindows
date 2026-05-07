@@ -101,8 +101,8 @@ struct VideoEncoderConfig {
     int height = 720;  // 默认高度 (720p)
     int fps = 30;  // 默认帧率
     int bitrate = 2500000;  // 默认比特率 (2500kbps) - 720p 30fps 推荐码率
-    // 默认使用 VBR，更友好地适应网络波动；用户可切换为 CBR 或 CQP
-    VideoEncodingMode mode = VideoEncodingMode::VBR;
+    // Default to CBR for predictable live-stream bandwidth. VBR is kept as an opt-in fallback.
+    VideoEncodingMode mode = VideoEncodingMode::CBR;
     
     // 高级参数
     // 默认GOP设置为2秒（帧数 = fps * 2）
@@ -120,7 +120,7 @@ struct VideoEncoderConfig {
     
     // 带显式参数的构造函数
     VideoEncoderConfig(VideoCodecType codec, int width, int height, int fps, int bitrate,
-                       VideoEncodingMode mode = VideoEncodingMode::VBR)
+                       VideoEncodingMode mode = VideoEncodingMode::CBR)
         : codec(codec), width(width), height(height), fps(fps), bitrate(bitrate), mode(mode),
           // 默认 2 秒 GOP
           gop(fps * 2), max_bitrate(bitrate), quality(23.0f), preset(VideoEncodingPreset::MEDIUM),

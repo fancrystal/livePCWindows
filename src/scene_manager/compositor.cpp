@@ -383,11 +383,10 @@ void Compositor::render(QPainter* painter, const QRect& target_rect) {
                     target_rect_in_canvas.y() + (target_rect_in_canvas.height() - scaled.height()) / 2.0);
                 painter->drawImage(top_left, scaled);
             } else {
-                // Placeholder rectangle using the layer's dest_rect
-                painter->fillRect(layer.dest_rect, QColor(64, 128, 255));
-                painter->setPen(Qt::white);
-                painter->drawText(layer.dest_rect, Qt::AlignCenter,
-                               QString("Layer: %1").arg(QString::fromStdString(layer.source_id)));
+                // No frame available — fill with black (neutral no-signal color)
+                // Previously used QColor(64, 128, 255) which caused confusing blue streams
+                // when WGC returns E_ACCESSDENIED (e.g. display protected by WDA_EXCLUDEFROMCAPTURE)
+                painter->fillRect(layer.dest_rect, Qt::black);
             }
         }
     }

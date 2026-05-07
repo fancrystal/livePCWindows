@@ -154,6 +154,12 @@ void WGCCaptureLoop::set_texture_callback(TextureCallback cb)
     tex_cb_ = std::move(cb);
 }
 
+void WGCCaptureLoop::set_error_callback(ErrorCallback cb)
+{
+    std::lock_guard<std::mutex> lk(err_cb_mutex_);
+    err_cb_ = std::move(cb);
+}
+
 bool WGCCaptureLoop::start()
 {
     if (running_.exchange(true)) return true;
@@ -192,65 +198,129 @@ bool WGCCaptureLoop::init_d3d()
 
 bool WGCCaptureLoop::init_capture_item()
 {
-    auto interop = winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+    try {
+        auto interop = winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
 
-    HRESULT hr = E_FAIL;
-    if (cfg_.type == CaptureConfig::TargetType::SCREEN) {
-        HMONITOR mon = ResolveMonitorFromTargetId(cfg_.target_id);
-        hr = interop->CreateForMonitor(mon,
-                                       winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
-                                       winrt::put_abi(item_));
-    } else {
-        HWND hwnd = reinterpret_cast<HWND>(std::stoull(cfg_.target_id));
-        hr = interop->CreateForWindow(hwnd,
-                                      winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
-                                      winrt::put_abi(item_));
-    }
+        HRESULT hr = E_FAIL;
+        if (cfg_.type == CaptureConfig::TargetType::SCREEN) {
+            HMONITOR mon = ResolveMonitorFromTargetId(cfg_.target_id);
+            if (!mon) {
+                LOG_ERROR("WGCCaptureLoop: ResolveMonitorFromTargetId returned null for: " + cfg_.target_id);
+                last_init_hr_ = E_INVALIDARG;
+                return false;
+            }
+            hr = interop->CreateForMonitor(mon,
+                                           winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
+                                           winrt::put_abi(item_));
+        } else {
+            HWND hwnd = reinterpret_cast<HWND>(std::stoull(cfg_.target_id));
+            if (!hwnd || !::IsWindow(hwnd)) {
+                LOG_ERROR("WGCCaptureLoop: target window is invalid or closed: " + cfg_.target_id);
+                last_init_hr_ = E_INVALIDARG;
+                return false;
+            }
+            hr = interop->CreateForWindow(hwnd,
+                                          winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
+                                          winrt::put_abi(item_));
+        }
 
-    if (FAILED(hr) || !item_) {
-        LOG_ERROR("WGCCaptureLoop: failed to create GraphicsCaptureItem hr=0x" + std::to_string(static_cast<uint32_t>(hr)));
+        if (FAILED(hr) || !item_) {
+            last_init_hr_ = hr;
+            LOG_ERROR("WGCCaptureLoop: failed to create GraphicsCaptureItem hr=0x" +
+                      [hr]() {
+                          char buf[16];
+                          snprintf(buf, sizeof(buf), "%08X", static_cast<unsigned>(hr));
+                          return std::string(buf);
+                      }());
+            return false;
+        }
+
+        return true;
+    } catch (const winrt::hresult_error& e) {
+        last_init_hr_ = e.code();
+        LOG_ERROR("WGCCaptureLoop: WinRT exception in init_capture_item: hr=0x" +
+                  [&e]() {
+                      char buf[16];
+                      snprintf(buf, sizeof(buf), "%08X", static_cast<unsigned>(e.code()));
+                      return std::string(buf);
+                  }() + " msg=" + winrt::to_string(e.message()));
+        return false;
+    } catch (const std::exception& e) {
+        last_init_hr_ = E_FAIL;
+        LOG_ERROR(std::string("WGCCaptureLoop: std exception in init_capture_item: ") + e.what());
+        return false;
+    } catch (...) {
+        last_init_hr_ = E_FAIL;
+        LOG_ERROR("WGCCaptureLoop: unknown exception in init_capture_item");
         return false;
     }
-
-    return true;
 }
 
 bool WGCCaptureLoop::init_capture_objects()
 {
-    last_size_ = item_.Size();
+    try {
+        last_size_ = item_.Size();
 
-    // 采集降分辨率：如果是外接屏高分辨率且配置了降分辨率，则使用缩小后的尺寸
-    auto capture_w = static_cast<uint32_t>(last_size_.Width);
-    auto capture_h = static_cast<uint32_t>(last_size_.Height);
-    if (cfg_.prefer_low_resolution && capture_w > static_cast<uint32_t>(cfg_.reduce_to_width)) {
-        capture_w = static_cast<uint32_t>(cfg_.reduce_to_width);
-        capture_h = static_cast<uint32_t>(cfg_.reduce_to_height);
-        LOG_INFO("[WGC] Using reduced resolution for capture: " +
-                 std::to_string(capture_w) + "x" + std::to_string(capture_h) +
-                 " (original: " + std::to_string(last_size_.Width) + "x" + std::to_string(last_size_.Height) + ")");
-    }
+        // 采集降分辨率：如果是外接屏高分辨率且配置了降分辨率，则使用缩小后的尺寸
+        auto capture_w = static_cast<uint32_t>(last_size_.Width);
+        auto capture_h = static_cast<uint32_t>(last_size_.Height);
+        if (cfg_.prefer_low_resolution && capture_w > static_cast<uint32_t>(cfg_.reduce_to_width)) {
+            capture_w = static_cast<uint32_t>(cfg_.reduce_to_width);
+            capture_h = static_cast<uint32_t>(cfg_.reduce_to_height);
+            LOG_INFO("[WGC] Using reduced resolution for capture: " +
+                     std::to_string(capture_w) + "x" + std::to_string(capture_h) +
+                     " (original: " + std::to_string(last_size_.Width) + "x" + std::to_string(last_size_.Height) + ")");
+        }
 
-    // Use shared D3D device
-    auto& shared = SharedD3D11Device::instance();
-    auto winrt_device = shared.winrt_device();
-    if (!winrt_device) {
-        LOG_ERROR("WGCCaptureLoop: Failed to get shared WinRT device");
+        // Use shared D3D device
+        auto& shared = SharedD3D11Device::instance();
+        auto winrt_device = shared.winrt_device();
+        if (!winrt_device) {
+            LOG_ERROR("WGCCaptureLoop: Failed to get shared WinRT device");
+            return false;
+        }
+
+        auto dxgiDevice = GetDXGIInterfaceFromObject<ID3D11Device>(winrt_device);
+        if (!dxgiDevice) {
+            LOG_ERROR("WGCCaptureLoop: Failed to get DXGI device from shared WinRT device");
+            last_init_hr_ = E_NOINTERFACE;
+            return false;
+        }
+
+        swapchain_ = CreateSwapChain(dxgiDevice.get(), capture_w, capture_h,
+                                     static_cast<DXGI_FORMAT>(pixel_format_), 2);
+        if (!swapchain_) {
+            LOG_ERROR("WGCCaptureLoop: CreateSwapChain failed");
+            last_init_hr_ = E_FAIL;
+            return false;
+        }
+
+        frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(winrt_device, pixel_format_, 2, last_size_);
+        session_ = frame_pool_.CreateCaptureSession(item_);
+        session_.IsCursorCaptureEnabled(cfg_.capture_cursor);
+        session_.IsBorderRequired(cfg_.capture_border);
+
+        frame_pool_.FrameArrived({ this, &WGCCaptureLoop::on_frame_arrived });
+
+        return true;
+    } catch (const winrt::hresult_error& e) {
+        last_init_hr_ = e.code();
+        LOG_ERROR("WGCCaptureLoop: WinRT exception in init_capture_objects: hr=0x" +
+                  [&e]() {
+                      char buf[16];
+                      snprintf(buf, sizeof(buf), "%08X", static_cast<unsigned>(e.code()));
+                      return std::string(buf);
+                  }() + " msg=" + winrt::to_string(e.message()));
+        return false;
+    } catch (const std::exception& e) {
+        last_init_hr_ = E_FAIL;
+        LOG_ERROR(std::string("WGCCaptureLoop: std exception in init_capture_objects: ") + e.what());
+        return false;
+    } catch (...) {
+        last_init_hr_ = E_FAIL;
+        LOG_ERROR("WGCCaptureLoop: unknown exception in init_capture_objects");
         return false;
     }
-
-    auto dxgiDevice = GetDXGIInterfaceFromObject<ID3D11Device>(winrt_device);
-
-    swapchain_ = CreateSwapChain(dxgiDevice.get(), capture_w, capture_h,
-                                 static_cast<DXGI_FORMAT>(pixel_format_), 2);
-
-    frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(winrt_device, pixel_format_, 2, last_size_);
-    session_ = frame_pool_.CreateCaptureSession(item_);
-    session_.IsCursorCaptureEnabled(cfg_.capture_cursor);
-    session_.IsBorderRequired(cfg_.capture_border);
-
-    frame_pool_.FrameArrived({ this, &WGCCaptureLoop::on_frame_arrived });
-
-    return true;
 }
 
 void WGCCaptureLoop::update_settings(bool capture_cursor, bool capture_border) {
@@ -569,6 +639,15 @@ void WGCCaptureLoop::thread_proc()
 
     if (!init_d3d() || !init_capture_item() || !init_capture_objects()) {
         LOG_ERROR("WGCCaptureLoop: initialization failed");
+        // 通知上层，携带具体的 HRESULT（init_capture_item 失败时已记录到 last_init_hr_）
+        ErrorCallback err_cb;
+        {
+            std::lock_guard<std::mutex> lk(err_cb_mutex_);
+            err_cb = err_cb_;
+        }
+        if (err_cb) {
+            err_cb(last_init_hr_);
+        }
         return;
     }
 

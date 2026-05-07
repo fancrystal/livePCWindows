@@ -19,6 +19,10 @@ bool WGCaptureSourceAdapter::initialize() {
         // CPU 路径（默认，向后兼容）
         loop_->set_frame_callback([this](const QImage& img) { on_image(img); });
     }
+    // 注册初始化失败回调，将 HRESULT 转换为用户友好提示并发出 captureError 信号
+    loop_->set_error_callback([this](HRESULT hr) {
+        on_capture_error(hr);
+    });
     return true;
 }
 
@@ -76,6 +80,35 @@ void WGCaptureSourceAdapter::on_texture(const GpuTextureRef& tex_ref)
 {
     if (!tex_ref.is_valid()) return;
     emit textureReady(tex_ref, QString::fromStdString(cfg_.target_id));
+}
+
+void WGCaptureSourceAdapter::on_capture_error(HRESULT hr)
+{
+    QString msg;
+    // E_ACCESSDENIED (0x80070005): 显示器被内容保护，WGC 被 DWM 拒绝
+    // 常见原因：360安全卫士、联想管家、企业DLP、银行APP等调用了
+    //           SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
+    if (hr == static_cast<HRESULT>(0x80070005)) {
+        msg = QString("屏幕共享初始化失败：当前显示器受到内容保护（错误 E_ACCESSDENIED）。\n\n"
+                      "可能原因：360安全卫士、联想管家、杀毒软件或银行类APP在该显示器上设置了截图保护。\n\n"
+                      "解决方法：关闭上述软件后，重新添加共享屏幕。");
+    } else {
+        char hrBuf[32];
+        snprintf(hrBuf, sizeof(hrBuf), "0x%08X", static_cast<unsigned>(hr));
+        msg = QString("屏幕共享初始化失败（错误代码 %1）。\n\n"
+                      "请检查显示器连接是否正常，或重启应用后重试。").arg(hrBuf);
+    }
+
+    LOG_ERROR("WGCaptureSourceAdapter: captureError emitted for target=" +
+              cfg_.target_id + ", hr=0x" +
+              [hr]() {
+                  char buf[16];
+                  snprintf(buf, sizeof(buf), "%08X", static_cast<unsigned>(hr));
+                  return std::string(buf);
+              }());
+
+    // 从工作线程调用，通过信号跨线程投递到主线程（Qt::QueuedConnection 自动处理）
+    emit captureError(QString::fromStdString(cfg_.target_id), msg);
 }
 
 void WGCaptureSourceAdapter::update_share_settings(bool capture_cursor, bool capture_border) {

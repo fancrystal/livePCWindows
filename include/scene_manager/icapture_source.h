@@ -122,6 +122,11 @@ public:
 
 signals:
     void frameReady(const CaptureFrame& frame);
+
+    // Emitted when the capture source encounters a fatal initialization error.
+    // source_id: the capture target id (e.g. "\\.\DISPLAY2")
+    // error_message: human-readable description for UI display
+    void captureError(const QString& source_id, const QString& error_message);
 };
 
 // 辅助函数：像素格式转换

@@ -52,6 +52,11 @@ public:
     // 更新捕获设置（运行时生效，无需重启捕获）
     void update_settings(bool capture_cursor, bool capture_border);
 
+    // 设置初始化失败时的错误回调（从工作线程调用，注意线程安全）
+    // hr: 导致失败的 HRESULT 值（如 E_ACCESSDENIED = 0x80070005）
+    using ErrorCallback = std::function<void(HRESULT hr)>;
+    void set_error_callback(ErrorCallback cb);
+
 private:
     void thread_proc();
 
@@ -89,6 +94,11 @@ private:
 
     std::mutex cb_mutex_;
     ImageCallback cb_;
+
+    // 错误回调
+    std::mutex err_cb_mutex_;
+    ErrorCallback err_cb_;
+    HRESULT last_init_hr_ = S_OK;  // 记录 init_capture_item() 返回的 HRESULT
 
     // Phase 1: GPU 纹理回调及缓存
     std::mutex tex_cb_mutex_;

@@ -7,6 +7,7 @@
 #include "http/live_item.h"
 #include "app/config.h"
 #include "common/log.h"
+#include "generated/app_version.h"
 #include "scene_manager/icapture_source.h"
 #include <qmetatype.h>
 
@@ -162,7 +163,7 @@ int main(int argc, char *argv[]) {
     // 清理超过保留天数的旧日志文件
     live_assistant::Log::cleanup_old_logs();
 
-    LOG_INFO("Starting LiveAssistant...");
+    LOG_INFO(std::string("Starting LiveAssistant ") + LIVEASSISTANT_VERSION + "...");
 
     // Create login window
     live_assistant::LoginWindow login_window;

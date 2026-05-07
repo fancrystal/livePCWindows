@@ -1,9 +1,21 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(LiveAssistant VERSION 0.1 LANGUAGES C CXX)
+project(LiveAssistant VERSION 1.1.5 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/app_version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/app_version.h"
+    @ONLY
+)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/installer/version.iss.in"
+    "${CMAKE_CURRENT_SOURCE_DIR}/installer/version.iss"
+    @ONLY
+)
 
 # Ensure MSVC is used with standard library include paths.
 # (Do not force -std:c++17 in CMAKE_CXX_FLAGS; CMAKE_CXX_STANDARD handles it.)

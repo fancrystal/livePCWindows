@@ -677,6 +677,14 @@ void MainWindow::on_scene_selected(int index) {
     QString scene_name = ui->comboBox_scenes->itemText(index);
     if (scene_name.isEmpty()) return;
 
+    // [DIAG] 场景切换诊断：记录切换时插播视频状态
+    std::string diag_insert_id = current_insert_video_source_
+        ? current_insert_video_source_->get_id()
+        : std::string("null");
+    LOG_INFO("[DIAG][SCENE_SWITCH] Switching to scene: " + scene_name.toStdString()
+             + " | is_insert_video_playing=" + std::to_string(is_insert_video_playing_)
+             + " | insert_source_id=" + diag_insert_id);
+
     scene_manager_->set_current_scene(scene_name.toStdString());
 
     auto current = scene_manager_->get_current_scene();
@@ -1174,6 +1182,11 @@ void MainWindow::restore_capture_sources() {
                 }
             });
 
+            // WGC 初始化失败（如安全软件触发 E_ACCESSDENIED）时弹出用户提示
+            connect(src.get(), &ICaptureSource::captureError, this,
+                    [this](const QString& /*source_id*/, const QString& error_message) {
+                QMessageBox::warning(this, "屏幕共享失败", error_message);
+            }, Qt::QueuedConnection);
 
             if (capture_manager_) {
                 capture_manager_->add_source(source_id, src);
@@ -2193,6 +2206,10 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
     }
 
 
+    // [DIAG] 记录插播视频加入的场景
+    LOG_INFO("[DIAG][START_INSERT] Adding insert video source_id=" + source_id
+             + " to scene=" + scene->get_name());
+
     auto sceneItem = scene->add_source(mediaSource);
     if (sceneItem) {
 
@@ -2286,6 +2303,35 @@ void MainWindow::stopInsertVideoPlayback() {
         return;
     }
 
+    // [DIAG] 停止插播诊断：记录当前场景 vs source所在场景
+    {
+        std::string current_scene_name = "null";
+        if (scene_manager_ && scene_manager_->get_current_scene()) {
+            current_scene_name = scene_manager_->get_current_scene()->get_name();
+        }
+        std::string source_id = current_insert_video_source_ ? current_insert_video_source_->get_id() : "null";
+        // 检查source实际在哪个场景（通过scene_names遍历查找）
+        std::string source_scene = "not_found_in_any_scene";
+        if (scene_manager_ && current_insert_video_source_) {
+            std::string sid = current_insert_video_source_->get_id();
+            for (const auto& sname : scene_manager_->get_scene_names()) {
+                auto items = scene_manager_->get_scene_items(sname);
+                for (const auto& item : items) {
+                    if (item && item->get_source() && item->get_source()->get_id() == sid) {
+                        source_scene = sname;
+                        break;
+                    }
+                }
+                if (source_scene != "not_found_in_any_scene") break;
+            }
+        }
+        bool mismatch = (source_scene != "not_found_in_any_scene") && (current_scene_name != source_scene);
+        LOG_INFO("[DIAG][STOP_INSERT] current_scene=" + current_scene_name
+                 + " | source_id=" + source_id
+                 + " | source_actually_in_scene=" + source_scene
+                 + " | MISMATCH=" + std::to_string(mismatch));
+    }
+
     LOG_INFO("Stopping insert video playback");
 
 
@@ -2343,7 +2389,26 @@ void MainWindow::on_insert_video_frame_ready() {
     }
 
     const std::string source_id = current_insert_video_source_->get_id();
-    if (!is_source_in_current_scene(source_id)) {
+    bool in_scene = is_source_in_current_scene(source_id);
+
+    // [DIAG] 帧就绪诊断：每秒记录一次 source 是否在当前场景
+    {
+        static int64_t last_diag_time = 0;
+        int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now_ms - last_diag_time >= 2000) {
+            std::string current_scene_name = "null";
+            if (scene_manager_ && scene_manager_->get_current_scene()) {
+                current_scene_name = scene_manager_->get_current_scene()->get_name();
+            }
+            LOG_INFO("[DIAG][FRAME_READY] source_id=" + source_id
+                     + " | current_scene=" + current_scene_name
+                     + " | is_source_in_current_scene=" + std::to_string(in_scene));
+            last_diag_time = now_ms;
+        }
+    }
+
+    if (!in_scene) {
         return;
     }
 
@@ -3011,6 +3076,13 @@ void MainWindow::show_screen_share_selector() {
                     }
 
                 }, Qt::QueuedConnection);
+
+                // WGC 初始化失败（如安全软件触发 E_ACCESSDENIED）时弹出用户提示
+                connect(src.get(), &ICaptureSource::captureError, this,
+                        [this](const QString& /*source_id*/, const QString& error_message) {
+                    QMessageBox::warning(this, "屏幕共享失败", error_message);
+                }, Qt::QueuedConnection);
+
                 LOG_INFO(std::string("信号槽连接成功"));
 
                 LOG_INFO(std::string("将采集源添加到采集管理器: ") + source_id);

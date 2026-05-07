@@ -193,32 +193,42 @@ void H264Encoder::configure_codec_ctx_for_streaming(AVCodecContext* ctx,
     ctx->keyint_min  = fps;   // minimum 1-second keyframe interval (scene-cut suppressed in x264)
     ctx->max_b_frames = 0;
 
-    // CBR: all three fields together cap IDR-frame bursts and prevent send-queue overflows.
-    // rc_max_rate == bit_rate is also the QSV signal to select CBR mode.
-    ctx->bit_rate       = cfg.bitrate;
-    ctx->rc_max_rate    = cfg.bitrate;
-    ctx->rc_buffer_size = static_cast<int>(static_cast<int64_t>(cfg.bitrate) * 2);  // VBV: 2× bitrate
+    // CBR keeps max_rate equal to target bitrate. VBR is only used when explicitly requested.
+    const bool use_vbr = (cfg.mode == VideoEncodingMode::VBR);
+    const int target_bitrate = cfg.bitrate > 0 ? cfg.bitrate : 2500000;
+    const int configured_max = cfg.max_bitrate > 0 ? cfg.max_bitrate : target_bitrate;
+    const int max_bitrate = use_vbr && configured_max > target_bitrate
+        ? configured_max
+        : target_bitrate;
+
+    ctx->bit_rate       = target_bitrate;
+    ctx->rc_max_rate    = max_bitrate;
+    ctx->rc_buffer_size = static_cast<int>(static_cast<int64_t>(max_bitrate) * 2);
 
     if (!codec || !ctx->priv_data) return;
     const std::string enc = codec->name;
 
     if (enc.find("nvenc") != std::string::npos) {
-        av_opt_set(ctx->priv_data, "rc",          "cbr", 0);
+        av_opt_set(ctx->priv_data, "rc",          use_vbr ? "vbr" : "cbr", 0);
         av_opt_set(ctx->priv_data, "delay",       "0",   0);
         av_opt_set(ctx->priv_data, "zerolatency", "1",   0);
         av_opt_set(ctx->priv_data, "bf",          "0",   0);
-        LOG_INFO("[H264Encoder] NVENC: CBR " + std::to_string(cfg.bitrate / 1000) +
-                 " kbps, gop=" + std::to_string(gop));
+        LOG_INFO("[H264Encoder] NVENC: " + std::string(use_vbr ? "VBR" : "CBR") + " " +
+                 std::to_string(target_bitrate / 1000) + " kbps, max=" +
+                 std::to_string(max_bitrate / 1000) + " kbps, gop=" + std::to_string(gop));
     } else if (enc.find("amf") != std::string::npos) {
-        av_opt_set(ctx->priv_data, "rc",    "cbr",         0);
+        av_opt_set(ctx->priv_data, "rc",    use_vbr ? "vbr_peak" : "cbr", 0);
         av_opt_set(ctx->priv_data, "usage", "transcoding", 0);
-        LOG_INFO("[H264Encoder] AMF: CBR " + std::to_string(cfg.bitrate / 1000) +
-                 " kbps, gop=" + std::to_string(gop));
+        LOG_INFO("[H264Encoder] AMF: " + std::string(use_vbr ? "VBR" : "CBR") + " " +
+                 std::to_string(target_bitrate / 1000) + " kbps, max=" +
+                 std::to_string(max_bitrate / 1000) + " kbps, gop=" + std::to_string(gop));
     } else if (enc.find("qsv") != std::string::npos) {
-        // QSV infers CBR when bit_rate == rc_max_rate; no separate rc option needed.
+        // QSV infers CBR when bit_rate == rc_max_rate; VBR when rc_max_rate is higher.
         av_opt_set(ctx->priv_data, "async_depth", "1", 0);
-        LOG_INFO("[H264Encoder] QSV: CBR " + std::to_string(cfg.bitrate / 1000) +
-                 " kbps, gop=" + std::to_string(gop) + ", async_depth=1");
+        LOG_INFO("[H264Encoder] QSV: " + std::string(use_vbr ? "VBR" : "CBR") + " " +
+                 std::to_string(target_bitrate / 1000) + " kbps, max=" +
+                 std::to_string(max_bitrate / 1000) + " kbps, gop=" +
+                 std::to_string(gop) + ", async_depth=1");
     } else if (enc.find("libx264") != std::string::npos) {
         // Profile must be set via codec_ctx_->profile — x264_param_parse() does NOT call
         // x264_param_apply_profile(), so "profile=baseline" in x264-params is silently ignored.
@@ -232,10 +242,13 @@ void H264Encoder::configure_codec_ctx_for_streaming(AVCodecContext* ctx,
         const char* level = (mbs > 3600) ? "40" : "31";
         std::string x264p = std::string("ref=1:level=") + level
             + ":scenecut=0:forced-idr=1:threads=4:annexb=0:repeat-headers=0"
-            + ":nal-hrd=cbr:force-cfr=1";
+            + (use_vbr ? ":nal-hrd=vbr" : ":nal-hrd=cbr")
+            + ":force-cfr=1";
         av_opt_set(ctx->priv_data, "x264-params", x264p.c_str(), 0);
-        LOG_INFO("[H264Encoder] libx264: CBR " + std::to_string(cfg.bitrate / 1000) +
-                 " kbps, gop=" + std::to_string(gop) + ", profile=baseline, x264-params=" + x264p);
+        LOG_INFO("[H264Encoder] libx264: " + std::string(use_vbr ? "VBR" : "CBR") + " " +
+                 std::to_string(target_bitrate / 1000) + " kbps, max=" +
+                 std::to_string(max_bitrate / 1000) + " kbps, gop=" +
+                 std::to_string(gop) + ", profile=baseline, x264-params=" + x264p);
     }
 }
 
@@ -1344,6 +1357,12 @@ ErrorCode H264Encoder::set_bitrate(int bitrate) {
     config_.bitrate = bitrate;
     if (codec_ctx_) {
         codec_ctx_->bit_rate = bitrate;
+        codec_ctx_->rc_max_rate = (config_.mode == VideoEncodingMode::VBR &&
+                                   config_.max_bitrate > bitrate)
+            ? config_.max_bitrate
+            : bitrate;
+        codec_ctx_->rc_buffer_size =
+            static_cast<int>(static_cast<int64_t>(codec_ctx_->rc_max_rate) * 2);
     }
 
     return ErrorCode::SUCCESS;

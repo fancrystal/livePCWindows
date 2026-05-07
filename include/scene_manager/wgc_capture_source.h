@@ -6,6 +6,7 @@
 #include <memory>
 #include <QImage>
 #include <atomic>
+#include <windows.h>
 
 
 namespace live_assistant {
@@ -40,6 +41,7 @@ signals:
 private:
     void on_image(const QImage& img);
     void on_texture(const GpuTextureRef& tex_ref);   // Phase 1
+    void on_capture_error(HRESULT hr);               // WGC 初始化失败时回调
 
     CaptureConfig cfg_;
     std::unique_ptr<WGCCaptureLoop> loop_;
