@@ -693,6 +693,18 @@ void MainWindow::on_scene_selected(int index) {
         return;
     }
 
+    // 切换场景时：若当前有插播视频在播放，且它不属于新场景，则暂停它
+    // 暂停（不是停止）：保留断点位置，切回原场景时可以继续
+    // 同时 detach encoder_bridge，新场景画面不再叠加旧场景的插播视频
+    if (is_insert_video_playing_ && current_insert_video_source_) {
+        bool insert_in_new_scene = is_source_in_current_scene(current_insert_video_source_->get_id());
+        if (!insert_in_new_scene) {
+            LOG_INFO("[SCENE_SWITCH] Pausing insert video (belongs to old scene): " +
+                     current_insert_video_source_->get_id());
+            pauseCurrentInsertVideo();
+        }
+    }
+
     if (canvas_widget_) {
         canvas_widget_->set_current_scene(scene_name.toStdString());
     }
@@ -2122,6 +2134,27 @@ void MainWindow::show_insert_video_widget() {
 
         connect(insert_video_widget_, &InsertVideoWidget::startInsertVideo,
                 this, &MainWindow::on_start_insert_video);
+
+        connect(insert_video_widget_, &InsertVideoWidget::requestPauseCurrentInsertVideo,
+                this, [this]() {
+                    pauseCurrentInsertVideo();
+                    update_insert_video_widget_state();
+                });
+        connect(insert_video_widget_, &InsertVideoWidget::requestResumeInsertVideo,
+                this, [this]() {
+                    resumePausedInsertVideo();
+                    update_insert_video_widget_state();
+                });
+        connect(insert_video_widget_, &InsertVideoWidget::requestStopCurrentInsertVideo,
+                this, [this]() {
+                    stopInsertVideoPlayback();
+                    update_insert_video_widget_state();
+                });
+        connect(insert_video_widget_, &InsertVideoWidget::requestStopPausedInsertVideo,
+                this, [this]() {
+                    stopPausedInsertVideo();
+                    update_insert_video_widget_state();
+                });
     }
 
     // 每次打开都用当前直播间刷新，避免切换直播间后数据仍是旧房间的
@@ -2129,6 +2162,9 @@ void MainWindow::show_insert_video_widget() {
     if (!roomId.isEmpty()) {
         insert_video_widget_->setLiveInfo(live_url_, user_id_, token_, roomId);
     }
+
+    // 同步当前插播状态到面板
+    update_insert_video_widget_state();
 
     insert_video_widget_->show();
     insert_video_widget_->raise();
@@ -2139,12 +2175,18 @@ void MainWindow::on_start_insert_video(const QString& fileId, const QString& fil
     LOG_INFO("Starting insert video: " + fileId.toStdString() + " - " + fileName.toStdString() +
              ", loopEnabled=" + std::to_string(loopEnabled));
 
-
+    // 若当前有播放中的视频，暂停（冻结画面保留在画布，加入暂停列表）
     if (is_insert_video_playing_) {
-        stopInsertVideoPlayback();
+        pauseCurrentInsertVideo();
     }
 
     startInsertVideoPlayback(fileId, loopEnabled);
+    update_insert_video_widget_state();
+
+    // 开始插播后自动关闭插播列表窗口，避免遮挡画布
+    if (insert_video_widget_) {
+        insert_video_widget_->hide();
+    }
 }
 
 void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnabled) {
@@ -2205,6 +2247,9 @@ void MainWindow::startInsertVideoPlayback(const QString& fileId, bool loopEnable
         return;
     }
 
+
+    // 记录 source 加入的场景（Bug1 fix）
+    insert_video_scene_name_ = QString::fromStdString(scene->get_name());
 
     // [DIAG] 记录插播视频加入的场景
     LOG_INFO("[DIAG][START_INSERT] Adding insert video source_id=" + source_id
@@ -2341,22 +2386,23 @@ void MainWindow::stopInsertVideoPlayback() {
         insert_video_timer_ = nullptr;
     }
 
+    // Bug2 fix: 先 stop 解码线程（不再产帧），再 detach 清队列（安全无竞态）
+    if (current_insert_video_source_) {
+        current_insert_video_source_->stop();
+    }
 
     if (encoder_bridge_ && current_insert_video_source_) {
         encoder_bridge_->detach_insert_video_source(current_insert_video_source_.get());
     }
 
-
-    if (scene_manager_ && current_insert_video_source_) {
-        auto scene = scene_manager_->get_current_scene();
-        if (scene) {
-            scene->remove_source(current_insert_video_source_->get_id());
-        }
+    // Bug1 fix: 从 source 实际所在的场景删除，而非当前激活场景
+    if (scene_manager_ && current_insert_video_source_ && !insert_video_scene_name_.isEmpty()) {
+        scene_manager_->remove_source_from_scene(
+            insert_video_scene_name_.toStdString(),
+            current_insert_video_source_->get_id());
     }
 
-
     if (current_insert_video_source_) {
-        current_insert_video_source_->stop();
         current_insert_video_source_->shutdown();
         current_insert_video_source_.reset();
     }
@@ -2367,10 +2413,22 @@ void MainWindow::stopInsertVideoPlayback() {
     }
 
     current_insert_video_file_id_.clear();
+    insert_video_scene_name_.clear();
+    insert_video_last_frame_.reset();
     is_insert_video_playing_ = false;
 
-    update_audio_mix_mode();
+    // 同时清理所有暂停中的视频（完全停止时不保留任何暂停槽）
+    for (auto& entry : paused_insert_videos_) {
+        if (!entry.source) continue;
+        if (scene_manager_ && !entry.scene_name.isEmpty()) {
+            scene_manager_->remove_source_from_scene(
+                entry.scene_name.toStdString(), entry.source->get_id());
+        }
+        entry.source->shutdown();
+    }
+    paused_insert_videos_.clear();
 
+    update_audio_mix_mode();
 
     sync_scene_to_compositor();
     build_scene_list();
@@ -2380,6 +2438,173 @@ void MainWindow::stopInsertVideoPlayback() {
 
 void MainWindow::on_stop_insert_video() {
     stopInsertVideoPlayback();
+}
+
+void MainWindow::pauseCurrentInsertVideo() {
+    if (!is_insert_video_playing_ || !current_insert_video_source_) return;
+
+    LOG_INFO("Pausing insert video (frozen in canvas): " + current_insert_video_file_id_.toStdString());
+
+    // 1. 停止定时器
+    if (insert_video_timer_) {
+        insert_video_timer_->stop();
+        insert_video_timer_->deleteLater();
+        insert_video_timer_ = nullptr;
+    }
+
+    // 2. Bug2 fix 顺序：先 stop 解码线程，再 detach 清队列
+    current_insert_video_source_->stop();
+    if (encoder_bridge_) {
+        encoder_bridge_->detach_insert_video_source(current_insert_video_source_.get());
+    }
+
+    // 3. 追加到暂停列表（保留在场景中，画面冻结在最后一帧，记录断点位置）
+    PausedInsertEntry entry;
+    entry.source              = current_insert_video_source_;
+    entry.file_id             = current_insert_video_file_id_;
+    entry.scene_name          = insert_video_scene_name_;
+    entry.frozen_frame        = insert_video_last_frame_;
+    entry.paused_position_ms  = current_insert_video_source_->get_current_position_ms();
+    paused_insert_videos_.push_back(std::move(entry));
+
+    current_insert_video_source_.reset();
+    current_insert_video_file_id_.clear();
+    insert_video_scene_name_.clear();
+    is_insert_video_playing_ = false;
+
+    if (audio_engine_) {
+        audio_engine_->set_media_mute(true);
+        audio_engine_->clearMediaFrames();
+    }
+    update_audio_mix_mode();
+    build_scene_list();
+
+    LOG_INFO("Insert video paused");
+}
+
+void MainWindow::resumePausedInsertVideo() {
+    // 恢复最近暂停的那个（列表末尾）
+    if (paused_insert_videos_.empty()) return;
+    resumeSpecificInsertVideo(paused_insert_videos_.back().source->get_id());
+}
+
+void MainWindow::resumeSpecificInsertVideo(const std::string& source_id) {
+    // 在暂停列表中找到目标 entry
+    auto it = std::find_if(paused_insert_videos_.begin(), paused_insert_videos_.end(),
+        [&source_id](const PausedInsertEntry& e) {
+            return e.source && e.source->get_id() == source_id;
+        });
+    if (it == paused_insert_videos_.end()) {
+        LOG_WARNING("resumeSpecificInsertVideo: source not found in paused list: " + source_id);
+        return;
+    }
+
+    // 若当前有正在播放的视频，先暂停（加入列表，不完全停止）
+    if (is_insert_video_playing_) {
+        pauseCurrentInsertVideo();
+        // 重新查找（pauseCurrentInsertVideo 修改了 vector）
+        it = std::find_if(paused_insert_videos_.begin(), paused_insert_videos_.end(),
+            [&source_id](const PausedInsertEntry& e) {
+                return e.source && e.source->get_id() == source_id;
+            });
+        if (it == paused_insert_videos_.end()) return;
+    }
+
+    LOG_INFO("Resuming specific insert video: " + it->file_id.toStdString() +
+             " from position " + std::to_string(it->paused_position_ms) + "ms");
+
+    auto source                  = it->source;
+    QString file_id              = it->file_id;
+    QString scene_name           = it->scene_name;
+    int64_t resume_position_ms   = it->paused_position_ms;
+
+    // 从暂停列表中移除（先保存再 erase，避免悬空引用）
+    paused_insert_videos_.erase(it);
+
+    // attach encoder bridge
+    if (encoder_bridge_) {
+        encoder_bridge_->attach_insert_video_source(source.get());
+    }
+
+    // 从断点位置快速重启（保留硬件解码器上下文，无冷启动延迟）
+    if (source->seek_and_restart(resume_position_ms)) {
+        current_insert_video_source_  = source;
+        current_insert_video_file_id_ = file_id;
+        insert_video_scene_name_      = scene_name;
+        is_insert_video_playing_      = true;
+
+        insert_video_timer_ = new QTimer(this);
+        connect(insert_video_timer_, &QTimer::timeout, this, &MainWindow::on_insert_video_frame_ready);
+        insert_video_timer_->start(33);
+
+        if (audio_engine_) {
+            audio_engine_->clearMediaFrames();
+            audio_engine_->set_media_mute(false);
+            audio_engine_->set_media_volume(0.7f);
+        }
+        update_audio_mix_mode();
+        build_scene_list();
+
+        LOG_INFO("Insert video resumed from position " + std::to_string(resume_position_ms) + "ms");
+    } else {
+        LOG_ERROR("Failed to restart media source: " + source_id);
+        // 恢复失败：把这个 source 从场景中完全移除
+        if (scene_manager_ && !scene_name.isEmpty()) {
+            scene_manager_->remove_source_from_scene(scene_name.toStdString(), source_id);
+        }
+        source->shutdown();
+        sync_scene_to_compositor();
+    }
+}
+
+void MainWindow::stopPausedInsertVideo() {
+    // 停止最近暂停的那个（列表末尾）
+    if (paused_insert_videos_.empty()) return;
+
+    PausedInsertEntry entry = std::move(paused_insert_videos_.back());
+    paused_insert_videos_.pop_back();
+
+    LOG_INFO("Stopping paused insert video: " + entry.file_id.toStdString());
+
+    // 从其所在场景移除
+    if (scene_manager_ && !entry.scene_name.isEmpty()) {
+        scene_manager_->remove_source_from_scene(
+            entry.scene_name.toStdString(), entry.source->get_id());
+    }
+
+    // 移除 compositor layer
+    if (compositor_) {
+        const std::string sid = entry.source->get_id();
+        if (compositor_->has_layer(sid)) {
+            compositor_->remove_layer(sid);
+        }
+    }
+
+    entry.source->shutdown();
+
+    sync_scene_to_compositor();
+    build_scene_list();
+
+    LOG_INFO("Paused insert video removed from canvas");
+}
+
+void MainWindow::update_insert_video_widget_state() {
+    if (!insert_video_widget_) return;
+
+    QString playingFileId, playingFileName, pausedFileId, pausedFileName;
+    if (is_insert_video_playing_ && !current_insert_video_file_id_.isEmpty()) {
+        playingFileId = current_insert_video_file_id_;
+        auto fileItem = InsertFileManager::instance()->getFile(playingFileId);
+        if (fileItem) playingFileName = fileItem->fileName;
+    }
+    // 面板只展示最近暂停的那个（列表末尾）
+    if (!paused_insert_videos_.empty()) {
+        pausedFileId = paused_insert_videos_.back().file_id;
+        auto fileItem = InsertFileManager::instance()->getFile(pausedFileId);
+        if (fileItem) pausedFileName = fileItem->fileName;
+    }
+    insert_video_widget_->setCurrentInsertState(
+        playingFileId, playingFileName, pausedFileId, pausedFileName);
 }
 
 void MainWindow::on_insert_video_frame_ready() {
@@ -2416,6 +2641,7 @@ void MainWindow::on_insert_video_frame_ready() {
 
     if (encoder_bridge_->pop_insert_video_frame(synced_frame) && synced_frame.frame) {
         compositor_->update_layer_video_frame(source_id, synced_frame.frame);
+        insert_video_last_frame_ = synced_frame.frame;  // 保存最后一帧，供暂停时画面冻结用
 
 
         static int frame_count = 0;
@@ -3373,6 +3599,30 @@ void MainWindow::setup_canvas_widget() {
             sync_scene_to_compositor();
         });
 
+    // 单击画布上的插播视频：点哪个激活哪个，其余自动暂停
+    // 双击已恢复为全屏/最大化（见 canvas.cpp mouseDoubleClickEvent）
+    connect(canvas_widget_, &CanvasWidget::insert_video_single_clicked, this,
+        [this](std::shared_ptr<SceneItem> item) {
+            if (!item) return;
+            const std::string clicked_id = item->get_source_id();
+
+            if (current_insert_video_source_ &&
+                current_insert_video_source_->get_id() == clicked_id) {
+                // 点击的是正在播放的那个 → 暂停
+                // seek skip 期间拒绝暂停：此时 is_running()=true 但画面仍冻结（解码跳帧中）
+                // 若此时允许暂停，用户刚点击播放后因为"看起来没反应"再次点击会误触发暂停
+                if (current_insert_video_source_->is_seeking()) {
+                    LOG_INFO("[INSERT_VIDEO] Click ignored: still seeking (seek skip in progress)");
+                    return;
+                }
+                pauseCurrentInsertVideo();
+            } else {
+                // 点击的是某个暂停中的 → 激活它（当前播放的自动暂停）
+                resumeSpecificInsertVideo(clicked_id);
+            }
+            update_insert_video_widget_state();
+        });
+
     LOG_INFO("Canvas widget setup completed");
     // After canvas inserted, update placeholder visibility
     updateStagePlaceholderVisibility();
@@ -3947,6 +4197,46 @@ void MainWindow::delete_scene_item(int index) {
         }
     }
 
+    // --- 插播视频特殊处理 ---
+    // 若删除的是正在播放的插播视频：停止解码/音频，清除播放状态
+    // （scene/compositor 的移除由后续通用逻辑完成，不重复调用 stopInsertVideoPlayback）
+    if (is_insert_video_playing_ && current_insert_video_source_ &&
+        current_insert_video_source_->get_id() == sid) {
+        LOG_INFO("[delete_scene_item] Deleting active insert video source: " + sid);
+
+        if (insert_video_timer_) {
+            insert_video_timer_->stop();
+            insert_video_timer_->deleteLater();
+            insert_video_timer_ = nullptr;
+        }
+        current_insert_video_source_->stop();
+        if (encoder_bridge_) {
+            encoder_bridge_->detach_insert_video_source(current_insert_video_source_.get());
+        }
+        current_insert_video_source_->shutdown();
+        current_insert_video_source_.reset();
+        if (audio_engine_) {
+            audio_engine_->set_media_mute(true);
+            audio_engine_->clearMediaFrames();
+        }
+        current_insert_video_file_id_.clear();
+        insert_video_scene_name_.clear();
+        insert_video_last_frame_.reset();
+        is_insert_video_playing_ = false;
+        update_audio_mix_mode();
+    }
+
+    // 若删除的是暂停中的插播视频：从暂停列表移除并释放
+    auto paused_it = std::find_if(paused_insert_videos_.begin(), paused_insert_videos_.end(),
+        [&sid](const PausedInsertEntry& e) {
+            return e.source && e.source->get_id() == sid;
+        });
+    if (paused_it != paused_insert_videos_.end()) {
+        LOG_INFO("[delete_scene_item] Deleting paused insert video source: " + sid);
+        paused_it->source->shutdown();
+        paused_insert_videos_.erase(paused_it);
+    }
+
     scene->remove_scene_item(item);
 
     if (capture_manager_ && capture_manager_->has_source(sid)) {
@@ -3962,6 +4252,7 @@ void MainWindow::delete_scene_item(int index) {
         if (is_camera_preview_) stop_camera_preview();
     }
 
+    update_insert_video_widget_state();
     update_scene_items();
     if (canvas_widget_) canvas_widget_->refresh();
 }
@@ -4113,9 +4404,34 @@ void MainWindow::sync_scene_to_compositor() {
         compositor_->set_layer_order(sid, it->get_order());
     }
 
+    // 收集属于当前激活场景的暂停视频 source ID
+    // 注意：只保留当前场景的暂停视频 layer，其他场景的暂停视频 layer 需要移除
+    // 否则切场景后，旧场景的冻结画面会叠加在新场景画面上
+    std::string current_scene_name = scene ? scene->get_name() : "";
+    std::unordered_set<std::string> paused_sids_in_current_scene;
+    for (const auto& entry : paused_insert_videos_) {
+        if (entry.source && entry.scene_name.toStdString() == current_scene_name) {
+            paused_sids_in_current_scene.insert(entry.source->get_id());
+        }
+    }
+
     for (const auto& lid : compositor_->get_layer_ids()) {
         if (active.find(lid) == active.end()) {
+            // 只保留属于当前场景的暂停视频 layer，其他场景的直接移除
+            if (paused_sids_in_current_scene.count(lid)) {
+                continue;
+            }
             compositor_->remove_layer(lid);
+        }
+    }
+
+    // 恢复属于当前场景的暂停视频冻结帧（防止 layer 重建后变黑）
+    for (const auto& entry : paused_insert_videos_) {
+        if (!entry.source || !entry.frozen_frame) continue;
+        if (entry.scene_name.toStdString() != current_scene_name) continue;
+        const std::string sid = entry.source->get_id();
+        if (compositor_->has_layer(sid)) {
+            compositor_->update_layer_video_frame(sid, entry.frozen_frame);
         }
     }
 }

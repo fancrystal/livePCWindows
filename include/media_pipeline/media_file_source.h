@@ -28,7 +28,8 @@ struct VideoFrame;
 // 媒体数据包
 struct MediaPacket {
     QByteArray data;           // H.264/H.265/AAC 原始数据
-    int64_t pts = 0;          // 显示时间戳
+    int64_t pts = 0;          // 显示时间戳（流原始单位）
+    int64_t pts_ms = 0;       // 显示时间戳（毫秒），用于 skip 阶段精确对齐音视频
     bool isKeyFrame = false;  // 是否关键帧（仅视频有效）
     bool isVideo = false;     // 标记是否为视频帧
 };
@@ -58,11 +59,23 @@ public:
     bool stop() override;
     bool shutdown() override;
 
+    // ========== 快速重启（保留 FFmpeg 上下文，避免硬件解码器冷启动）==========
+    // 用于暂停后恢复：seek 到指定位置（默认从头），flush 解码器，重启读取/调度线程
+    // 比 shutdown() + initialize() + start() 快得多（无需重新打开文件和初始化解码器）
+    // seek_position_ms = 0 从头播；> 0 从指定毫秒位置播
+    bool seek_and_restart(int64_t seek_position_ms = 0);
+
     std::shared_ptr<AudioFrame> get_audio_frame() override;
     std::shared_ptr<VideoFrame> get_video_frame() override;
 
     bool is_running() const override {
         return running_.load(std::memory_order_acquire);
+    }
+
+    // seek_and_restart 之后、seek skip 完成之前返回 true（解码器在快速跳帧阶段）
+    // 此期间 latest_frame_ 不更新、画面看起来冻结属于正常现象，不应响应用户暂停操作
+    bool is_seeking() const {
+        return seek_skip_target_ms_.load(std::memory_order_relaxed) > 0;
     }
 
     std::string get_metadata() const override {
@@ -131,6 +144,16 @@ public:
     void set_external_time_base(int64_t base_time_us) {
         std::lock_guard<std::mutex> lock(external_time_base_mutex_);
         external_base_time_us_ = base_time_us;
+    }
+
+    // 同时设置时间基准和首帧文件PTS（原子操作，避免首帧PTS计算错误）
+    // 用于在第一帧真正输出时由外部（bridge）调用，保证视频PTS与MediaClock严格对齐
+    // base_time_us: 首帧对应的MediaClock时刻（微秒）
+    // first_frame_file_pts_ms: 首帧在文件中的PTS（毫秒），用作相对偏移基准
+    void set_external_time_base_with_first_pts(int64_t base_time_us, int64_t first_frame_file_pts_ms) {
+        std::lock_guard<std::mutex> lock(external_time_base_mutex_);
+        external_base_time_us_ = base_time_us;
+        first_frame_pts_ms_.store(first_frame_file_pts_ms, std::memory_order_relaxed);
     }
 
     // 获取当前是否已设置外部时间基准
@@ -229,7 +252,19 @@ private:
 
     // ========== 解码器状态 ==========
     std::atomic<bool> need_decoder_flush_{false};   // 循环播放 seek 后需要 flush 解码器
+    std::atomic<int64_t> seek_skip_target_ms_{0};   // 精确 seek：解码但跳过时间戳 < 此值的帧（keyframe 补偿）
     AVPixelFormat sws_src_fmt_ = AV_PIX_FMT_NONE;  // 当前 sws_ctx_ 对应的源格式，用于动态检查
+
+    // ========== Reader 重同步（seek skip 后纠正 Reader 超前问题）==========
+    // seek skip 期间 Scheduler 快速消费视频包 + 音频包被丢弃，Reader 在文件中
+    // 向前跑得比视频目标位置快很多（可超前数秒）。skip 完成后须让 Reader seek
+    // 回目标位置，否则音频数据来自文件的"未来"位置，造成音频超前视频数秒的感知延迟。
+    std::atomic<bool> need_reader_resync_{false};
+    std::atomic<int64_t> reader_resync_position_ms_{0};
+
+    // resync 后 Reader 会 seek 回关键帧并重新设置 seek_skip_target_ms_ 进行短距离二次跳帧。
+    // 此标记告知 Scheduler "这次 skip_done 是 resync 引起的二次跳帧"，不再触发第三次 resync。
+    std::atomic<bool> post_resync_skip_active_{false};
 
     // ========== 目标输出参数（与主直播匹配）==========
     int target_width_ = 1280;

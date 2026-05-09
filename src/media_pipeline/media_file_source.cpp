@@ -108,6 +108,91 @@ bool MediaFileSource::shutdown() {
     return true;
 }
 
+bool MediaFileSource::seek_and_restart(int64_t seek_position_ms) {
+    LOG_INFO("[MediaFileSource] seek_and_restart: stopping threads... (seek_position_ms=" +
+             std::to_string(seek_position_ms) + ")");
+
+    // 1. 停止当前线程（等待线程退出，保留 FFmpeg 上下文）
+    stop();
+
+    // 2. Seek 到指定位置（默认从头，seek_position_ms > 0 则从指定毫秒处恢复）
+    if (format_ctx_) {
+        int64_t seek_pts = 0;
+        if (seek_position_ms > 0 && video_stream_idx_ >= 0) {
+            // 把 ms 转换为视频流的 time_base 单位
+            AVRational tb = format_ctx_->streams[video_stream_idx_]->time_base;
+            seek_pts = av_rescale_q(seek_position_ms, {1, 1000}, tb);
+        }
+        int seek_stream = (video_stream_idx_ >= 0) ? video_stream_idx_ : -1;
+        int ret = av_seek_frame(format_ctx_, seek_stream, seek_pts, AVSEEK_FLAG_BACKWARD);
+        if (ret < 0) {
+            LOG_WARNING("[MediaFileSource] seek_and_restart: av_seek_frame failed, ret=" + std::to_string(ret) +
+                        ", falling back to beginning");
+            // seek 失败时回落到文件开头
+            av_seek_frame(format_ctx_, -1, 0, AVSEEK_FLAG_BACKWARD);
+        } else {
+            LOG_INFO("[MediaFileSource] seek_and_restart: seeked to " +
+                     std::to_string(seek_position_ms) + "ms (pts=" + std::to_string(seek_pts) + ")");
+        }
+    }
+
+    // 3. 清空数据包队列（Reader 线程重新从 seek 位置填充）
+    {
+        std::unique_lock<std::mutex> lock(video_packet_mutex_);
+        while (!video_packet_queue_.empty()) video_packet_queue_.pop();
+    }
+    {
+        std::unique_lock<std::mutex> lock(audio_packet_mutex_);
+        while (!audio_packet_queue_.empty()) audio_packet_queue_.pop();
+    }
+
+    // 4. 清空视频帧队列
+    {
+        std::unique_lock<std::mutex> lock(video_frame_mutex_);
+        video_frame_queue_.clear();
+    }
+
+    // 5. 清空音频帧队列
+    {
+        std::unique_lock<std::mutex> lock(audio_frame_mutex_);
+        while (!audio_frame_queue_.empty()) audio_frame_queue_.pop();
+    }
+
+    // 6. 重置音频重采样缓冲区状态
+    audio_resample_buffer_.clear();
+    audio_resample_buffer_offset_ = 0;
+    audio_resample_timestamp_ms_ = 0;
+    audio_ts_initialized_ = false;
+
+    // 7. 重置时间基准
+    first_frame_pts_ms_ = 0;
+    // current_position_ms_ 初始化为目标位置：
+    //   即使 scheduler 线程尚未解码任何帧，下次 pause 读到的位置也是正确的 seek 点
+    //   而不是 0（从头）
+    current_position_ms_.store(seek_position_ms, std::memory_order_relaxed);
+
+    // 8. 重置状态标志
+    reader_finished_ = false;
+    finished_ = false;
+
+    // 9. 关键修复：不在主线程调用 avcodec_flush_buffers！
+    //    h264_cuvid 等 CUDA 硬件解码器的 CUDA Context 绑定到 scheduler 线程。
+    //    若从主线程 flush，新 scheduler 线程拿不到 CUDA Context → 解码静默失败 → 0 帧。
+    //    改为设置 need_decoder_flush_ 标志，让 scheduler 线程在自己的上下文中执行 flush。
+    //    （与循环播放 seek 的处理方式完全一致）
+    need_decoder_flush_ = true;
+
+    // 10. 精确 seek 补偿：av_seek_frame 只能定位到最近的关键帧（可能早于目标位置）
+    //     设置 seek_skip_target_ms_，让 scheduler 线程跳过时间戳 < seek_position_ms 的帧
+    //     从而精确定位到用户暂停时的位置，而不是从最近关键帧（通常是文件开头）播放
+    seek_skip_target_ms_.store(seek_position_ms, std::memory_order_relaxed);
+
+    LOG_INFO("[MediaFileSource] seek_and_restart: restarting threads...");
+
+    // 10. 重启线程（硬件解码器上下文已存在，无冷启动延迟）
+    return start();
+}
+
 // ============================================================================
 // 帧获取接口
 // ============================================================================
@@ -230,6 +315,11 @@ void MediaFileSource::readerThreadFunc() {
                     // 通知 scheduler 线程 flush 解码器内部缓冲（必须在 seek 后，由 scheduler 执行）
                     need_decoder_flush_ = true;
 
+                    // 循环后清除 seek_skip_target：
+                    // seek_and_restart 设置的断点恢复目标在第一圈已过 EOF，循环后帧时间戳
+                    // 从 0 重新开始，若不清除则 skip 条件永远成立，视频永久冻结。
+                    seek_skip_target_ms_.store(0, std::memory_order_relaxed);
+
                     // 重置 packet_count 并继续
                     packet_count = 0;
 
@@ -251,6 +341,8 @@ void MediaFileSource::readerThreadFunc() {
             MediaPacket mediaPacket;
             mediaPacket.data = QByteArray(reinterpret_cast<const char*>(packet->data), packet->size);
             mediaPacket.pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+            mediaPacket.pts_ms = static_cast<int64_t>(
+                mediaPacket.pts * av_q2d(format_ctx_->streams[video_stream_idx_]->time_base) * 1000);
             mediaPacket.isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
             mediaPacket.isVideo = true;
 
@@ -272,6 +364,8 @@ void MediaFileSource::readerThreadFunc() {
             MediaPacket mediaPacket;
             mediaPacket.data = QByteArray(reinterpret_cast<const char*>(packet->data), packet->size);
             mediaPacket.pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+            mediaPacket.pts_ms = static_cast<int64_t>(
+                mediaPacket.pts * av_q2d(format_ctx_->streams[audio_stream_idx_]->time_base) * 1000);
             mediaPacket.isVideo = false;
 
             {
@@ -543,6 +637,69 @@ void MediaFileSource::schedulerThreadFunc() {
                 if (decodeVideoPacket(avPacket)) {
                     auto videoFrame = convertToVideoFrame(video_frame_);
                     if (videoFrame) {
+                        // -------------------------------------------------------
+                        // 精确 seek 补偿：跳过时间戳早于目标位置的帧
+                        // av_seek_frame 只能定位到关键帧，可能早于用户暂停的位置
+                        // seek_skip_target_ms_ > 0 时：跳过此帧，快速解码下一帧直到到达目标
+                        // -------------------------------------------------------
+                        const int64_t skip_target = seek_skip_target_ms_.load(std::memory_order_relaxed);
+                        if (skip_target > 0 && videoFrame->timestamp_ms < skip_target) {
+                            // -------------------------------------------------------
+                            // 精确 seek 跳帧：跳过时间戳 < 目标的视频帧
+                            //
+                            // 音频丢弃策略（关键）：
+                            //   按视频帧时间戳精确丢弃对应的音频包，而非固定数量。
+                            //   旧策略"每帧 pop 2 个音频包"会导致音频被过度丢弃：
+                            //     视频帧间隔 33ms，音频帧间隔 21ms，比值 1.57；
+                            //     每33ms视频应丢 1.57 个音频，固定丢 2 个则超出 27%；
+                            //     skip 期间累计过度丢弃 → skip_done 时剩余音频
+                            //     时间戳超过视频目标约 700ms，导致音频超前播放。
+                            //
+                            //   新策略：丢弃 pts_ms <= 当前视频帧时间戳的音频包。
+                            //   skip_done 时剩余音频自然从 skip_target 附近开始，音视频对齐。
+                            // -------------------------------------------------------
+                            current_position_ms_.store(videoFrame->timestamp_ms, std::memory_order_relaxed);
+
+                            // 按时间戳精确丢弃音频：只丢弃时间戳 <= 当前视频帧的音频包
+                            {
+                                std::lock_guard<std::mutex> aLock(audio_packet_mutex_);
+                                while (!audio_packet_queue_.empty() &&
+                                       audio_packet_queue_.front().pts_ms <= videoFrame->timestamp_ms) {
+                                    audio_packet_queue_.pop();
+                                }
+                            }
+                            audio_packet_cv_.notify_one();
+
+                            video_decoded = true;
+                            av_packet_free(&avPacket);
+                            continue;  // 跳过后续队列管理和输出逻辑，处理下一个包
+                        } else if (skip_target > 0) {
+                            seek_skip_target_ms_.store(0, std::memory_order_relaxed);
+
+                            // 诊断：记录 skip_done 时剩余音频包及其起始时间戳
+                            size_t audio_remaining = 0;
+                            int64_t audio_front_pts_ms = -1;
+                            {
+                                std::lock_guard<std::mutex> aLock(audio_packet_mutex_);
+                                audio_remaining = audio_packet_queue_.size();
+                                if (!audio_packet_queue_.empty()) {
+                                    audio_front_pts_ms = audio_packet_queue_.front().pts_ms;
+                                }
+                            }
+                            LOG_INFO("[MediaFileSource-Scheduler] Seek skip done, video=" +
+                                std::to_string(videoFrame->timestamp_ms) + "ms (target=" +
+                                std::to_string(skip_target) + "ms)"
+                                " | audio_remaining=" + std::to_string(audio_remaining) +
+                                " front_pts=" + std::to_string(audio_front_pts_ms) + "ms"
+                                " | offset=" + std::to_string(audio_front_pts_ms - videoFrame->timestamp_ms) + "ms");
+
+                            // 重置音频重采样缓冲区（清除 flush 前可能残留的旧数据）
+                            audio_resample_buffer_.clear();
+                            audio_resample_buffer_offset_ = 0;
+                            audio_resample_timestamp_ms_ = 0;
+                            audio_ts_initialized_ = false;
+                        }
+
                         int64_t frame_pts_ns = videoFrame->timestamp_ms * 1000000;
                         if (first_frame) {
                             start_pts_ns = frame_pts_ns;
@@ -594,7 +751,7 @@ void MediaFileSource::schedulerThreadFunc() {
 
                         if (frame_to_output) {
                             // -------------------------------------------------------
-                            // 按原视频时间轴节奏输出（避免“解码过快一秒播完”）
+                            // 按原视频时间轴节奏输出（避免"解码过快一秒播完"）
                             // 使用 steady_clock 做本地播放时钟：base_sys_time_ns + (pts - start_pts)
                             // -------------------------------------------------------
                             {
@@ -612,7 +769,7 @@ void MediaFileSource::schedulerThreadFunc() {
                                 const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                     std::chrono::steady_clock::now().time_since_epoch()).count();
 
-                                // 若我们跑在“视频时间轴”前面，则睡眠到应当展示的时刻
+                                // 若我们跑在"视频时间轴"前面，则睡眠到应当展示的时刻
                                 if (desired_ns > now_ns) {
                                     const int64_t sleep_ns = desired_ns - now_ns;
                                     // 避免极端情况下睡太久（例如异常 PTS）；超过 200ms 直接截断到 200ms
@@ -620,7 +777,7 @@ void MediaFileSource::schedulerThreadFunc() {
                                     std::this_thread::sleep_for(std::chrono::nanoseconds(
                                         sleep_ns > kMaxSleepNs ? kMaxSleepNs : sleep_ns));
                                 } else {
-                                    // 若落后过多（>500ms），重置基准避免长期追赶造成“跳帧感”
+                                    // 若落后过多（>500ms），重置基准避免长期追赶造成"跳帧感"
                                     const int64_t lag_ns = now_ns - desired_ns;
                                     const int64_t kLagResetNs = 500LL * 1000000LL;
                                     if (lag_ns > kLagResetNs) {
@@ -641,6 +798,11 @@ void MediaFileSource::schedulerThreadFunc() {
                                 }
                             }
 
+                            // 实时更新当前播放位置（暂停时供外部读取暂停点）
+                            current_position_ms_.store(frame_to_output->timestamp_ms,
+                                                       std::memory_order_relaxed);
+
+                            decoded_frame_count++;
                             if (frame_ready_callback_with_pts_) {
                                 frame_ready_callback_with_pts_(frame_to_output, pts_ms);
                             } else if (frame_ready_callback_) {

@@ -1262,19 +1262,16 @@ bool CompositorEncoderBridge::pop_from_encode_queue(PreEncodeVideoFrame& frame) 
 void CompositorEncoderBridge::attach_insert_video_source(MediaFileSource* source) {
     if (!source) return;
 
-    // 获取当前推流的媒体时钟作为时间基准
-    int64_t current_stream_time_us = media_clock_.get_elapsed_time_us();
-
-    // 注入到插播视频源
-    source->set_external_time_base(current_stream_time_us);
-
-    LOG_INFO("[CompositorEncoderBridge] Attached insert video with time base: " +
-             std::to_string(current_stream_time_us) + "us");
-
-    // 保存 source_id 用于直接更新 Compositor
-    const std::string source_id = source->get_id();
+    // 不在 attach 时设置时间基准：
+    // seek_and_restart + skip 可能需要 0.5~1 秒，期间 audio mix 线程的 MediaClock 已推进。
+    // 若在 attach 时记录 base，首帧视频 PTS = attach_time，而音频 PTS ≈ attach_time + skip_duration，
+    // 导致音频固定超前 skip_duration（约 0.5~1 秒）。
+    // 修复：第一帧真正输出时（skip 完成后）才记录 MediaClock 作为 base，保证 A/V PTS 对齐。
+    LOG_INFO("[CompositorEncoderBridge] Attached insert video source: " + source->get_id() +
+             " (time base will be set on first frame output)");
 
     // 设置帧回调，解码后同时：1) 推送到画布渲染 2) 推入同步器用于编码
+    // pts_ms 在外部时间基准未设置时为文件原始 PTS，设置后为流时间 PTS
     source->set_frame_ready_callback_with_pts(
         [this, source](std::shared_ptr<VideoFrame> frame, int64_t pts_ms) {
             if (!frame || !frame->data) return;
@@ -1289,6 +1286,21 @@ void CompositorEncoderBridge::attach_insert_video_source(MediaFileSource* source
                 LOG_INFO("[CALLBACK] insert_video fps: " + std::to_string(callback_count));
                 callback_count = 0;
                 last_callback_time = now;
+            }
+
+            // 首帧：在 skip 完成后首次输出时设置时间基准
+            // 此时 external_base 未设置 → pts_ms 为文件原始 PTS
+            // 记录当前 MediaClock 和文件 PTS，保证后续帧 PTS 与 MediaClock 对齐
+            if (!source->has_external_time_base()) {
+                int64_t file_pts = pts_ms;  // 此时 pts_ms 为文件原始 PTS
+                int64_t now_us = media_clock_.get_elapsed_time_us();
+                source->set_external_time_base_with_first_pts(now_us, file_pts);
+                // 首帧 PTS 取当前 MediaClock（相对偏移 = 0）
+                pts_ms = now_us / 1000;
+                LOG_INFO("[CompositorEncoderBridge] Insert video time base set on first frame:"
+                         " file_pts=" + std::to_string(file_pts) +
+                         "ms stream_base=" + std::to_string(now_us) + "us"
+                         " -> stream_pts=" + std::to_string(pts_ms) + "ms");
             }
 
             // 1) 直接传递原始数据，避免拷贝

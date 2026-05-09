@@ -73,6 +73,10 @@ signals:
     
     // 场景项被移动时发出的信号
     void scene_item_moved(std::shared_ptr<SceneItem> item, const Transform& old_transform, const Transform& new_transform);
+
+    // FILE_SOURCE 场景项被单击时发出（用于暂停/恢复插播视频）
+    // 双击行为已恢复为全屏/最大化
+    void insert_video_single_clicked(std::shared_ptr<SceneItem> item);
     
 protected:
     // 重写Qt绘制事件
@@ -124,7 +128,17 @@ private:
     std::shared_ptr<SceneItem> selected_item_;
     std::shared_ptr<SceneItem> hovered_item_; // 当前悬停的场景项
     QPoint last_mouse_pos_;
+    QPoint press_pos_;           // 鼠标按下位置，用于区分单击和拖动
     Transform original_transform_;
+    // 单击/双击消歧 timer（基于系统双击间隔）
+    // Qt 双击序列：Press → Release(1) → DoubleClick → Release(2)
+    // - Release(1)：启动 timer
+    // - mouseDoubleClickEvent：停掉 timer + 设置 suppress_release_timer_ 标志
+    // - Release(2)：发现标志位，跳过 timer 启动并清除标志
+    // 这样 timer 只会在真正的单击后到期并发出信号。
+    QTimer* click_debounce_timer_ = nullptr;
+    std::shared_ptr<SceneItem> pending_click_item_;
+    bool suppress_release_timer_ = false;  // 抑制 Release(2) 重启 timer
     
     // 调整大小句柄状态
     int resize_handle_ = 0; // 0 = 不调整大小, 1-8 = 调整大小句柄

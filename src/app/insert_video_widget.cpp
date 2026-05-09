@@ -56,6 +56,73 @@ void InsertVideoWidget::setupUI() {
     titleLayout->addStretch();
     mainLayout->addLayout(titleLayout);
 
+    // 当前插播状态面板（初始隐藏，有插播视频时显示）
+    {
+        auto* panel = new QFrame(this);
+        panel->setObjectName("currentStatePanel");
+        panel->setStyleSheet(
+            "QFrame#currentStatePanel { background-color: #1e2a3a; border: 1px solid #4a6ef0; "
+            "border-radius: 6px; padding: 2px; }");
+        panel->hide();
+        currentStatePanel_ = panel;
+
+        auto* panelLayout = new QVBoxLayout(panel);
+        panelLayout->setContentsMargins(10, 6, 10, 6);
+        panelLayout->setSpacing(4);
+
+        // 正在播放行
+        auto* playingRow = new QHBoxLayout();
+        playingLabel_ = new QLabel(this);
+        playingLabel_->setStyleSheet("color: #00cc66; font-size: 13px;");
+        playingRow->addWidget(playingLabel_, 1);
+
+        pauseButton_ = new QPushButton(QString::fromUtf8("⏸ 暂停"), this);
+        pauseButton_->setFixedSize(72, 28);
+        pauseButton_->setStyleSheet(
+            "QPushButton { background: #2a5a3a; color: white; border-radius: 4px; padding: 2px 8px; }"
+            "QPushButton:hover { background: #3a7a4a; }");
+        connect(pauseButton_, &QPushButton::clicked,
+                this, &InsertVideoWidget::requestPauseCurrentInsertVideo);
+        playingRow->addWidget(pauseButton_);
+
+        stopCurrentButton_ = new QPushButton(QString::fromUtf8("■ 停止"), this);
+        stopCurrentButton_->setFixedSize(64, 28);
+        stopCurrentButton_->setStyleSheet(
+            "QPushButton { background: #5a2a2a; color: white; border-radius: 4px; padding: 2px 8px; }"
+            "QPushButton:hover { background: #7a3a3a; }");
+        connect(stopCurrentButton_, &QPushButton::clicked,
+                this, &InsertVideoWidget::requestStopCurrentInsertVideo);
+        playingRow->addWidget(stopCurrentButton_);
+        panelLayout->addLayout(playingRow);
+
+        // 已暂停行
+        auto* pausedRow = new QHBoxLayout();
+        pausedLabel_ = new QLabel(this);
+        pausedLabel_->setStyleSheet("color: #aaaaaa; font-size: 13px;");
+        pausedRow->addWidget(pausedLabel_, 1);
+
+        resumeButton_ = new QPushButton(QString::fromUtf8("▶ 继续"), this);
+        resumeButton_->setFixedSize(72, 28);
+        resumeButton_->setStyleSheet(
+            "QPushButton { background: #2a3a5a; color: white; border-radius: 4px; padding: 2px 8px; }"
+            "QPushButton:hover { background: #3a5a8a; }");
+        connect(resumeButton_, &QPushButton::clicked,
+                this, &InsertVideoWidget::requestResumeInsertVideo);
+        pausedRow->addWidget(resumeButton_);
+
+        stopPausedButton_ = new QPushButton(QString::fromUtf8("✕ 移除"), this);
+        stopPausedButton_->setFixedSize(64, 28);
+        stopPausedButton_->setStyleSheet(
+            "QPushButton { background: #5a2a2a; color: white; border-radius: 4px; padding: 2px 8px; }"
+            "QPushButton:hover { background: #7a3a3a; }");
+        connect(stopPausedButton_, &QPushButton::clicked,
+                this, &InsertVideoWidget::requestStopPausedInsertVideo);
+        pausedRow->addWidget(stopPausedButton_);
+        panelLayout->addLayout(pausedRow);
+
+        mainLayout->addWidget(panel);
+    }
+
     // 搜索栏
     auto* searchLayout = new QHBoxLayout();
     searchEdit_ = new QLineEdit(this);
@@ -454,7 +521,7 @@ void InsertVideoWidget::onStartInsertClicked() {
 
     LOG_INFO("InsertVideoWidget: Emitting startInsertVideo for fileId=" + item->fileId.toStdString());
     emit startInsertVideo(item->fileId, item->fileName, loopEnabled);
-    accept(); // 关闭对话框
+    // 不关闭对话框，让用户在面板中看到暂停/继续/停止按钮
 }
 
 void InsertVideoWidget::onSearchTextChanged(const QString& text) {
@@ -690,4 +757,40 @@ QPixmap InsertVideoWidget::loadVideoThumbnail(const QString& coverUrl) const {
     // TODO: 实现缩略图加载
     // 可以下载封面图并缓存
     return QPixmap();
+}
+
+void InsertVideoWidget::setCurrentInsertState(const QString& playingFileId, const QString& playingFileName,
+                                              const QString& pausedFileId, const QString& pausedFileName)
+{
+    const bool hasPlaying = !playingFileId.isEmpty();
+    const bool hasPaused  = !pausedFileId.isEmpty();
+
+    // 播放行
+    if (playingLabel_) {
+        if (hasPlaying) {
+            playingLabel_->setText(QString::fromUtf8("▶ 插播中: ") + playingFileName);
+            playingLabel_->show();
+        } else {
+            playingLabel_->hide();
+        }
+    }
+    if (pauseButton_)      pauseButton_->setVisible(hasPlaying);
+    if (stopCurrentButton_) stopCurrentButton_->setVisible(hasPlaying);
+
+    // 暂停行
+    if (pausedLabel_) {
+        if (hasPaused) {
+            pausedLabel_->setText(QString::fromUtf8("⏸ 已暂停: ") + pausedFileName);
+            pausedLabel_->show();
+        } else {
+            pausedLabel_->hide();
+        }
+    }
+    if (resumeButton_)    resumeButton_->setVisible(hasPaused);
+    if (stopPausedButton_) stopPausedButton_->setVisible(hasPaused);
+
+    // 面板整体
+    if (currentStatePanel_) {
+        currentStatePanel_->setVisible(hasPlaying || hasPaused);
+    }
 }

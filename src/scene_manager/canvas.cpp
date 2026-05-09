@@ -5,6 +5,7 @@
 #include "scene_manager/render_utils.h"
 #include "media_pipeline/media_file_source.h"
 #include <QTimer>
+#include <QApplication>
 #include <QBrush>
 #include <QPen>
 #include <QCursor>
@@ -165,7 +166,8 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
             std::chrono::steady_clock::now().time_since_epoch()).count();
 
         // 使用新的无锁方法获取帧
-        QImage image = is_running ? mediaSource->get_latest_frame() : QImage();
+        // Note: always try to get the last frame even when stopped (supports frozen-pause state)
+        QImage image = mediaSource ? mediaSource->get_latest_frame() : QImage();
 
         // 统计渲染频率
         get_count++;
@@ -223,6 +225,78 @@ void CanvasRenderer::render_scene_item(QPainter& painter, const std::shared_ptr<
         painter.fillRect(item_rect, QBrush(rect_color));
     }
     
+    // ---------------------------------------------------------------
+    // Hover overlay for FILE_SOURCE: 悬浮时显示播放/暂停半透明图标
+    // SVG 设计稿: resources/play_overlay.svg / resources/pause_overlay.svg
+    // ---------------------------------------------------------------
+    if (item == hovered_item && source && source->get_type() == Source::Type::FILE_SOURCE) {
+        auto mediaFileSource = std::dynamic_pointer_cast<MediaFileSource>(source);
+        if (mediaFileSource) {
+            const bool playing  = mediaFileSource->is_running();
+            const bool seeking  = mediaFileSource->is_seeking(); // seek skip 中：画面冻结但解码器已启动
+
+            // 图标尺寸：item 短边的 28%，限制在 [22, 72] px
+            const int shorter = item_rect.width() < item_rect.height() ? item_rect.width() : item_rect.height();
+            int sz = shorter * 28 / 100;
+            if (sz < 22) sz = 22;
+            if (sz > 72) sz = 72;
+
+            // 图标中心：item 正中央
+            const int cx = item_rect.x() + item_rect.width()  / 2;
+            const int cy = item_rect.y() + item_rect.height() / 2;
+
+            painter.save();
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            // seek skip 期间：整体半透明，提示"加载中"
+            painter.setOpacity(seeking ? 0.55 : 1.0);
+
+            // 深色半透明圆形背景
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 150));
+            painter.drawEllipse(cx - sz / 2, cy - sz / 2, sz, sz);
+
+            // 白色图标
+            painter.setBrush(Qt::white);
+            painter.setPen(Qt::NoPen);
+
+            if (playing && !seeking) {
+                // 正在播放：暂停图标（两个竖向圆角矩形），提示"点击可暂停"
+                const int bar_w_raw = sz * 5 / 24;
+                const int bar_w  = bar_w_raw < 2 ? 2 : bar_w_raw;
+                const int bar_h  = sz * 11 / 20;
+                const int gap_raw = sz / 9;
+                const int gap    = gap_raw < 1 ? 1 : gap_raw;
+                const int total  = bar_w * 2 + gap;
+                const int bx     = cx - total / 2;
+                const int by     = cy - bar_h / 2;
+                const int rad_raw = bar_w / 3;
+                const int radius = rad_raw < 1 ? 1 : rad_raw;
+                painter.drawRoundedRect(bx,              by, bar_w, bar_h, radius, radius);
+                painter.drawRoundedRect(bx + bar_w + gap, by, bar_w, bar_h, radius, radius);
+            } else if (seeking) {
+                // seek skip 加载中：播放三角形（半透明），提示"即将播放，请稍候"
+                const int r  = sz * 11 / 30;
+                const int ox = sz / 12;
+                QPolygon tri;
+                tri << QPoint(cx - r * 2 / 5 + ox, cy - r)
+                    << QPoint(cx - r * 2 / 5 + ox, cy + r)
+                    << QPoint(cx + r            + ox, cy);
+                painter.drawPolygon(tri);
+            } else {
+                // 已暂停：播放图标（右指三角形），提示"点击可播放"
+                const int r  = sz * 11 / 30;
+                const int ox = sz / 12;
+                QPolygon tri;
+                tri << QPoint(cx - r * 2 / 5 + ox, cy - r)
+                    << QPoint(cx - r * 2 / 5 + ox, cy + r)
+                    << QPoint(cx + r            + ox, cy);
+                painter.drawPolygon(tri);
+            }
+
+            painter.restore();
+        }
+    }
+
     // 移除源名称显示（右上角的序列号）
     // painter.setOpacity(1.0);
     // painter.setPen(QColor(255, 255, 255));
@@ -361,6 +435,19 @@ CanvasWidget::CanvasWidget(QWidget *parent) : QWidget(parent) {
         }
     });
     timer->start(33);
+
+    // 单击/双击消歧 timer：单次触发，超时即发出 insert_video_single_clicked
+    click_debounce_timer_ = new QTimer(this);
+    click_debounce_timer_->setSingleShot(true);
+    connect(click_debounce_timer_, &QTimer::timeout, this, [this]() {
+        if (pending_click_item_) {
+            auto src = pending_click_item_->get_source();
+            if (src && src->get_type() == Source::Type::FILE_SOURCE) {
+                emit insert_video_single_clicked(pending_click_item_);
+            }
+            pending_click_item_.reset();
+        }
+    });
 
     LOG_INFO("CanvasWidget created with 30fps render timer");
 }
@@ -861,6 +948,7 @@ void CanvasWidget::mousePressEvent(QMouseEvent *event) {
         // 选择项
         selected_item_ = item;
         is_dragging_ = true;
+        press_pos_ = event->pos();           // 记录按下位置，供 mouseRelease 判断是否为点击
 
         // 检查是否拖动调整大小句柄，并获取句柄索引
         int handle_index;
@@ -1078,6 +1166,31 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void CanvasWidget::mouseReleaseEvent(QMouseEvent *event) {
+    // 单击检测：若鼠标未移动（<= 8px）且命中 FILE_SOURCE，
+    // 则启动 debounce timer 等待系统双击间隔后再发出单击信号。
+    // Qt 双击序列：Press → Release(1) → DoubleClick → Release(2)
+    // mouseDoubleClickEvent 停掉 timer 并设置 suppress_release_timer_；
+    // Release(2) 检测到标志后跳过 timer 启动，彻底杜绝双击触发暂停/恢复。
+    if (event->button() == Qt::LeftButton && selected_item_) {
+        if (suppress_release_timer_) {
+            // 这是双击序列中的 Release(2)，跳过 timer 启动
+            suppress_release_timer_ = false;
+        } else {
+            const QPoint delta = event->pos() - press_pos_;
+            const bool is_click = (delta.manhattanLength() <= 8);
+            if (is_click && !is_resizing_) {
+                auto src = selected_item_->get_source();
+                if (src && src->get_type() == Source::Type::FILE_SOURCE) {
+                    // 保存待确认的单击项，启动消歧 timer
+                    // 200ms：短于系统双击间隔（~500ms），减少点击感知延迟。
+                    // 双击时 mouseDoubleClickEvent 会在 200ms 内取消 timer，不会误触发单击。
+                    pending_click_item_ = selected_item_;
+                    click_debounce_timer_->start(200);
+                }
+            }
+        }
+    }
+
     is_dragging_ = false;
     is_resizing_ = false;
     resize_handle_ = 0;
@@ -1088,6 +1201,13 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent *event) {
 void CanvasWidget::mouseDoubleClickEvent(QMouseEvent *event) {
     if (!interaction_enabled_) return;
 
+    // 双击发生时：
+    // 1. 取消 Release(1) 启动的 timer（防止其到期触发单击信号）
+    // 2. 设置标志抑制 Release(2) 重新启动 timer
+    click_debounce_timer_->stop();
+    pending_click_item_.reset();
+    suppress_release_timer_ = true;  // Release(2) 将跳过 timer 启动
+
     // If already maximized, any double click restores.
     if (is_maximized_) {
         restore_item_from_maximize();
@@ -1097,6 +1217,8 @@ void CanvasWidget::mouseDoubleClickEvent(QMouseEvent *event) {
     // Hit-test scene items first
     auto item = hit_test(event->pos().x(), event->pos().y());
     if (item) {
+        // 所有类型的场景项双击均触发全屏/最大化（包括 FILE_SOURCE 插播视频）
+        // 播放/暂停改为单击触发（见 mouseReleaseEvent 中的 insert_video_single_clicked 信号）
         maximize_item_in_canvas(item);
         return;
     }

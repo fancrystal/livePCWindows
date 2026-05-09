@@ -26,6 +26,7 @@
 class ExitDialog;
 class InsertVideoWidget;
 class QScreen;
+struct VideoFrame;
 
 namespace Ui {
 class MainWindow;
@@ -232,8 +233,20 @@ private:
     InsertVideoWidget* insert_video_widget_ = nullptr;
     std::shared_ptr<MediaFileSource> current_insert_video_source_;  // 改为具体类型以便调用
     QString current_insert_video_file_id_;
+    QString insert_video_scene_name_;   // Bug1 fix: 记录 source 被加入的场景名
     bool is_insert_video_playing_ = false;
     QTimer* insert_video_timer_ = nullptr;  // 插播视频帧同步定时器
+    std::shared_ptr<VideoFrame> insert_video_last_frame_;  // 最后一帧，用于暂停后画面冻结
+
+    // 暂停的插播视频列表（支持多个视频同时存在于画布，各自冻结在最后一帧）
+    struct PausedInsertEntry {
+        std::shared_ptr<MediaFileSource> source;
+        QString file_id;
+        QString scene_name;
+        std::shared_ptr<VideoFrame> frozen_frame;
+        int64_t paused_position_ms = 0;  // 暂停时的播放位置（ms），用于从断点恢复
+    };
+    std::vector<PausedInsertEntry> paused_insert_videos_;
 
     // Canvas orientation switch guards (prevent rapid toggles & re-entrancy)
     std::atomic_bool canvas_config_changing_{false};
@@ -328,6 +341,11 @@ private:
     void show_insert_video_widget();
     void startInsertVideoPlayback(const QString& fileId, bool loopEnabled);
     void stopInsertVideoPlayback();
+    void pauseCurrentInsertVideo();                                    // 暂停当前插播（保留画面在画布，记录断点）
+    void resumePausedInsertVideo();                                    // 恢复最近一次暂停的插播（从断点位置）
+    void resumeSpecificInsertVideo(const std::string& source_id);     // 激活指定视频（当前播放的自动暂停）
+    void stopPausedInsertVideo();                                      // 完全停止最近暂停的插播并从画布移除
+    void update_insert_video_widget_state();                           // 刷新 InsertVideoWidget 当前状态显示
 
     // Scene item management methods
     void toggle_scene_item_visibility(int index);

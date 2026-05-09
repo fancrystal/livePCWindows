@@ -30,9 +30,18 @@ public:
     // 刷新插播视频列表
     void refreshVideoList();
 
+    // 更新当前插播状态面板（playing/paused 均可为空串表示无）
+    void setCurrentInsertState(const QString& playingFileId, const QString& playingFileName,
+                               const QString& pausedFileId, const QString& pausedFileName);
+
 signals:
     // 开始插播信号（包含循环播放设置）
     void startInsertVideo(const QString& fileId, const QString& fileName, bool loopEnabled);
+    // 插播控制信号
+    void requestPauseCurrentInsertVideo();
+    void requestResumeInsertVideo();
+    void requestStopCurrentInsertVideo();
+    void requestStopPausedInsertVideo();
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -73,6 +82,15 @@ private:
     QPushButton* startInsertButton_ = nullptr;
     QLabel* statusLabel_ = nullptr;
     QLabel* selectedLabel_ = nullptr;
+
+    // 当前插播状态面板
+    QWidget* currentStatePanel_ = nullptr;
+    QLabel* playingLabel_ = nullptr;
+    QPushButton* pauseButton_ = nullptr;
+    QPushButton* stopCurrentButton_ = nullptr;
+    QLabel* pausedLabel_ = nullptr;
+    QPushButton* resumeButton_ = nullptr;
+    QPushButton* stopPausedButton_ = nullptr;
 
     // 预览窗口控件
     QWidget* previewWidget_ = nullptr;
