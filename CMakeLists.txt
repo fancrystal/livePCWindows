@@ -199,6 +199,8 @@ if(WIN32)
         d3d11.lib
         dxgi.lib
         dwmapi.lib
+        advapi32.lib
+        crypt32.lib
         windowsapp.lib
         opengl32.lib
     )

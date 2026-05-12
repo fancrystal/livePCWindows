@@ -1,6 +1,7 @@
 #include "app/login_window.h"
 #include "common/log.h"
 #include "app/config.h"
+#include "app/encryption_utils.h"
 #include "app/login_service.h"
 #include "app/login_worker.h"
 #include "http/http_client.h"
@@ -87,7 +88,10 @@ LoginWindow::~LoginWindow() {
 // ========== QML调用方法 ==========
 
 void LoginWindow::qmlLogin(const QString& username, const QString& password, bool remember) {
-    LOG_INFO("qmlLogin called: username=" + username.toStdString() + ", remember=" + (remember ? "true" : "false"));
+    LOG_INFO(QString("qmlLogin called: username length=%1, remember=%2")
+                 .arg(username.length())
+                 .arg(remember ? "true" : "false")
+                 .toStdString());
 
     if (isLoggingIn_) {
         LOG_WARNING("Login already in progress, ignoring duplicate request");
@@ -176,7 +180,20 @@ QString LoginWindow::qmlGetSavedUsername() {
 }
 
 QString LoginWindow::qmlGetSavedPassword() {
-    return settings_.value("password").toString();
+    const QString protectedPassword = settings_.value("passwordProtected").toString();
+    if (!protectedPassword.isEmpty()) {
+        return EncryptionUtils::unprotectForCurrentUser(protectedPassword);
+    }
+
+    const QString legacyPassword = settings_.value("password").toString();
+    if (!legacyPassword.isEmpty()) {
+        const QString migratedPassword = EncryptionUtils::protectForCurrentUser(legacyPassword);
+        if (!migratedPassword.isEmpty()) {
+            settings_.setValue("passwordProtected", migratedPassword);
+            settings_.remove("password");
+        }
+    }
+    return legacyPassword;
 }
 
 void LoginWindow::qmlStartLocalStream(const QString& rtmpUrl) {
@@ -257,12 +274,20 @@ void LoginWindow::qmlSetLoginFailed(const QString& errorMessage) {
 void LoginWindow::save_login_info_credentials(const QString& username, const QString& password, bool remember) {
     settings_.setValue("username", username);
     if (remember) {
-        settings_.setValue("password", password);
+        const QString protectedPassword = EncryptionUtils::protectForCurrentUser(password);
+        if (!protectedPassword.isEmpty()) {
+            settings_.setValue("passwordProtected", protectedPassword);
+            settings_.remove("password");
+        } else {
+            settings_.remove("password");
+            settings_.remove("passwordProtected");
+        }
     } else {
         settings_.remove("password");
+        settings_.remove("passwordProtected");
     }
     settings_.setValue("remember", remember);
-    LOG_INFO("Saved login credentials: username=" + username.toStdString());
+    LOG_INFO(QString("Saved login credentials: username length=%1").arg(username.length()).toStdString());
 }
 
 // ========== 窗口拖拽支持 ==========

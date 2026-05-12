@@ -422,7 +422,8 @@ void GpuCompositor::draw_quad(ID3D11ShaderResourceView* srv,
 
     // 绑定资源并绘制
     UINT stride = sizeof(QuadVertex), offset = 0;
-    ctx->IASetVertexBuffers(0, 1, vb_.put(), &stride, &offset);
+    ID3D11Buffer* vb_ptr = vb_.get();
+    ctx->IASetVertexBuffers(0, 1, &vb_ptr, &stride, &offset);
     ID3D11Buffer* cb_ptr = cb_.get();
     ctx->PSSetConstantBuffers(0, 1, &cb_ptr);
     ctx->PSSetShaderResources(0, 1, &srv);

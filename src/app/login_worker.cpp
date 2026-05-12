@@ -1,4 +1,5 @@
 #include "app/login_worker.h"
+#include "app/encryption_utils.h"
 #include "app/login_service.h"
 #include "common/log.h"
 
@@ -26,7 +27,7 @@ void LoginWorker::startLogin()
     QString userId;
     QString token;
 
-    LOG_INFO(QString("后台线程开始登录: username=%1").arg(username_).toStdString());
+    LOG_INFO(QString("后台线程开始登录: username length=%1").arg(username_.length()).toStdString());
 
     // 调用登录API
     LoginService* loginService = LoginService::instance();
@@ -45,9 +46,18 @@ void LoginWorker::startLogin()
         // 保存登录凭据
         settings_.setValue("username", username_);
         if (remember_) {
-            settings_.setValue("password", password_);
+            QString protectedPassword = EncryptionUtils::protectForCurrentUser(password_);
+            if (protectedPassword.isEmpty()) {
+                LOG_WARNING("Failed to protect saved login password; password will not be persisted");
+                settings_.remove("password");
+                settings_.remove("passwordProtected");
+            } else {
+                settings_.setValue("passwordProtected", protectedPassword);
+                settings_.remove("password");
+            }
         } else {
             settings_.remove("password");
+            settings_.remove("passwordProtected");
         }
         settings_.setValue("remember", remember_);
         LOG_INFO(QString("后台线程保存登录凭据成功: remember=%1").arg(remember_).toStdString());

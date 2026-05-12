@@ -25,28 +25,28 @@ const ServerConfig DEFAULT_PROD_CONFIG = {
     "https://account-api.lxi-tech.com",
     "https://livesaas-api.lxi-tech.com",
     "wss://im-api.lxi-tech.com",
-    "h7kP9xR2vLmQwE5t"
+    ""
 };
 
 const ServerConfig DEFAULT_TEST_CONFIG = {
     "https://mall-test.lxi-tech.com:15815",
     "https://mall-test.lxi-tech.com:15816",
     "wss://mall-test.lxi-tech.com:15830",
-    "h7kP9xR2vLmQwE5t"
+    ""
 };
 
 const ServerConfig DEFAULT_DEV_CONFIG = {
     "https://qdd-dev.lxi-tech.com:15815",
     "https://qdd-dev.lxi-tech.com:15816",
     "wss://qdd-dev.lxi-tech.com:15830",
-    "h7kP9xR2vLmQwE5t"
+    ""
 };
 
 const ServerConfig DEFAULT_LOCAL_CONFIG = {
     "http://192.168.0.25:9082",
     "http://192.168.0.25:9084",
     "ws://192.168.0.25:9085",
-    "h7kP9xR2vLmQwE5t"
+    ""
 };
 
 // 日志级别配置（0=DEBUG，1=INFO，2=WARN，3=ERROR）

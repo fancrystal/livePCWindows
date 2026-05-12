@@ -68,18 +68,25 @@ public:
 private:
     ErrorCode init_format_context();
     ErrorCode open_output();
-    
-    void free_resources();
+
+    void free_resources();          // acquires send_mutex_ internally
+    void free_resources_nolock();   // must be called with send_mutex_ already held
     
     StreamConfig config_;
-    
-    AVFormatContext* format_ctx_ = nullptr;
-    AVStream* audio_stream_ = nullptr;
-    AVStream* video_stream_ = nullptr;
-    
-    bool header_written_ = false;
-    bool connected_ = false;
-    
+
+    // send_mutex_ serialises send_packet() against disconnect()/free_resources_nolock().
+    // Held for the entire duration of a packet write so that disconnect() waits for any
+    // in-flight write to complete before tearing down format_ctx_.
+    mutable std::mutex send_mutex_;
+
+    AVFormatContext* format_ctx_ = nullptr;    // guarded by send_mutex_
+    AVStream* audio_stream_ = nullptr;         // guarded by send_mutex_
+    AVStream* video_stream_ = nullptr;         // guarded by send_mutex_
+
+    bool header_written_ = false;              // guarded by send_mutex_
+    // connected_ is atomic so is_connected() can be polled cheaply without the lock.
+    std::atomic<bool> connected_{false};
+
     Stats stats_ = {false, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, std::chrono::steady_clock::now()};
 
     // Reconnect/backoff configuration

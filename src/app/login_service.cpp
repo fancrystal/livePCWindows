@@ -6,6 +6,11 @@
 #include <QJsonDocument>
 
 namespace {
+bool useCbcLoginCrypto()
+{
+    return qEnvironmentVariableIntValue("LIVEASSISTANT_LOGIN_CRYPTO_CBC") == 1;
+}
+
 QString makeAuthorizationHeader(const QString& token)
 {
     QString normalized = token.trimmed();
@@ -35,9 +40,13 @@ bool LoginService::login(const QString &loginUrl, const QString &key, const QStr
     userID.clear();
     token.clear();
 
-    // 分别对用户名和密码进行AES128_ECB加密
-    QString encryptedUserTel = EncryptionUtils::encryptAES128_ECB(username, key);
-    QString encryptedUserPwd = EncryptionUtils::encryptAES128_ECB(password, key);
+    const bool useCbc = useCbcLoginCrypto();
+    QString encryptedUserTel = useCbc
+        ? EncryptionUtils::encryptAES128_CBC(username, key)
+        : EncryptionUtils::encryptAES128_ECB(username, key);
+    QString encryptedUserPwd = useCbc
+        ? EncryptionUtils::encryptAES128_CBC(password, key)
+        : EncryptionUtils::encryptAES128_ECB(password, key);
 
     // 检查加密结果
     if (loginUrl.isEmpty() || encryptedUserTel.isEmpty() || encryptedUserPwd.isEmpty()) {
@@ -55,12 +64,10 @@ bool LoginService::login(const QString &loginUrl, const QString &key, const QStr
     // 发送POST请求
     HttpClient* client = HttpClient::instance();
     LOG_INFO(QString("Sending login request to: %1").arg(url).toStdString());
-    LOG_INFO(QString("Login request body: %1")
-                 .arg(QString::fromUtf8(QJsonDocument(postData).toJson(QJsonDocument::Compact)))
-                 .toStdString());
-    LOG_INFO(QString("Login request raw username: %1, password length: %2")
-                 .arg(username)
+    LOG_INFO(QString("Login request prepared: username length=%1, password length=%2, crypto=%3")
+                 .arg(username.length())
                  .arg(password.length())
+                 .arg(useCbc ? "cbc" : "legacy")
                  .toStdString());
     QString httpErrMsg;
     QJsonObject response = client->post(url, postData, httpErrMsg);

@@ -59,16 +59,16 @@ void Compositor::remove_layer(const std::string& source_id) {
 }
 
 void Compositor::update_layer_texture(const std::string& source_id, ID3D11Texture2D* texture) {
-    std::lock_guard<std::mutex> lock(layers_mutex_);
-
-    auto it = layers_.find(source_id);
-    if (it == layers_.end()) {
-        LOG_WARNING("Layer not found for texture update: " + source_id);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(layers_mutex_);
+        auto it = layers_.find(source_id);
+        if (it == layers_.end()) {
+            LOG_WARNING("Layer not found for texture update: " + source_id);
+            return;
+        }
+        it->second.d3d_texture = texture;
     }
-
-    it->second.d3d_texture = texture;
-    update();  // Trigger repaint
+    update();  // Trigger repaint — called outside the lock to avoid deadlock with paintEvent
 }
 
 void Compositor::updateLayerImage(QString source_id, QImage image) {
@@ -86,83 +86,81 @@ void Compositor::update_layer_gpu_texture(const std::string& source_id, const Gp
 }
 
 void Compositor::update_layer_video_frame(const std::string& source_id, std::shared_ptr<VideoFrame> frame) {
-    std::lock_guard<std::mutex> lock(layers_mutex_);
-
-    auto it = layers_.find(source_id);
-    if (it == layers_.end()) {
-        LOG_WARNING("Layer not found for video frame update: " + source_id);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(layers_mutex_);
+        auto it = layers_.find(source_id);
+        if (it == layers_.end()) {
+            LOG_WARNING("Layer not found for video frame update: " + source_id);
+            return;
+        }
+        // 存储 shared_ptr<VideoFrame>，保持数据存活
+        // 不做任何拷贝，零开销！
+        it->second.video_frame = frame;
     }
-
-    // 存储 shared_ptr<VideoFrame>，保持数据存活
-    // 不做任何拷贝，零开销！
-    it->second.video_frame = frame;
-
-    update();  // Trigger repaint
+    update();  // Trigger repaint — called outside the lock to avoid deadlock with paintEvent
 }
 
 void Compositor::update_layer_image(const std::string& source_id, const QImage& image) {
-    std::lock_guard<std::mutex> lock(layers_mutex_);
+    {
+        std::lock_guard<std::mutex> lock(layers_mutex_);
+        auto it = layers_.find(source_id);
+        if (it == layers_.end()) {
+            LOG_WARNING("Layer not found for image update: " + source_id);
+            return;
+        }
+        it->second.qimage = image;
 
-    auto it = layers_.find(source_id);
-    if (it == layers_.end()) {
-        LOG_WARNING("Layer not found for image update: " + source_id);
-        return;
-    }
-
-    it->second.qimage = image;
-
-    // Phase 1b: 同步上传到 GPU，供 Phase 2 GPU 合成器使用
-    // 复用上次的纹理对象（尺寸不变时 Map_WRITE_DISCARD 不重分配）
-    // 注意：使用 device()（而非 is_valid()）确保设备未初始化时能触发初始化，
-    // 避免早期帧上传被跳过导致 gpu_texture_ref 空置、GPU 合成路径退化为 CPU 路径
-    auto& shared = SharedD3D11Device::instance();
-    if (shared.device() && !image.isNull()) {
-        ID3D11Texture2D* reuse_tex = it->second.gpu_texture_ref.texture
-                                         ? it->second.gpu_texture_ref.texture.get()
-                                         : nullptr;
-        auto new_tex = shared.upload_image_to_texture(image, reuse_tex);
-        if (new_tex) {
-            it->second.gpu_texture_ref.texture = new_tex;
-            it->second.gpu_texture_ref.width   = static_cast<uint32_t>(image.width());
-            it->second.gpu_texture_ref.height  = static_cast<uint32_t>(image.height());
-            it->second.gpu_texture_ref.format  = DXGI_FORMAT_B8G8R8A8_UNORM;
+        // Phase 1b: 同步上传到 GPU，供 Phase 2 GPU 合成器使用
+        // 复用上次的纹理对象（尺寸不变时 Map_WRITE_DISCARD 不重分配）
+        // 注意：使用 device()（而非 is_valid()）确保设备未初始化时能触发初始化，
+        // 避免早期帧上传被跳过导致 gpu_texture_ref 空置、GPU 合成路径退化为 CPU 路径
+        auto& shared = SharedD3D11Device::instance();
+        if (shared.device() && !image.isNull()) {
+            ID3D11Texture2D* reuse_tex = it->second.gpu_texture_ref.texture
+                                             ? it->second.gpu_texture_ref.texture.get()
+                                             : nullptr;
+            auto new_tex = shared.upload_image_to_texture(image, reuse_tex);
+            if (new_tex) {
+                it->second.gpu_texture_ref.texture = new_tex;
+                it->second.gpu_texture_ref.width   = static_cast<uint32_t>(image.width());
+                it->second.gpu_texture_ref.height  = static_cast<uint32_t>(image.height());
+                it->second.gpu_texture_ref.format  = DXGI_FORMAT_B8G8R8A8_UNORM;
+            }
         }
     }
-
-    update();  // Trigger repaint
+    update();  // Trigger repaint — called outside the lock to avoid deadlock with paintEvent
 }
 
 void Compositor::update_layer_transform(const std::string& source_id, const QRectF& dest_rect, float opacity) {
-    std::lock_guard<std::mutex> lock(layers_mutex_);
-
-    auto it = layers_.find(source_id);
-    if (it == layers_.end()) {
-        LOG_WARNING("Layer not found for transform update: " + source_id);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(layers_mutex_);
+        auto it = layers_.find(source_id);
+        if (it == layers_.end()) {
+            LOG_WARNING("Layer not found for transform update: " + source_id);
+            return;
+        }
+        it->second.dest_rect = dest_rect;
+        it->second.opacity = opacity;
+        LOG_INFO("Updated layer transform: " + source_id + " -> rect(" +
+                 std::to_string(static_cast<int>(dest_rect.x())) + "," +
+                 std::to_string(static_cast<int>(dest_rect.y())) + " " +
+                 std::to_string(static_cast<int>(dest_rect.width())) + "x" +
+                 std::to_string(static_cast<int>(dest_rect.height())) + ")");
     }
-
-    it->second.dest_rect = dest_rect;
-    it->second.opacity = opacity;
-    LOG_INFO("Updated layer transform: " + source_id + " -> rect(" +
-             std::to_string(static_cast<int>(dest_rect.x())) + "," +
-             std::to_string(static_cast<int>(dest_rect.y())) + " " +
-             std::to_string(static_cast<int>(dest_rect.width())) + "x" +
-             std::to_string(static_cast<int>(dest_rect.height())) + ")");
-    update();  // Trigger repaint
+    update();  // Trigger repaint — called outside the lock to avoid deadlock with paintEvent
 }
 
 void Compositor::set_layer_visible(const std::string& source_id, bool visible) {
-    std::lock_guard<std::mutex> lock(layers_mutex_);
-
-    auto it = layers_.find(source_id);
-    if (it == layers_.end()) {
-        LOG_WARNING("Layer not found for visibility update: " + source_id);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(layers_mutex_);
+        auto it = layers_.find(source_id);
+        if (it == layers_.end()) {
+            LOG_WARNING("Layer not found for visibility update: " + source_id);
+            return;
+        }
+        it->second.visible = visible;
     }
-
-    it->second.visible = visible;
-    update();  // Trigger repaint
+    update();  // Trigger repaint — called outside the lock to avoid deadlock with paintEvent
 }
 
 std::vector<std::string> Compositor::get_layer_ids() const {
@@ -181,16 +179,16 @@ bool Compositor::has_layer(const std::string& source_id) const {
 }
 
 void Compositor::set_layer_order(const std::string& source_id, int order) {
-    std::lock_guard<std::mutex> lock(layers_mutex_);
-
-    auto it = layers_.find(source_id);
-    if (it == layers_.end()) {
-        LOG_WARNING("Layer not found for order update: " + source_id);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(layers_mutex_);
+        auto it = layers_.find(source_id);
+        if (it == layers_.end()) {
+            LOG_WARNING("Layer not found for order update: " + source_id);
+            return;
+        }
+        it->second.z_order = order;
     }
-
-    it->second.z_order = order;
-    update();
+    update();  // Trigger repaint — called outside the lock to avoid deadlock with paintEvent
 }
 
 QImage Compositor::render_to_image(int width, int height) {

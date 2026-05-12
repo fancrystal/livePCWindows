@@ -92,7 +92,7 @@ ClientService* ClientService::instance()
 bool ClientService::getStreamAddresses(const QString &userId, const QString &token, QString &rtmpURL, QString &srtURL,
                                        QString &liveStartTime, QString &liveEndTime, QString &liveID, QString &errMessage)
 {
-    QString encryptedUserId = EncryptionUtils::encryptAES128_ECB(userId, ENCRYPTION_KEY);
+    QString encryptedUserId = EncryptionUtils::encryptAES128_CBC(userId, ENCRYPTION_KEY);
     if (encryptedUserId.isEmpty()) {
         LOG_WARNING("Failed to encrypt user ID");
         return false;
@@ -123,13 +123,13 @@ bool ClientService::getStreamAddresses(const QString &userId, const QString &tok
 
 bool ClientService::stopLiving(const QString &userId, QString &liveID, const QString &token, QString &errMessage)
 {
-    QString encryptedUserId = EncryptionUtils::encryptAES128_ECB(userId, ENCRYPTION_KEY);
+    QString encryptedUserId = EncryptionUtils::encryptAES128_CBC(userId, ENCRYPTION_KEY);
     if (encryptedUserId.isEmpty()) {
         LOG_WARNING("Failed to encrypt user ID");
         return false;
     }
 
-    QString encryptedLiveId = EncryptionUtils::encryptAES128_ECB(liveID, ENCRYPTION_KEY);
+    QString encryptedLiveId = EncryptionUtils::encryptAES128_CBC(liveID, ENCRYPTION_KEY);
     if (encryptedLiveId.isEmpty()) {
         LOG_WARNING("Failed to encrypt live ID");
         return false;

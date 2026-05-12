@@ -199,69 +199,71 @@ void AudioMixer::mixer_thread_func() {
 }
 
 void AudioMixer::do_mixing() {
-    std::vector<std::pair<std::string, AudioFrameData>> ready_frames;
-    int64_t earliest_timestamp = INT64_MAX;
-
-    // 收集所有输入源中最早的音频帧
-    {
-        std::lock_guard<std::mutex> lock(queues_mutex_);
-        for (const auto& pair : input_queues_) {
-            auto& queue = pair.second;
-            std::lock_guard<std::mutex> lock(queue->mutex);
-            if (!queue->queue.empty()) {
-                const auto& frame = queue->queue.front();
-                ready_frames.emplace_back(pair.first, frame);
-                if (frame.timestamp_ms < earliest_timestamp) {
-                    earliest_timestamp = frame.timestamp_ms;
-                }
-            }
-        }
-    }
-
-    // 如果所有输入源都有帧，则进行混音
+    // Get total_inputs first, under config_mutex_ only (no nesting with queues_mutex_).
     size_t total_inputs = 0;
     {
         std::lock_guard<std::mutex> lock(config_mutex_);
         total_inputs = input_configs_.size();
     }
 
-    if (ready_frames.size() == total_inputs && total_inputs > 0) {
-        // 收集所有输入源的音频数据
-        std::vector<QByteArray> input_datas;
-        for (auto& pair : ready_frames) {
-            std::lock_guard<std::mutex> lock(queues_mutex_);
-            auto it = input_queues_.find(pair.first);
-            if (it != input_queues_.end()) {
-                std::lock_guard<std::mutex> lock(it->second->mutex);
-                if (!it->second->queue.empty()) {
-                    input_datas.push_back(it->second->queue.front().data);
-                    it->second->queue.pop();
-                }
+    if (total_inputs == 0) return;
+
+    std::vector<QByteArray> input_datas;
+    int64_t earliest_timestamp = INT64_MAX;
+
+    // Single critical section under queues_mutex_ for both the readiness check and the pop.
+    // This eliminates the second loop that re-acquired queues_mutex_ inside the iteration,
+    // which constituted a redundant (and potentially deadlock-prone) double lock pattern.
+    {
+        std::lock_guard<std::mutex> lock(queues_mutex_);
+
+        if (input_queues_.size() != total_inputs) return;
+
+        // Phase 1: check that every source has at least one frame ready.
+        bool all_ready = true;
+        for (const auto& pair : input_queues_) {
+            std::lock_guard<std::mutex> q_lock(pair.second->mutex);
+            if (pair.second->queue.empty()) {
+                all_ready = false;
+                break;
+            }
+            if (pair.second->queue.front().timestamp_ms < earliest_timestamp) {
+                earliest_timestamp = pair.second->queue.front().timestamp_ms;
             }
         }
 
-        // 执行混音
-        if (!input_datas.empty()) {
-            QByteArray mixed = mix_audio_data(input_datas);
+        if (!all_ready) return;
 
-            AudioFrameData output;
-            output.data = std::move(mixed);
-            output.timestamp_ms = earliest_timestamp;
-            output.sample_rate = sample_rate_;
-            output.channels = channels_;
-            output.samples = output.data.size() / (sizeof(int16_t) * channels_);
-
-            // 调用回调
-            MixedAudioCallback callback;
-            {
-                std::lock_guard<std::mutex> lock(callback_mutex_);
-                callback = mixed_audio_callback_;
-            }
-
-            if (callback) {
-                callback(output);
+        // Phase 2: collect and pop one frame from each source.
+        for (auto& pair : input_queues_) {
+            std::lock_guard<std::mutex> q_lock(pair.second->mutex);
+            if (!pair.second->queue.empty()) {
+                input_datas.push_back(pair.second->queue.front().data);
+                pair.second->queue.pop();
             }
         }
+    }
+
+    if (input_datas.empty()) return;
+
+    // 执行混音（在锁外进行，不阻塞提交线程）
+    QByteArray mixed = mix_audio_data(input_datas);
+
+    AudioFrameData output;
+    output.data = std::move(mixed);
+    output.timestamp_ms = earliest_timestamp;
+    output.sample_rate = sample_rate_;
+    output.channels = channels_;
+    output.samples = output.data.size() / (sizeof(int16_t) * channels_);
+
+    MixedAudioCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        callback = mixed_audio_callback_;
+    }
+
+    if (callback) {
+        callback(output);
     }
 }
 

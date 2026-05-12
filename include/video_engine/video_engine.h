@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 
 #include "common/error.h"
@@ -123,7 +124,7 @@ private:
     void* cv_video_capture_ = nullptr;
     
     std::thread capture_thread_;
-    bool stop_thread_ = false;
+    std::atomic<bool> stop_thread_{false};
     
     std::shared_ptr<VideoFrame> latest_frame_;
     std::mutex frame_mutex_;

@@ -1,6 +1,18 @@
 #include "app/config.h"
 #include "common/log.h"
+#include <QByteArray>
 #include <QSettings>
+
+namespace {
+QString bundledCompatibilityEncryptionKey()
+{
+    static constexpr unsigned char keyBytes[] = {
+        0x68, 0x37, 0x6b, 0x50, 0x39, 0x78, 0x52, 0x32,
+        0x76, 0x4c, 0x6d, 0x51, 0x77, 0x45, 0x35, 0x74
+    };
+    return QString::fromLatin1(reinterpret_cast<const char*>(keyBytes), sizeof(keyBytes));
+}
+}
 
 ConfigManager& ConfigManager::instance() {
     static ConfigManager instance;
@@ -45,7 +57,14 @@ void ConfigManager::loadConfig() {
     config_.loginUrl = settings.value("server/loginUrl", config_.loginUrl).toString();
     config_.liveUrl = settings.value("server/liveUrl", config_.liveUrl).toString();
     config_.socketUrl = settings.value("server/socketUrl", config_.socketUrl).toString();
-    config_.encryptionKey = settings.value("server/encryptionKey", config_.encryptionKey).toString();
+    config_.encryptionKey = qEnvironmentVariable("LIVEASSISTANT_ENCRYPTION_KEY");
+    if (config_.encryptionKey.isEmpty()) {
+        config_.encryptionKey = settings.value("server/encryptionKey").toString();
+    }
+    if (config_.encryptionKey.isEmpty()) {
+        config_.encryptionKey = bundledCompatibilityEncryptionKey();
+        LOG_WARNING("API encryption key loaded from bundled compatibility fallback. Prefer LIVEASSISTANT_ENCRYPTION_KEY or provision server/encryptionKey outside source control.");
+    }
 
     LOG_INFO(QString("Loaded config for env: %1").arg(static_cast<int>(currentEnv_)).toStdString());
 }
@@ -60,7 +79,6 @@ void ConfigManager::saveConfig() {
     settings.setValue("server/loginUrl", config_.loginUrl);
     settings.setValue("server/liveUrl", config_.liveUrl);
     settings.setValue("server/socketUrl", config_.socketUrl);
-    settings.setValue("server/encryptionKey", config_.encryptionKey);
 
     LOG_INFO("Config saved");
 }

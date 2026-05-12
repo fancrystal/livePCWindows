@@ -215,12 +215,21 @@ void CaptureManager::remove_all_sources() {
 
     LOG_INFO("Removing all capture sources");
 
-    // Create a copy of source IDs to avoid iterator invalidation
-    auto source_ids = get_all_source_ids();
-
-    for (const auto& source_id : source_ids) {
-        remove_capture_source(source_id);
+    // Directly iterate sources_ while holding the lock.
+    // Do NOT call get_all_source_ids() or remove_capture_source() here —
+    // both also try to acquire mutex_ (std::mutex is not reentrant), which
+    // would deadlock on the same thread.
+    for (auto& pair : sources_) {
+        try {
+            if (pair.second->is_running()) {
+                pair.second->stop();
+            }
+            pair.second->shutdown();
+        } catch (const std::exception& ex) {
+            LOG_ERROR("Exception removing capture source " + pair.first + ": " + ex.what());
+        }
     }
+    sources_.clear();
 
     LOG_INFO("All capture sources removed");
 }

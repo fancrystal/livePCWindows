@@ -23,6 +23,15 @@ extern "C" {
 
 namespace live_assistant {
 
+static std::string redact_url_for_log(const std::string& url)
+{
+    const size_t query_pos = url.find('?');
+    if (query_pos == std::string::npos) {
+        return url;
+    }
+    return url.substr(0, query_pos) + "?<redacted>";
+}
+
 // ─── Annex-B → avcC extradata 转换 ──────────────────────────────────────────
 // NVENC 等编码器即使设置了 AV_CODEC_FLAG_GLOBAL_HEADER，extradata 仍可能是
 // Annex-B（00 00 00 01 起始码）格式。FLV/RTMP 要求 avcC 格式（ISO 14496-15），
@@ -217,12 +226,11 @@ ErrorCode RTMPPusher::initialize(const StreamConfig& config) {
     
     // 验证配置
     if (!config.is_valid()) {
-        LOG_ERROR("Invalid RTMP configuration: server_url=" + config.server_url + 
-                  ", stream_key=" + config.stream_key);
+        LOG_ERROR("Invalid RTMP configuration: server_url=" + config.server_url + ", stream_key=<redacted>");
         return ErrorCode::INVALID_PARAM;
     }
 
-    LOG_INFO("RTMP configuration validated: " + config.get_full_url());
+    LOG_INFO("RTMP configuration validated: " + redact_url_for_log(config.get_full_url()));
     
     // If already initialized (format_ctx_ exists), skip re-initialization to avoid
     // clearing previously registered streams.
@@ -396,8 +404,6 @@ ErrorCode RTMPPusher::open_output() {
     // 调试模式：可选择输出到本地文件进行测试
     //// 要测试本地文件，请取消下面一行的注释：
     //full_url = "D://test.flv";
-    //full_url = "rtmp://rtmp-push-test-wss.lxi-tech.com/liveapp/SN-20260401170959163-EGPwZ0?txSecret=c8744aa37e87a66c640b878eaee2bf9f&txTime=69F31C55&module=100003&domain=rtmp-push-test-wss.lxi-tech.com";
-    //full_url = "rtmp://rtmp-push-test-wss.lxi-tech.com/liveapp/SN-20260424171307444-SRh1BM?txSecret=2e9805bada0c9cfbd6f7874e483ccb32&txTime=69EC8480&module=100003&domain=rtmp-push-test-wss.lxi-tech.com";
     //// 正常推流时，请确保这一行被注释掉
 
     // 使用 avio_open2 并设置 rw_timeout（单位：微秒），防止连接不可达时主线程无限阻塞。
@@ -410,11 +416,11 @@ ErrorCode RTMPPusher::open_output() {
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
         av_strerror(ret, errbuf, sizeof(errbuf));
-        LOG_ERROR(std::string("Failed to open output URL: ") + full_url + ", error: " + errbuf);
+        LOG_ERROR(std::string("Failed to open output URL: ") + redact_url_for_log(full_url) + ", error: " + errbuf);
         return ErrorCode::CONNECT_FAILED;
     }
 
-    LOG_INFO(std::string("RTMP output opened: ") + full_url);
+    LOG_INFO(std::string("RTMP output opened: ") + redact_url_for_log(full_url));
     connected_ = true;
     stats_.connected = true;
     stats_.reconnect_attempts++;
@@ -510,6 +516,11 @@ ErrorCode RTMPPusher::disconnect() {
 
     LOG_INFO("Disconnecting from RTMP server");
 
+    // Acquire send_mutex_ to wait for any in-progress send_packet() to finish
+    // before tearing down format_ctx_.  This prevents the push thread from
+    // using a dangling pointer while we free the muxer state.
+    std::lock_guard<std::mutex> lk(send_mutex_);
+
     if (format_ctx_ && header_written_) {
         av_write_trailer(format_ctx_);
     }
@@ -519,12 +530,8 @@ ErrorCode RTMPPusher::disconnect() {
         format_ctx_->pb = nullptr;
     }
 
-    connected_ = false;
-    header_written_ = false;
-    stats_.connected = false;
-
-    // Free the format context to allow proper re-initialization
-    free_resources();
+    // free_resources_nolock() is used here because send_mutex_ is already held.
+    free_resources_nolock();
 
     LOG_INFO("Disconnected from RTMP server");
     return ErrorCode::SUCCESS;
@@ -534,6 +541,11 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
     if (!packet) {
         return ErrorCode::INVALID_PARAM;
     }
+
+    // Acquire send_mutex_ for the entire duration of the packet write.
+    // This prevents disconnect()/free_resources() from tearing down format_ctx_
+    // while we are writing to it (C6: data race between push thread and main thread).
+    std::lock_guard<std::mutex> send_lock(send_mutex_);
 
     if (!connected_ || !header_written_ || !format_ctx_ || !format_ctx_->pb) {
         return ErrorCode::NOT_CONNECTED;
@@ -801,7 +813,7 @@ ErrorCode RTMPPusher::send_packet(const EncodedPacketPtr& packet) {
             // 统一 free_resources() 并返回 NOT_CONNECTED，由 push_loop 的重连逻辑处理。
             LOG_ERROR("[RTMP] Write failure (ret=" + std::to_string(ret) +
                       "), freeing muxer state and triggering reconnect");
-            free_resources();
+            free_resources_nolock();  // send_mutex_ already held by send_packet()
             return ErrorCode::NOT_CONNECTED;
         }
         {
@@ -883,8 +895,9 @@ void RTMPPusher::reset_stats() {
     last_calculated_bitrate_ = 0.0;
 }
 
-void RTMPPusher::free_resources() {
-    LOG_INFO("[RTMP] free_resources() called: connected=" + std::to_string(connected_) +
+// Internal implementation — caller must already hold send_mutex_.
+void RTMPPusher::free_resources_nolock() {
+    LOG_INFO("[RTMP] free_resources() called: connected=" + std::to_string(connected_.load()) +
              ", header_written=" + std::to_string(header_written_) +
              ", format_ctx=" + (format_ctx_ ? "valid" : "null") +
              ", audio_stream=" + (audio_stream_ ? "valid" : "null") +
@@ -901,6 +914,11 @@ void RTMPPusher::free_resources() {
     header_written_ = false;
     stats_.connected = false;
     LOG_INFO("[RTMP] free_resources() done");
+}
+
+void RTMPPusher::free_resources() {
+    std::lock_guard<std::mutex> lk(send_mutex_);
+    free_resources_nolock();
 }
 
 ErrorCode RTMPPusher::re_register_cached_streams() {
