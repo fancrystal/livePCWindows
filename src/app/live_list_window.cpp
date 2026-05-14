@@ -24,6 +24,7 @@
 #include <QPainterPath>
 #include <QScreen>
 #include <QTextLayout>
+#include <QTimer>
 #include <QFontMetrics>
 #include <QLinearGradient>
 #include <QCryptographicHash>
@@ -234,10 +235,11 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         ui->createLiveButton->setStyleSheet(
             "QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4a6ef0, stop:1 #f05a6a); color: white; border-radius: 6px; padding: 6px 12px; }"
         );
-        // refresh button: gradient purple style (like settings button in main window)
+        // refresh button: ghost style matching the overall dark-translucent design
         ui->refreshButton->setStyleSheet(
-            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #9C27B0, stop:1 #E040FB); color: white; border-radius: 4px; font-size: 14px; padding: 0px; }"
-            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #AB47BC, stop:1 #EA80FC); }"
+            "QPushButton { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; font-size: 15px; padding: 0px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.9); border-color: rgba(255,255,255,0.18); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6); }"
         );
         // pagination and grid spacing
         if (ui->gridLayout) {
@@ -297,6 +299,14 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         miniBtn->show();
         connect(miniBtn, &QPushButton::clicked, this, &LiveListWindow::showMinimized);
 
+        // logout button
+        auto* logoutBtn = new QPushButton(QString::fromUtf8("退出登录"), ui->headerWidget);
+        logoutBtn->setObjectName("winLogoutBtn");
+        logoutBtn->setFixedSize(70, 28);
+        logoutBtn->setStyleSheet("QPushButton { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7); border-radius: 4px; font-size: 12px; } QPushButton:hover { background: rgba(255,120,60,0.85); color: white; }");
+        logoutBtn->show();
+        connect(logoutBtn, &QPushButton::clicked, this, &LiveListWindow::logout_requested);
+
         // ensure buttons reposition if header resized
         ui->headerWidget->installEventFilter(this); 
     }
@@ -326,6 +336,7 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     if (ui && ui->headerWidget) {
         QPushButton* closeBtn = ui->headerWidget->findChild<QPushButton*>("winCloseBtn");
         QPushButton* miniBtn = ui->headerWidget->findChild<QPushButton*>("winMinBtn");
+        QPushButton* logoutBtn = ui->headerWidget->findChild<QPushButton*>("winLogoutBtn");
 
         // 隐藏新建直播按钮（功能未实现）
         if (ui->createLiveButton) {
@@ -338,11 +349,16 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
         if (closeBtn) {
             x -= closeBtn->width();
             closeBtn->move(x, 8);
-            x -= 12;  // 按钮之间留12px间距
+            x -= 4;
         }
         if (miniBtn) {
             x -= miniBtn->width();
             miniBtn->move(x, 8);
+            x -= 8;
+        }
+        if (logoutBtn) {
+            x -= logoutBtn->width();
+            logoutBtn->move(x, 8);
         }
     }
     // Hide statusbar/footer if present
@@ -367,7 +383,7 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     };
     
     for (QPushButton* button : page_buttons) {
-        connect(button, &QPushButton::clicked, this, &LiveListWindow::on_page_button_clicked);
+        connect(button, &QPushButton::clicked, this, &LiveListWindow::handle_page_button_clicked);
     }
     // Style pagination buttons
     for (QPushButton* button : page_buttons) {
@@ -387,19 +403,26 @@ LiveListWindow::LiveListWindow(const QString& user_id, const QString& token, QWi
     LOG_INFO("LiveListWindow created");
 
     // DPI 适配：监听屏幕 DPI 变化
-    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
-        if (screen) {
-            LOG_INFO("LiveListWindow: Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
-            this->updateGeometry();
+    QTimer::singleShot(0, this, [this]() {
+        QWindow* handle = windowHandle();
+        if (!handle) {
+            return;
+        }
+
+        connect(handle, &QWindow::screenChanged, this, [this](QScreen* screen) {
+            if (screen) {
+                LOG_INFO("LiveListWindow: Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
+                this->updateGeometry();
+            }
+        });
+
+        if (handle->screen()) {
+            connect(handle->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
+                LOG_INFO("LiveListWindow: DPI changed to: " + std::to_string(dpi));
+                this->updateGeometry();
+            });
         }
     });
-
-    if (windowHandle() && windowHandle()->screen()) {
-        connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
-            LOG_INFO("LiveListWindow: DPI changed to: " + std::to_string(dpi));
-            this->updateGeometry();
-        });
-    }
 
     // QML integration removed — keeping original QWidget-based UI
 }
@@ -629,7 +652,7 @@ void LiveListWindow::setup_live_list() {
         overlay->setGeometry(0, 0, card->width(), card->height());
         overlay->raise();
         // 按值捕获 idx 以避免循环变量问题
-        connect(overlay, &QPushButton::clicked, [this, idx]() { on_live_item_clicked(idx); });
+        connect(overlay, &QPushButton::clicked, [this, idx]() { handle_live_item_clicked(idx); });
 
         // small icon top-left
         QLabel* icon = new QLabel(card);
@@ -737,7 +760,8 @@ void LiveListWindow::load_live_list() {
 
     // 转换为QJsonArray格式
     QJsonArray formattedList;
-    for (const LiveItem& item : liveList) {
+    for (const LiveItem& item : liveList)
+ {
         QJsonObject formatted;
         formatted["id"] = item.liveId;
         formatted["name"] = item.title;
@@ -759,7 +783,7 @@ void LiveListWindow::load_live_list() {
         formattedList.append(formatted);
     }
 
-    on_live_list_received(formattedList);
+    handle_live_list_received(formattedList);
 }
 
 void LiveListWindow::add_live_item(const QJsonObject& live_info) {
@@ -771,7 +795,7 @@ void LiveListWindow::add_live_item(const QJsonObject& live_info) {
     LOG_INFO("Adding live item: " + live_name.toStdString());
 }
 
-void LiveListWindow::on_live_item_clicked(int index) {
+void LiveListWindow::handle_live_item_clicked(int index) {
     // 检查索引是否有效
     if (index < 0 || index >= live_list_.size()) {
         LOG_WARNING("Invalid live item index: " + QString::number(index).toStdString());
@@ -806,7 +830,7 @@ void LiveListWindow::on_live_item_clicked(int index) {
     hide();
 }
 
-void LiveListWindow::on_live_list_received(const QJsonArray& live_list) {
+void LiveListWindow::handle_live_list_received(const QJsonArray& live_list) {
     full_live_list_ = live_list;  // 保存完整列表JSON
 
     // 如果有搜索关键字，进行过滤；否则显示全部
@@ -988,7 +1012,7 @@ void LiveListWindow::update_pagination() {
     }
 }
 
-void LiveListWindow::on_page_button_clicked() {
+void LiveListWindow::handle_page_button_clicked() {
     QPushButton* sender_button = qobject_cast<QPushButton*>(sender());
     if (sender_button) {
         int page = sender_button->text().toInt();
@@ -1028,6 +1052,7 @@ bool LiveListWindow::eventFilter(QObject* watched, QEvent* event) {
             // reposition control buttons to top-right corner
             QPushButton* closeBtn = ui->headerWidget->findChild<QPushButton*>("winCloseBtn");
             QPushButton* miniBtn = ui->headerWidget->findChild<QPushButton*>("winMinBtn");
+            QPushButton* logoutBtn = ui->headerWidget->findChild<QPushButton*>("winLogoutBtn");
 
             // 隐藏新建直播按钮（功能未实现）
             if (ui->createLiveButton) {
@@ -1039,11 +1064,16 @@ bool LiveListWindow::eventFilter(QObject* watched, QEvent* event) {
             if (closeBtn) {
                 x -= closeBtn->width();
                 closeBtn->move(x, 8);
-                x -= 12;
+                x -= 4;
             }
             if (miniBtn) {
                 x -= miniBtn->width();
                 miniBtn->move(x, 8);
+                x -= 8;
+            }
+            if (logoutBtn) {
+                x -= logoutBtn->width();
+                logoutBtn->move(x, 8);
             }
             return false;
         }
@@ -1087,13 +1117,15 @@ int LiveListWindow::getCurrentRoomState() const {
 // 状态筛选下拉框切换
 void LiveListWindow::on_categoryComboBox_currentIndexChanged(int index) {
     if (index < 0 || index > 2) return;
-    if (combo_updating_) return;  // 防止 setup_live_list 期间的布局事件触发重复请求
 
-    combo_updating_ = true;
     current_status_index_ = index;
     current_page_ = 1;  // 切换状态时重置到第一页
+
+    // blockSignals 防止 load_live_list 内的同步 HTTP 调用（curl_easy_perform）
+    // 在处理 Windows 消息泵时再次触发 currentIndexChanged，导致重入崩溃
+    ui->categoryComboBox->blockSignals(true);
     load_live_list();
-    combo_updating_ = false;
+    ui->categoryComboBox->blockSignals(false);
 
     QString statusNames[] = {"待开播", "直播中", "已结束"};
     LOG_INFO(QString("切换状态筛选: %1").arg(statusNames[index]).toStdString());

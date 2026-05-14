@@ -25,6 +25,8 @@ public:
     QJsonObject post(const QString& url, const QJsonObject& data, QString& errMsg);
     // 带自定义headers的POST请求
     QJsonObject post(const QString& url, const QJsonObject& data, struct curl_slist* headers, QString& errMsg);
+    // 带自定义headers和超时的POST请求
+    QJsonObject post(const QString& url, const QJsonObject& data, struct curl_slist* headers, long timeoutSec, QString& errMsg);
 
     // GET 请求
     QJsonObject get(const QString& url, QString& errMsg);
@@ -58,7 +60,7 @@ private:
     static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp);
 
     // 执行请求
-    QJsonObject executeRequest(CURL* curl, const QString& url, struct curl_slist* headers, QString& errMsg);
+    QJsonObject executeRequest(CURL* curl, const QString& url, struct curl_slist* headers, QString& errMsg, long timeoutSec = 3L);
 
     // CURL 回调函数，将数据写入 QFile
     static size_t writeDataToFile(void* ptr, size_t size, size_t nmemb, void* userdata);

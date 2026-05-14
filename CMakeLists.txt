@@ -333,13 +333,21 @@ if(WIN32)
         COMMENT "Copying OpenCV DLLs to output directory"
     )
     
-    # Copy libcurl DLLs to output directory
+    # Copy libcurl and OpenSSL DLLs to output directory
     add_custom_command(
         TARGET LiveAssistant POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${LIBCURL_DIR}/lib/x64/libcurl.dll
         $<TARGET_FILE_DIR:LiveAssistant>
         COMMENT "Copying libcurl DLL to output directory"
+    )
+    add_custom_command(
+        TARGET LiveAssistant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${LIBCURL_DIR}/lib/x64/libssl-3-x64.dll
+        ${LIBCURL_DIR}/lib/x64/libcrypto-3-x64.dll
+        $<TARGET_FILE_DIR:LiveAssistant>
+        COMMENT "Copying OpenSSL DLLs to output directory"
     )
     
     # Copy VLC DLLs to output directory

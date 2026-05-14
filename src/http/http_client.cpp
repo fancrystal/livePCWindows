@@ -80,7 +80,7 @@ void HttpClient::freeHeaders(struct curl_slist* headers)
     }
 }
 
-QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct curl_slist* headers, QString& errMsg)
+QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct curl_slist* headers, QString& errMsg, long timeoutSec)
 {
     QByteArray responseBuffer;
 
@@ -88,9 +88,8 @@ QJsonObject HttpClient::executeRequest(CURL* curl, const QString& url, struct cu
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBuffer);
 
-    // 🔧 添加超时设置（3秒）
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);  // 整体超时3秒
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);  // 连接超时3秒
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSec);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutSec);
 
     QString caCertPath = QCoreApplication::applicationDirPath() + "/resources/cacert.pem";
     curl_easy_setopt(curl, CURLOPT_CAINFO, caCertPath.toUtf8().constData());
@@ -163,6 +162,27 @@ QJsonObject HttpClient::post(const QString& url, const QJsonObject& data, struct
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, postData.size());
 
     QJsonObject result = executeRequest(curl, url, headers, errMsg);
+
+    curl_easy_cleanup(curl);
+    return result;
+}
+
+// 带自定义headers和超时的POST请求
+QJsonObject HttpClient::post(const QString& url, const QJsonObject& data, struct curl_slist* headers, long timeoutSec, QString& errMsg)
+{
+    CURL* curl = curl_easy_init();
+    if(!curl) {
+        errMsg = "Failed to initialize CURL";
+        return QJsonObject();
+    }
+
+    QByteArray postData = QJsonDocument(data).toJson(QJsonDocument::Compact);
+
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postData.constData());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, postData.size());
+
+    QJsonObject result = executeRequest(curl, url, headers, errMsg, timeoutSec);
 
     curl_easy_cleanup(curl);
     return result;

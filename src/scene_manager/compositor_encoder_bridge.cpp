@@ -772,21 +772,21 @@ std::shared_ptr<VideoFrame> CompositorEncoderBridge::convert_qimage_to_video_fra
               std::to_string(width_) + "x" + std::to_string(height_) +
               ", src_stride=" + std::to_string(actual_stride));
 
-    // 诊断：检查 NV12 数据的 UV 平面是否有效（竖屏绿屏可能是 UV 数据全为 0x80）
-    // UV 平面的每个字节应该是 [0, 255]，全 0x80(128) 表示"无色"，看起来就是绿色
+    // 诊断：检查 NV12 UV 平面是否全为 0（UV=0 会导致绿色偏移，是真正的数据丢失）
+    // 注意：UV=0x80(128) 是"无色/中性灰"，对空场景/纯色背景属于正常值，不应报警
     if (frame->data_uv && uv_size > 0) {
         uint32_t zero_count = 0;
-        uint32_t invalid_count = 0;
         const uint8_t* uv_data = frame->data_uv.get();
-        // NV12 UV 交错存储，每 2 个像素共用一组 UV，所以只需检查前几个字节
         for (int i = 0; i < std::min(uv_size, 64); i++) {
             if (uv_data[i] == 0) zero_count++;
-            if (uv_data[i] == 0x80) invalid_count++;  // 0x80 是"中性灰"色
         }
-        if (zero_count > 32 || invalid_count > 32) {
-            LOG_WARNING("[BRIDGE] NV12 UV data suspicious! zero_count=" + std::to_string(zero_count) +
-                        ", neutral_gray_count=" + std::to_string(invalid_count) +
-                        " (in first 64 bytes)");
+        if (zero_count > 32) {
+            static uint32_t uv_zero_warn_count = 0;
+            ++uv_zero_warn_count;
+            if (uv_zero_warn_count == 1 || uv_zero_warn_count % 300 == 0) {
+                LOG_WARNING("[BRIDGE] NV12 UV plane mostly zero (zero_count=" + std::to_string(zero_count) +
+                            "/64), possible UV data loss. occurrence=" + std::to_string(uv_zero_warn_count));
+            }
         }
     }
 

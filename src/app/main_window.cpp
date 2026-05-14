@@ -5256,10 +5256,14 @@ void MainWindow::setupSystemTray() {
     tray_action_show_ = new QAction("显示窗口", this);
     connect(tray_action_show_, &QAction::triggered, this, &MainWindow::onTrayShowAction);
     system_tray_menu_->addAction(tray_action_show_);
-    
 
     system_tray_menu_->addSeparator();
-    
+
+    tray_action_logout_ = new QAction("退出登录", this);
+    connect(tray_action_logout_, &QAction::triggered, this, &MainWindow::onTrayLogoutAction);
+    system_tray_menu_->addAction(tray_action_logout_);
+
+    system_tray_menu_->addSeparator();
 
     tray_action_exit_ = new QAction("退出程序", this);
     connect(tray_action_exit_, &QAction::triggered, this, &MainWindow::onTrayExitAction);
@@ -5353,6 +5357,7 @@ void MainWindow::cleanupSystemTray() {
     }
     
     tray_action_show_ = nullptr;
+    tray_action_logout_ = nullptr;
     tray_action_exit_ = nullptr;
 }
 
@@ -5386,6 +5391,15 @@ void MainWindow::onTrayShowAction() {
 
     setWindowFlags(windowFlags() & ~Qt::Tool);
     show();
+}
+
+void MainWindow::onTrayLogoutAction() {
+    if (encoder_bridge_ && encoder_bridge_->is_streaming()) {
+        encoder_bridge_->stop_streaming();
+    }
+    cleanupSystemTray();
+    emit request_logout();
+    QMainWindow::close();
 }
 
 void MainWindow::onTrayExitAction() {

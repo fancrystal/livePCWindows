@@ -87,6 +87,7 @@ bool LoginService::login(const QString &loginUrl, const QString &key, const QStr
         userID = response["data"].toObject()["userId"].toString();
         userId_ = userID;
         token_ = token;
+        loginUrl_ = loginUrl;
         LOG_INFO(QString("Login succeed, userID: %1").arg(userID).toStdString());
         return true;
     }
@@ -138,8 +139,30 @@ bool LoginService::genOnceLoginKey(const QString &baseUrl, const QString &userId
 
 void LoginService::logout()
 {
+    if (!loginUrl_.isEmpty() && !token_.isEmpty()) {
+        QString url = QString("%1/auth/ClientLogout").arg(loginUrl_);
+        HttpClient* client = HttpClient::instance();
+
+        struct curl_slist* headers = client->createHeaders();
+        client->addHeader(&headers, "Authorization", makeAuthorizationHeader(token_));
+        client->addHeader(&headers, "Content-Type", "application/json");
+
+        QString errMsg;
+        QJsonObject response = client->post(url, QJsonObject{}, headers, 1L, errMsg);
+        client->freeHeaders(headers);
+
+        if (!errMsg.isEmpty()) {
+            LOG_WARNING(QString("ClientLogout request failed: %1").arg(errMsg).toStdString());
+        } else {
+            LOG_INFO(QString("ClientLogout response: %1")
+                         .arg(QJsonDocument(response).toJson(QJsonDocument::Compact).constData())
+                         .toStdString());
+        }
+    }
+
     userId_.clear();
     token_.clear();
     loginKey_.clear();
+    loginUrl_.clear();
     LOG_INFO("Logged out");
 }

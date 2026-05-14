@@ -65,19 +65,26 @@ LoginWindow::LoginWindow(QWidget *parent) :
     }
 
     // DPI 适配：监听屏幕 DPI 变化
-    connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* screen) {
-        if (screen) {
-            LOG_INFO("LoginWindow: Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
-            this->updateGeometry();
+    QTimer::singleShot(0, this, [this]() {
+        QWindow* handle = windowHandle();
+        if (!handle) {
+            return;
+        }
+
+        connect(handle, &QWindow::screenChanged, this, [this](QScreen* screen) {
+            if (screen) {
+                LOG_INFO("LoginWindow: Screen changed, DPI: " + std::to_string(screen->logicalDotsPerInch()));
+                this->updateGeometry();
+            }
+        });
+
+        if (handle->screen()) {
+            connect(handle->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
+                LOG_INFO("LoginWindow: DPI changed to: " + std::to_string(dpi));
+                this->updateGeometry();
+            });
         }
     });
-
-    if (windowHandle() && windowHandle()->screen()) {
-        connect(windowHandle()->screen(), &QScreen::logicalDotsPerInchChanged, this, [this](qreal dpi) {
-            LOG_INFO("LoginWindow: DPI changed to: " + std::to_string(dpi));
-            this->updateGeometry();
-        });
-    }
 }
 
 LoginWindow::~LoginWindow() {

@@ -58,6 +58,8 @@ class MainWindow : public QMainWindow {
 signals:
     // 用户请求返回直播列表（离开当前直播间）
     void request_return_to_live_list();
+    // 用户请求退出登录
+    void request_logout();
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
@@ -291,6 +293,7 @@ private:
     QSystemTrayIcon* system_tray_icon_ = nullptr;
     QMenu* system_tray_menu_ = nullptr;
     QAction* tray_action_show_ = nullptr;
+    QAction* tray_action_logout_ = nullptr;
     QAction* tray_action_exit_ = nullptr;
     bool tray_icon_initializing_ = false;  // 防止托盘图标初始化时误触发显示窗口
 
@@ -317,6 +320,7 @@ private:
     void cleanupSystemTray();
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
     void onTrayShowAction();
+    void onTrayLogoutAction();
     void onTrayExitAction();
 
     // Exit handling

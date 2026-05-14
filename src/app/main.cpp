@@ -4,6 +4,7 @@
 #include "app/login_window.h"
 #include "app/live_list_window.h"
 #include "app/main_window.h"
+#include "app/login_service.h"
 #include "http/live_item.h"
 #include "app/config.h"
 #include "common/log.h"
@@ -182,6 +183,20 @@ int main(int argc, char *argv[]) {
         // 创建直播列表窗口，传入登录信息
         live_list_window = new live_assistant::LiveListWindow(login_window.user_id(), login_window.token());
 
+        // 退出登录：通知服务端、销毁直播列表窗口、重新显示登录窗口
+        QObject::connect(live_list_window, &live_assistant::LiveListWindow::logout_requested,
+            [&live_list_window, &login_window]() {
+            LOG_INFO("User requested logout from live list");
+            LoginService::instance()->logout();
+            live_assistant::LiveListWindow* w = live_list_window;
+            live_list_window = nullptr;
+            if (w) {
+                w->hide();
+                w->deleteLater();
+            }
+            login_window.show();
+        });
+
         // 连接直播间选中信号到主窗口
         QObject::connect(live_list_window, &live_assistant::LiveListWindow::live_selected,
             [&live_list_window, &main_window, &login_window](const QString& live_id, const LiveItem& liveItem) {
@@ -199,7 +214,6 @@ int main(int argc, char *argv[]) {
                     [&main_window, &live_list_window]() {
                     LOG_INFO("User requested to return to live list");
 
-                    // 先隐藏主窗口，保持响应
                     live_assistant::MainWindow* window_to_destroy = main_window;
                     main_window = nullptr;
                     if (!window_to_destroy) {
@@ -213,10 +227,28 @@ int main(int argc, char *argv[]) {
 
                     window_to_destroy->hide();
                     window_to_destroy->deleteLater();
+                });
 
-                    // 异步清理资源，不阻塞UI
+                // 托盘退出登录：通知服务端、销毁所有窗口、重新显示登录窗口
+                QObject::connect(main_window, &live_assistant::MainWindow::request_logout,
+                    [&main_window, &live_list_window, &login_window]() {
+                    LOG_INFO("User requested logout from main window tray");
+                    LoginService::instance()->logout();
 
-                    // 显示直播列表窗口
+                    live_assistant::MainWindow* mw = main_window;
+                    main_window = nullptr;
+                    if (mw) {
+                        mw->deleteLater();
+                    }
+
+                    live_assistant::LiveListWindow* lw = live_list_window;
+                    live_list_window = nullptr;
+                    if (lw) {
+                        lw->hide();
+                        lw->deleteLater();
+                    }
+
+                    login_window.show();
                 });
             }
 
@@ -341,6 +373,14 @@ int main(int argc, char *argv[]) {
             main_window->update();
             LOG_INFO("Window updates enabled after local stream initialization completed");
         });
+    });
+
+    // 程序退出时通知服务端登出（覆盖强制关闭场景）
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, []() {
+        if (LoginService::instance()->isLoggedIn()) {
+            LOG_INFO("Application quitting - calling logout");
+            LoginService::instance()->logout();
+        }
     });
 
     // Show login window

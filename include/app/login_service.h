@@ -45,6 +45,7 @@ private:
     QString userId_;
     QString token_;
     QString loginKey_;
+    QString loginUrl_;
 };
 
 #endif // LOGIN_SERVICE_H

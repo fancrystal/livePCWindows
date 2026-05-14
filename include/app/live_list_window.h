@@ -21,12 +21,9 @@ namespace live_assistant {
         explicit LiveListWindow(const QString& user_id = QString(), const QString& token = QString(), QWidget* parent = nullptr);
         ~LiveListWindow();
 
-    public slots:
-        void on_live_item_clicked(int index);
-        void on_live_list_received(const QJsonArray& live_list);
-
     signals:
         void live_selected(const QString& live_id, const LiveItem& liveItem);
+        void logout_requested();
 
     private slots:
         void on_refreshButton_clicked();
@@ -34,10 +31,12 @@ namespace live_assistant {
         void on_searchButton_clicked();
         void on_prevPageButton_clicked();
         void on_nextPageButton_clicked();
-        void on_page_button_clicked();
         void on_categoryComboBox_currentIndexChanged(int index);
 
     private:
+        void handle_live_item_clicked(int index);
+        void handle_live_list_received(const QJsonArray& live_list);
+        void handle_page_button_clicked();
         void setup_live_list();
         void load_live_list();
         void add_live_item(const QJsonObject& live_info);
