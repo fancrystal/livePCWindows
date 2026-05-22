@@ -5,6 +5,7 @@
 #include <dxgi1_2.h>
 #include <mutex>
 #include <cstdint>
+#include <string>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 
 // Forward declare QImage to avoid Qt dependency cascade in headers that
@@ -33,6 +34,29 @@ public:
 
     // Check if device is valid
     bool is_valid() const { return d3d_device_ != nullptr; }
+
+    // ---------------------------------------------------------------
+    // Phase 1.1: GPU vendor detection
+    // ---------------------------------------------------------------
+    // Identifies which GPU vendor backs the shared D3D11 device. Used by
+    // the multi-GPU rendering pipeline to pick the right encoder candidate
+    // and to enable / disable vendor-specific GPU paths (e.g. Intel RC/CCS
+    // workaround, NVENC zero-copy, AMF zero-copy).
+    enum class GpuVendor {
+        Unknown = 0,
+        Intel   = 1,    // VendorId 0x8086 — pairs with QSV
+        NVIDIA  = 2,    // VendorId 0x10DE — pairs with NVENC
+        AMD     = 3,    // VendorId 0x1002 — pairs with AMF
+        Other   = 4,    // anything else (Microsoft Basic Render, virtual GPUs, etc.)
+    };
+
+    // Returns the vendor of the currently selected adapter.
+    // Triggers init() lazily if the device has not been created yet.
+    GpuVendor vendor();
+
+    // Returns the human-readable adapter description (UTF-8).
+    // Empty string if the device has not been created yet.
+    std::string adapter_name();
 
     // ---------------------------------------------------------------
     // Phase 0: multithread protection
@@ -107,6 +131,10 @@ private:
     winrt::com_ptr<ID3D11VideoDevice>    video_device_;
     winrt::com_ptr<ID3D11VideoContext>   video_context_;
     bool multithread_enabled_ = false;
+
+    // Phase 1.1: vendor info captured during init()
+    GpuVendor   gpu_vendor_   = GpuVendor::Unknown;
+    std::string adapter_name_;
 };
 
 } // namespace live_assistant

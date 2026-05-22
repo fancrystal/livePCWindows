@@ -23,6 +23,40 @@ SharedD3D11Device::~SharedD3D11Device()
     d3d_device_ = nullptr;
 }
 
+// 工具函数：DXGI VendorId → GpuVendor
+static SharedD3D11Device::GpuVendor vendor_from_id(UINT vendor_id)
+{
+    switch (vendor_id) {
+        case 0x8086: return SharedD3D11Device::GpuVendor::Intel;
+        case 0x10DE: return SharedD3D11Device::GpuVendor::NVIDIA;
+        case 0x1002: return SharedD3D11Device::GpuVendor::AMD;
+        default:     return SharedD3D11Device::GpuVendor::Other;
+    }
+}
+
+// 工具函数：宽字符 GPU 名 → UTF-8
+static std::string wide_to_utf8(const WCHAR* w)
+{
+    if (!w) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string s(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], len, nullptr, nullptr);
+    return s;
+}
+
+// 工具函数：GpuVendor → 字符串（日志用）
+static const char* vendor_name(SharedD3D11Device::GpuVendor v)
+{
+    switch (v) {
+        case SharedD3D11Device::GpuVendor::Intel:  return "Intel";
+        case SharedD3D11Device::GpuVendor::NVIDIA: return "NVIDIA";
+        case SharedD3D11Device::GpuVendor::AMD:    return "AMD";
+        case SharedD3D11Device::GpuVendor::Other:  return "Other";
+        default:                                   return "Unknown";
+    }
+}
+
 bool SharedD3D11Device::init()
 {
     if (d3d_device_) return true;
@@ -33,6 +67,8 @@ bool SharedD3D11Device::init()
     // 直接送入 QSV 编码器，彻底消除 Nvidia→CPU→Intel 的跨 GPU 总线拷贝。
     // 若系统没有 Intel GPU，则回退到默认硬件设备（维持原有行为）。
     winrt::com_ptr<IDXGIAdapter1> preferred_adapter;
+    DXGI_ADAPTER_DESC1            preferred_desc{};
+    bool                          has_preferred_desc = false;
     {
         winrt::com_ptr<IDXGIFactory1> factory;
         HRESULT hr_f = CreateDXGIFactory1(__uuidof(IDXGIFactory1),
@@ -46,17 +82,12 @@ bool SharedD3D11Device::init()
                 adapter->GetDesc1(&desc);
                 std::wstring wname(desc.Description);
                 if (wname.find(L"Intel") != std::wstring::npos) {
-                    // wchar_t 转 UTF-8 用于日志
-                    int len = WideCharToMultiByte(CP_UTF8, 0,
-                                                  desc.Description, -1,
-                                                  nullptr, 0, nullptr, nullptr);
-                    std::string name_utf8(static_cast<size_t>(len > 0 ? len - 1 : 0), '\0');
-                    WideCharToMultiByte(CP_UTF8, 0,
-                                        desc.Description, -1,
-                                        &name_utf8[0], len, nullptr, nullptr);
+                    std::string name_utf8 = wide_to_utf8(desc.Description);
                     LOG_INFO("SharedD3D11Device: found Intel adapter: " + name_utf8 +
                              " (selected for QSV compatibility)");
-                    preferred_adapter = adapter;
+                    preferred_adapter   = adapter;
+                    preferred_desc      = desc;
+                    has_preferred_desc  = true;
                     break;
                 }
             }
@@ -129,6 +160,37 @@ bool SharedD3D11Device::init()
             multithread_enabled_ = true;
             LOG_INFO("SharedD3D11Device: multithread protection enabled (inline init)");
         }
+    }
+
+    // ----------------------------------------------------------------
+    // Phase 1.1: 记录实际命中适配器的 vendor / 名称
+    // 优先用 preferred_desc；如 Intel 创建失败回退到默认 GPU，则
+    // 重新从设备查询 DXGI 适配器并读取 VendorId。
+    // ----------------------------------------------------------------
+    DXGI_ADAPTER_DESC1 active_desc{};
+    bool got_desc = false;
+    if (has_preferred_desc && preferred_adapter) {
+        active_desc = preferred_desc;
+        got_desc    = true;
+    } else if (dxgi) {
+        winrt::com_ptr<IDXGIAdapter> a;
+        if (SUCCEEDED(dxgi->GetAdapter(a.put()))) {
+            auto a1 = a.try_as<IDXGIAdapter1>();
+            if (a1 && SUCCEEDED(a1->GetDesc1(&active_desc))) {
+                got_desc = true;
+            }
+        }
+    }
+    if (got_desc) {
+        gpu_vendor_   = vendor_from_id(active_desc.VendorId);
+        adapter_name_ = wide_to_utf8(active_desc.Description);
+        char vid_hex[16];
+        snprintf(vid_hex, sizeof(vid_hex), "%04X", active_desc.VendorId);
+        LOG_INFO(std::string("SharedD3D11Device: active GPU vendor=") +
+                 vendor_name(gpu_vendor_) +
+                 " (VendorId=0x" + vid_hex + ") adapter=\"" + adapter_name_ + "\"");
+    } else {
+        LOG_WARNING("SharedD3D11Device: unable to obtain DXGI adapter desc, vendor unknown");
     }
 
     LOG_INFO("SharedD3D11Device: initialized successfully");
@@ -357,6 +419,28 @@ winrt::com_ptr<ID3D11Texture2D> SharedD3D11Device::upload_image_to_texture(
 
     d3d_context_->Unmap(tex.get(), 0);
     return tex;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1.1: GPU vendor accessors
+// ---------------------------------------------------------------------------
+
+SharedD3D11Device::GpuVendor SharedD3D11Device::vendor()
+{
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (!d3d_device_) {
+        init();
+    }
+    return gpu_vendor_;
+}
+
+std::string SharedD3D11Device::adapter_name()
+{
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (!d3d_device_) {
+        init();
+    }
+    return adapter_name_;
 }
 
 } // namespace live_assistant

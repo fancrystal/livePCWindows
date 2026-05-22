@@ -381,11 +381,17 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
             }
 
             // 🔧 根据编码器类型选择合适的像素格式
-            // QSV 要求 NV12 格式，YUV420P 会导致 avcodec_open2 失败
-            if (std::string(hw_name).find("qsv") != std::string::npos) {
-                probe_ctx->pix_fmt = AV_PIX_FMT_NV12;  // QSV 必须使用 NV12
-            } else {
-                probe_ctx->pix_fmt = AV_PIX_FMT_YUV420P;  // NVENC/AMF/libx264 使用 YUV420P
+            // QSV 必须 NV12；NVENC/AMF 原生支持 NV12（与上游 BGRA→NV12 链路对齐，避免 send_frame_internal 内多余 sws 转换）
+            // libx264 走软编保留 YUV420P 路径
+            {
+                std::string hw_name_str(hw_name);
+                if (hw_name_str.find("qsv")   != std::string::npos ||
+                    hw_name_str.find("nvenc") != std::string::npos ||
+                    hw_name_str.find("amf")   != std::string::npos) {
+                    probe_ctx->pix_fmt = AV_PIX_FMT_NV12;
+                } else {
+                    probe_ctx->pix_fmt = AV_PIX_FMT_YUV420P;  // libx264 等软编
+                }
             }
 
             probe_ctx->bit_rate = config_.bitrate;
@@ -595,9 +601,18 @@ ErrorCode H264Encoder::initialize(const VideoEncoderConfig& config) {
         LOG_INFO("[H264Encoder] QSV hwframe context initialized (NV12, "
                 + std::to_string(config_.width) + "x" + std::to_string(config_.height) + ")");
     } else {
-        // 其他编码器使用 YUV420P
-        codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-        LOG_INFO("[H264Encoder] Using YUV420P pixel format");
+        // 非 QSV 编码器：NVENC/AMF 原生 NV12，libx264 仍用 YUV420P
+        std::string codec_name = codec_ ? codec_->name : "";
+        bool is_nvenc = codec_name.find("nvenc") != std::string::npos;
+        bool is_amf   = codec_name.find("amf")   != std::string::npos;
+        if (is_nvenc || is_amf) {
+            codec_ctx_->pix_fmt = AV_PIX_FMT_NV12;
+            LOG_INFO("[H264Encoder] Using NV12 pixel format (" + codec_name +
+                     " native, avoids redundant NV12→YUV420P conversion)");
+        } else {
+            codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+            LOG_INFO("[H264Encoder] Using YUV420P pixel format (" + codec_name + ")");
+        }
     }
 
     // For FLV/RTMP, extradata is typically required
@@ -915,37 +930,55 @@ ErrorCode H264Encoder::send_frame_internal(const std::shared_ptr<VideoFrame>& in
             return ErrorCode::ENCODING_ERROR;
         }
 
-        // 软件编码器的像素格式
+        // 软件 / NVENC / AMF 编码器的像素格式
         AVPixelFormat target_fmt = codec_ctx_->pix_fmt;
-        if (!sws_ctx_ || sws_src_fmt_ != src_fmt || sws_src_w_ != in->width || sws_src_h_ != in->height) {
-            if (sws_ctx_) {
-                sws_freeContext(sws_ctx_);
-                sws_ctx_ = nullptr;
-            }
 
-            sws_ctx_ = sws_getContext(
-                config_.width, config_.height, src_fmt,
-                config_.width, config_.height, target_fmt,
-                SWS_BILINEAR, nullptr, nullptr, nullptr);
-            if (!sws_ctx_) {
-                LOG_ERROR("Failed to create sws context (dynamic)");
-                return ErrorCode::ENCODING_ERROR;
+        // NV12 → NV12 直接 memcpy 快速路径：与 QSV 分支同样的修复
+        // 避开 sws_scale 内部 NV12↔YUV420P 中间格式转换可能导致的色彩偏差（绿屏）
+        if (in->format == VideoFrame::PixelFormat::NV12 && target_fmt == AV_PIX_FMT_NV12) {
+            const int copy_w = std::min(in->width, frame_->width);
+            const int copy_h = std::min(in->height, frame_->height);
+            // Y 平面
+            for (int y = 0; y < copy_h; ++y) {
+                memcpy(frame_->data[0] + y * frame_->linesize[0],
+                       in->data.get() + y * in->stride, copy_w);
             }
-            sws_src_fmt_ = src_fmt;
-            sws_src_w_ = in->width;
-            sws_src_h_ = in->height;
-        }
-
-        if (in->format == VideoFrame::PixelFormat::NV12) {
-            const uint8_t* src_slices[2] = {in->data.get(), in->data_uv.get()};
-            int src_stride[2] = {in->stride, in->stride_uv};
-            sws_scale(sws_ctx_, src_slices, src_stride, 0, in->height,
-                     frame_->data, frame_->linesize);
+            // UV 平面（NV12 interleaved，行数为 height/2，每行字节数与 Y 相同）
+            for (int y = 0; y < copy_h / 2; ++y) {
+                memcpy(frame_->data[1] + y * frame_->linesize[1],
+                       in->data_uv.get() + y * in->stride_uv, copy_w);
+            }
         } else {
-            const uint8_t* src_slices[1] = {reinterpret_cast<const uint8_t*>(in->data.get())};
-            int src_stride[1] = {in->stride > 0 ? in->stride : in->width * 4};
-            sws_scale(sws_ctx_, src_slices, src_stride, 0, in->height,
-                     frame_->data, frame_->linesize);
+            if (!sws_ctx_ || sws_src_fmt_ != src_fmt || sws_src_w_ != in->width || sws_src_h_ != in->height) {
+                if (sws_ctx_) {
+                    sws_freeContext(sws_ctx_);
+                    sws_ctx_ = nullptr;
+                }
+
+                sws_ctx_ = sws_getContext(
+                    config_.width, config_.height, src_fmt,
+                    config_.width, config_.height, target_fmt,
+                    SWS_BILINEAR, nullptr, nullptr, nullptr);
+                if (!sws_ctx_) {
+                    LOG_ERROR("Failed to create sws context (dynamic)");
+                    return ErrorCode::ENCODING_ERROR;
+                }
+                sws_src_fmt_ = src_fmt;
+                sws_src_w_ = in->width;
+                sws_src_h_ = in->height;
+            }
+
+            if (in->format == VideoFrame::PixelFormat::NV12) {
+                const uint8_t* src_slices[2] = {in->data.get(), in->data_uv.get()};
+                int src_stride[2] = {in->stride, in->stride_uv};
+                sws_scale(sws_ctx_, src_slices, src_stride, 0, in->height,
+                         frame_->data, frame_->linesize);
+            } else {
+                const uint8_t* src_slices[1] = {reinterpret_cast<const uint8_t*>(in->data.get())};
+                int src_stride[1] = {in->stride > 0 ? in->stride : in->width * 4};
+                sws_scale(sws_ctx_, src_slices, src_stride, 0, in->height,
+                         frame_->data, frame_->linesize);
+            }
         }
 
         encode_frame = frame_;
@@ -1500,6 +1533,10 @@ bool H264Encoder::switch_to_next_encoder() {
         new_codec_ctx->hw_frames_ctx = av_buffer_ref(new_hw_frame_ctx);
         av_buffer_unref(&new_hw_frame_ctx);
         av_buffer_unref(&new_hw_device_ctx);
+    } else if (next_encoder_name.find("nvenc") != std::string::npos ||
+               next_encoder_name.find("amf")   != std::string::npos) {
+        // NVENC/AMF 原生支持 NV12，与上游 NV12 链路对齐避免 sws 多余转换
+        new_codec_ctx->pix_fmt = AV_PIX_FMT_NV12;
     } else if (next_encoder_name == "libx264") {
         new_codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
     } else {

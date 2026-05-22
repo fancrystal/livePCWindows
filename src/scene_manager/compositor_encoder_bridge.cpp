@@ -15,6 +15,7 @@
 #include <QImage>
 #include <QPainter>
 #include <cstring>
+#include <cstdlib>
 #include <chrono>
 
 extern "C" {
@@ -109,6 +110,30 @@ void CompositorEncoderBridge::set_canvas_renderer(CanvasRenderer* renderer, std:
 void CompositorEncoderBridge::set_gpu_compositor(std::shared_ptr<GpuCompositor> gpu_compositor) {
     gpu_compositor_ = gpu_compositor;
     LOG_INFO("GpuCompositor set for encoder bridge");
+
+    // Phase 1 多 GPU 路径决策：按 vendor 决定是否启用 CS BGRA→NV12 路径。
+    //   - NVIDIA / AMD: 无 Intel RC/CCS 问题，开启 GPU 路径
+    //   - Intel       : 仍保留 CPU 兜底（QSV+CS 路径需要 GpuNv12Copier 支持，后续接入）
+    //   - Other / Unknown: 安全起见走 CPU
+    // 环境变量 LIVEASSISTANT_FORCE_CPU_COMPOSITOR=1 可强制走 CPU 路径方便排查。
+    auto vendor = SharedD3D11Device::instance().vendor();
+    bool force_cpu = false;
+    if (const char* env = std::getenv("LIVEASSISTANT_FORCE_CPU_COMPOSITOR")) {
+        force_cpu = (env[0] != '\0' && env[0] != '0');
+    }
+    if (force_cpu) {
+        gpu_path_enabled_ = false;
+        LOG_INFO("[BRIDGE] GPU path disabled by LIVEASSISTANT_FORCE_CPU_COMPOSITOR");
+    } else if (vendor == SharedD3D11Device::GpuVendor::NVIDIA ||
+               vendor == SharedD3D11Device::GpuVendor::AMD) {
+        gpu_path_enabled_ = true;
+        LOG_INFO(std::string("[BRIDGE] GPU compositor path enabled for vendor=") +
+                 (vendor == SharedD3D11Device::GpuVendor::NVIDIA ? "NVIDIA" : "AMD") +
+                 " (CS BGRA->NV12 + CPU readback)");
+    } else {
+        gpu_path_enabled_ = false;
+        LOG_INFO("[BRIDGE] GPU path disabled (vendor=Intel/Unknown, using CPU compositor path for safety)");
+    }
 }
 
 void CompositorEncoderBridge::set_gpu_color_converter(std::shared_ptr<GpuColorConverter> gpu_color_converter) {
@@ -653,30 +678,61 @@ void CompositorEncoderBridge::capture_and_queue_frame() {
 
 std::shared_ptr<VideoFrame> CompositorEncoderBridge::capture_compositor_frame() {
     // ═══════════════════════════════════════════════════════════════════
-    // GPU 路径（Phase 2-4）：GpuCompositor → GpuColorConverter → NV12 纹理
+    // 多 GPU 渲染流水线（Phase 1）
     //
-    // ── Intel RC/CCS 兼容性問題（当前已禁用）──────────────────────────
-    // 此系统为 Intel iGPU（UHD Graphics）。VideoProcessorBlt 写入后，所有
-    // BIND_RENDER_TARGET 纹理会被 Intel 驱动标记为 RC/CCS（Render Compressed）。
-    // 从 RC 纹理 CopyResource/CopySubresourceRegion 会在 d3d11.dll 内部崩溃。
-    // 此外，compose()+convert() 调用设置的 D3D11 管线状态（RTV、VP 流）会
-    // 污染 QSV 编码器共享的 D3D11 设备上下文，导致后续帧编码时崩溃。
+    // 路径选择：
+    //   * gpu_path_enabled_ = true  → 走 GpuCompositor + CsBgraToNv12（CS BGRA→NV12）
+    //   * gpu_path_enabled_ = false → 走下方 CPU Compositor / CanvasRenderer
     //
-    // 正确的 GPU 修复方案（TODO：实现 GpuNv12Copier）：
-    //   1. 为 NV12 纹理添加 BIND_SHADER_RESOURCE，创建 R8/R8G8 平面 SRV
-    //   2. CS 从 SRV 读取 Y/UV 平面并写入 UAV 目标纹理（非 RC）
-    //   3. 再从非 RC 的 UAV 目标 CopySubresourceRegion 到 QSV 纹理
-    //   4. 同时在 compose()/convert() 后清理 D3D11 上下文状态
+    // gpu_path_enabled_ 在 set_gpu_compositor() 中按 vendor 决定：
+    //   NVIDIA / AMD → 默认启用（CS via SRV 透明绕过 Intel RC/CCS 限制）
+    //   Intel / Unknown → 默认走 CPU（QSV 零拷贝路径待 GpuNv12Copier 接入）
     //
-    // 当前：完全跳过 GPU 路径，使用下方的 CPU 合成路径，避免任何 D3D11 崩溃。
+    // 注：GpuCompositor 的场景层（GpuCompositorLayer）当前尚未由 WGC/Media 源喂入，
+    // 因此即便 gpu_path_enabled_=true，本阶段仍会落到 CPU 合成路径。
+    // CsBgraToNv12 已就绪，等待后续阶段把 WGC/Media 源对接到 GpuCompositor。
     // ═══════════════════════════════════════════════════════════════════
-    static bool gpu_disabled_logged = false;
-    if (!gpu_disabled_logged && gpu_compositor_ && gpu_color_converter_) {
-        LOG_WARNING("[BRIDGE] Intel RC/CCS: entire GPU pipeline disabled to prevent d3d11 crashes. "
-                    "Using CPU compositor path. TODO: implement GpuNv12Copier (CS) to restore GPU path.");
-        gpu_disabled_logged = true;
-    }
     pending_gpu_nv12_ref_ = GpuTextureRef{};
+
+    if (gpu_path_enabled_ && gpu_compositor_) {
+        // 惰性初始化 BGRA→NV12 Compute Shader（尺寸变化时重建）
+        if (!cs_bgra_to_nv12_ ||
+            gpu_path_init_w_ != width_ ||
+            gpu_path_init_h_ != height_) {
+            if (!gpu_path_init_failed_) {
+                cs_bgra_to_nv12_ = std::make_unique<CsBgraToNv12>();
+                if (cs_bgra_to_nv12_->initialize(width_, height_)) {
+                    gpu_path_init_w_ = width_;
+                    gpu_path_init_h_ = height_;
+                    LOG_INFO("[BRIDGE] CsBgraToNv12 initialized for GPU path: " +
+                             std::to_string(width_) + "x" + std::to_string(height_));
+                } else {
+                    LOG_WARNING("[BRIDGE] CsBgraToNv12 init failed, falling back to CPU path");
+                    cs_bgra_to_nv12_.reset();
+                    gpu_path_init_failed_ = true;
+                }
+            }
+        }
+
+        // 若 GpuCompositor 已经有 BGRA 输出（compose() 被调用过），直接 CS 转 NV12。
+        if (cs_bgra_to_nv12_ && cs_bgra_to_nv12_->is_initialized()) {
+            ID3D11ShaderResourceView* bgra_srv = gpu_compositor_->output_srv();
+            if (bgra_srv) {
+                auto frame = cs_bgra_to_nv12_->convert_to_cpu(
+                    bgra_srv, media_clock_.now_us() / 1000);
+                if (frame) {
+                    return frame;
+                }
+                LOG_WARNING("[BRIDGE] CS BGRA->NV12 convert failed, falling back to CPU path");
+            }
+            // 没有 BGRA SRV：场景源还未对接到 GpuCompositor，落到 CPU 路径。
+            static bool layers_missing_logged = false;
+            if (!layers_missing_logged) {
+                LOG_INFO("[BRIDGE] GpuCompositor has no BGRA output yet (scene layers not wired); using CPU path");
+                layers_missing_logged = true;
+            }
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // 优先使用 Compositor（如果所有源都正确更新了帧到 Compositor）

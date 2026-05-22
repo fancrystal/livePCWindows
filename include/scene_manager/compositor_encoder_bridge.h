@@ -14,6 +14,7 @@
 #include "scene_manager/compositor.h"
 #include "scene_manager/gpu_compositor.h"
 #include "scene_manager/gpu_color_converter.h"
+#include "scene_manager/cs_bgra_to_nv12.h"
 #include "scene_manager/gpu_texture_ref.h"
 #include "encoder/encoder.h"
 #include "stream_pusher/stream_pusher.h"
@@ -153,6 +154,14 @@ private:
     // GPU 路径（Phase 2-4），可选——未设置时回退 CPU 路径
     std::shared_ptr<GpuCompositor>    gpu_compositor_;
     std::shared_ptr<GpuColorConverter> gpu_color_converter_;
+
+    // Phase 1 多 GPU 路径：BGRA Compositor → CS BGRA→NV12 → CPU 回读
+    // 与 GpuColorConverter 互斥（互为新旧实现），按 vendor 在运行时选择。
+    std::unique_ptr<CsBgraToNv12> cs_bgra_to_nv12_;
+    bool   gpu_path_enabled_     = false;
+    bool   gpu_path_init_failed_ = false;
+    int    gpu_path_init_w_      = 0;
+    int    gpu_path_init_h_      = 0;
     CanvasRenderer* canvas_renderer_ = nullptr;         // 回退方案：用于推流捕获（非拥有裸指针）
     std::shared_ptr<Scene> current_scene_;            // 当前场景（用于 CanvasRenderer 渲染）
     std::shared_ptr<Encoder> encoder_;
