@@ -210,9 +210,7 @@ App (Qt UI / 程序入口 / 模块编排)
 
 | 文档 | 内容 |
 |------|------|
-| `docs/ARCHITECTURE.md` | 模块架构详解 |
 | `docs/AI_CONSTRAINTS.md` | AI 行为约束完整版 |
-| `docs/CODING_RULES.md` | 编码规范详细版 |
 | `DESIGN_DOC.md` | 系统设计文档 |
 | `MEDIA_TIMESTAMP_SPEC.md` | 时间戳规范详细版 |
 | `WGC_DESIGN_SCHEME.md` | Windows 屏幕捕获设计 |
