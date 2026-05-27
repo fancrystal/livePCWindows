@@ -128,6 +128,8 @@ signals:
     void streaming_error(const QString& error);
     // 正在重连（attempt=当前次数, max=最大次数）
     void streaming_reconnecting(int attempt, int max_attempts);
+    // 重连成功
+    void streaming_reconnected();
 
 private slots:
     void on_encode_timer();

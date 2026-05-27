@@ -176,6 +176,9 @@ void CompositorEncoderBridge::set_stream_pusher(std::shared_ptr<StreamPusher> st
                 encoder_->force_keyframe();
                 LOG_INFO("[BRIDGE] Forced IDR keyframe after RTMP reconnect");
             }
+            QMetaObject::invokeMethod(this, [this]() {
+                emit streaming_reconnected();
+            }, Qt::QueuedConnection);
         });
         stream_pusher_->set_reconnecting_callback([this](int attempt, int max_attempts) {
             QMetaObject::invokeMethod(this, [this, attempt, max_attempts]() {

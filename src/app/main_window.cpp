@@ -3485,6 +3485,18 @@ void MainWindow::setup_canvas_widget() {
                 }
             }, Qt::QueuedConnection);
 
+    connect(encoder_bridge_.get(), &CompositorEncoderBridge::streaming_reconnected,
+            this, [this]() {
+                if (ui->pushButton_startLive) {
+                    ui->pushButton_startLive->setText("停止直播");
+                    ui->pushButton_startLive->setEnabled(true);
+                }
+                if (ui->label_status) {
+                    ui->label_status->setText("正在推流");
+                    ui->label_status->setStyleSheet("");
+                }
+            }, Qt::QueuedConnection);
+
     // To avoid crashes from dangling event filters or transient stageContainer_, insert the canvas
     // directly into the layout so it is managed by the UI layout system (stable and predictable).
     if (ui->label_livePreview) {

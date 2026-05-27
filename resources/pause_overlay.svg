@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Semi-transparent dark circle background -->
-  <circle cx="32" cy="32" r="30" fill="black" fill-opacity="0.55"/>
-  <!-- White pause bars (two vertical rectangles) -->
-  <rect x="18" y="16" width="10" height="32" fill="white" opacity="0.95" rx="2"/>
-  <rect x="36" y="16" width="10" height="32" fill="white" opacity="0.95" rx="2"/>
-</svg>
