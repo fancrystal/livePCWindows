@@ -9,7 +9,7 @@
 
 [Setup]
 ; 基本设置
-AppId={{YOUR-GUID-HERE-1234-567890ABCDEF}
+AppId={{B6FCDAFC-4860-4639-8A09-212576C54E20}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -80,6 +80,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{app}\logs"
+Type: filesandordirs; Name: "{app}\applogs"
 Type: filesandordirs; Name: "{app}\cache"
 Type: filesandordirs; Name: "{app}\temp"
